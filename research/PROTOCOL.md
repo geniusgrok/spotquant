@@ -39,4 +39,6 @@ The skip and block seeds do not look at prices. Economic qualification stays `NO
 
 ## What was searched besides the grid
 
-The grid is the registered account. Separate diagnostic scans on the same window, costs, and long-or-cash constraint (daily breakouts, percent reversals, capitulation entries, hourly moving averages) also failed to produce 100% CAGR with drawdown at or under 30%. A lookahead that buys the exact pivot low and sells on a 30% trail can clear the return target, and the same pivots entered only after a confirmation bounce cannot. That lookahead path is not tradable and is not a result of this meter.
+The recorded default is `evidence/rebuild-20260928/P1.json`: final CNY 216,651.5618891110466440150462, cost-net CAGR 58.06%, continuous MDD 52.77%, `targets_met` false. The grid's best terminal value is `sma40-t0.30` and its best placeable value is `sma40-t0.20`. See `evidence/rebuild-20260928/RESULT.md`.
+
+Separate diagnostic scans on the same window, costs, and long-or-cash constraint (daily breakouts, percent reversals, capitulation entries, hourly moving averages) also failed to produce 100% CAGR with drawdown at or under 30%. A lookahead that buys the exact pivot low and sells on a 30% trail can clear the return target, and the same pivots entered only after a confirmation bounce cannot. That lookahead path is not tradable and is not a result of this meter.

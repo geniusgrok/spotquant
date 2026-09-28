@@ -1,0 +1,48 @@
+{
+  "scope": "Binance BTCUSDT spot, long or cash, no leverage",
+  "start": "2020-01-01T00:00:00Z",
+  "end": "2026-09-20T00:00:00Z",
+  "end_exclusive": true,
+  "initial_cny": "10000",
+  "additional_capital": "0",
+  "venue": "binance",
+  "symbol": "BTCUSDT",
+  "market": "spot",
+  "leverage": "0",
+  "shorting": false,
+  "cagr_minimum_inclusive": "1",
+  "mdd_maximum_inclusive": "0.30",
+  "model": {
+    "mechanism": "daily_close_above_sma_with_trailing_delta",
+    "interval": "1d",
+    "sma_window": 40,
+    "trail": "0.20",
+    "trailing_delta_bips": 2000,
+    "sides": ["long"]
+  },
+  "execution": {
+    "runner": "spotquant.session.run",
+    "meter": "research.account.simulate via python -m research.rebuild",
+    "meter_is_not_the_live_session": true,
+    "session_seconds_default": 300,
+    "poll_seconds_default": 5,
+    "entry_preview": "MARKET buy by quoteOrderQty after a completed daily close; not submitted",
+    "protection_preview": "STOP_LOSS sell with trailingDelta 2000; not submitted",
+    "cold_start": "checkpoint the reconstructed daily history and do not buy a regime that is already bullish",
+    "execute": "blocked before config, credentials, and network"
+  },
+  "economic_qualification": "NOT_MET",
+  "qualification": "NOT_QUALIFIED",
+  "current_meter": {
+    "evidence": "evidence/rebuild-20260928/P1.json",
+    "source": "b8968bd9a2cb2b2262d4feb885257c4043d771af",
+    "final_cny": "216651.5618891110466440150462",
+    "cost_net_cagr_percent": "58.06",
+    "continuous_mdd_percent": "52.77",
+    "targets_met": false,
+    "frontier": "evidence/rebuild-20260928/frontier.json",
+    "best_final": "sma40-t0.30",
+    "best_feasible": null,
+    "best_placeable": "sma40-t0.20"
+  }
+}
