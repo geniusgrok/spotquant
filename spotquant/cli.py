@@ -57,12 +57,12 @@ def main(argv=None):
         command.add_argument('--config', default='config.json')
         if name == 'run':
             command.add_argument('--execute', action='store_true',
-                                 help='Blocked. Economic and native qualification are not met.')
+                                 help='Blocked. Native qualification stays NOT_QUALIFIED.')
     args = parser.parse_args(argv)
     try:
         if args.command == 'run' and args.execute:
             # Before config, credentials, and network.
-            raise Blocked('Native spot validation and economic acceptance remain incomplete; execution unavailable')
+            raise Blocked('Native qualification is NOT_QUALIFIED; execution unavailable')
         if args.command == 'status':
             report = observe(args.config)
         else:

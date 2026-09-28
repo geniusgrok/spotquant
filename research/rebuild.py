@@ -1,10 +1,13 @@
 """Economic meter for the spot account.
 
-The default trial uses ``spotquant.model`` constants: SMA 40, two confirmed
-closes, a fresh cross, the 252-day crash filter, and a 28% stop. ``--grid``
+The default trial is P3. It uses the ``spotquant.model`` constants: SMA 40,
+two confirmed closes, a fresh cross, the 252-day crash filter, a 28% stop,
+a 60% blow-off, an 8% then 6% crash reversal under the 400-day high, and a
+4% close under the entry fill that does not apply during repair. ``--grid``
 sweeps SMA window and trail under those other constants and writes
-``hold-grid.json``. It does not replace the earlier ``frontier.json`` record.
-Partial runs are not written into the evidence directory.
+``hold-grid.json``. It does not replace ``frontier.json`` or the P1 and P2
+files. Naming the trial P2 overwrites that earlier file. Partial runs are
+not written into the evidence directory.
 """
 from __future__ import annotations
 
@@ -21,7 +24,10 @@ from research.account import (
 )
 from research.fx import BASIS as FX_BASIS, DatedFX
 from research.market import file_digest, load_daily
-from spotquant.model import CONFIRM, CRASH, FRESH, HIGH_WINDOW, SMA_WINDOW, TRAIL
+from spotquant.model import (
+    ADVERSE, CAP_BOUNCE, CAP_DEPTH, CAP_DROP, CAP_HAND, CAP_WINDOW, CONFIRM, CRASH,
+    EXTEND, FRESH, HIGH_WINDOW, SMA_WINDOW, TRAIL,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'evidence' / 'rebuild-20260928'
@@ -92,6 +98,13 @@ def _public(result: dict, name: str, extra: dict) -> dict:
         'crash': result['crash'],
         'fresh': result['fresh'],
         'high_window': HIGH_WINDOW,
+        'extend': result['extend'],
+        'cap_drop': result['cap_drop'],
+        'cap_bounce': result['cap_bounce'],
+        'cap_depth': result['cap_depth'],
+        'cap_hand': result['cap_hand'],
+        'cap_window': result['cap_window'],
+        'adverse_stop': result['adverse_stop'],
         'stop_order': 'STOP_LOSS stopPrice, amended as the daily high ratchets',
         'targets': {'cagr_minimum_inclusive': '1', 'mdd_maximum_inclusive': '0.30'},
         'targets_met': result['cagr'] >= 1 and result['mdd'] <= D('0.30'),
@@ -147,7 +160,7 @@ def block_set(bars) -> set[int]:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Spot account rebuild on daily Binance klines')
-    parser.add_argument('name', nargs='?', default='P2')
+    parser.add_argument('name', nargs='?', default='P3')
     parser.add_argument('--market', default='/tmp/spotquant-market/klines')
     parser.add_argument('--sma', type=int, default=SMA_WINDOW)
     parser.add_argument('--trail', default=format(TRAIL, 'f'))
@@ -198,8 +211,8 @@ def main(argv=None):
             'source': identity,
             'market_sha256': market_hash,
             'rule': ('diagnostic SMA x trail sweep under the current confirm, fresh-cross, '
-                     'and crash-filter constants. Not the P1 frontier. '
-                     'best_final is the highest terminal CNY. Promotion still requires both targets.'),
+                     'crash-filter, blow-off, crash-reversal, and adverse-close constants. '
+                     'Not the P1 frontier. best_final is the highest terminal CNY.'),
             'best_final': best['trial'],
             'best_feasible': None if not feasible else max(feasible, key=rank)['trial'],
             'default': {
@@ -208,6 +221,13 @@ def main(argv=None):
                 'confirm': CONFIRM,
                 'crash': format(CRASH, 'f'),
                 'fresh': FRESH,
+                'extend': format(EXTEND, 'f'),
+                'cap_drop': format(CAP_DROP, 'f'),
+                'cap_bounce': format(CAP_BOUNCE, 'f'),
+                'cap_depth': format(CAP_DEPTH, 'f'),
+                'cap_hand': format(CAP_HAND, 'f'),
+                'cap_window': CAP_WINDOW,
+                'adverse_stop': format(ADVERSE, 'f'),
             },
             'rows': rows,
         }

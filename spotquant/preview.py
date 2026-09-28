@@ -30,6 +30,27 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
     if snapshot.get('open_orders'):
         raise Unknown('an open order is already on the account; not taking new risk')
     owned = floor_step(owned_btc, BASE_STEP)
+    if owned * price >= MIN_NOTIONAL and model.repair:
+        return {
+            'action': 'hold',
+            'reason': 'crash-reversal hold; SMA, blow-off, and the 4% close stay off until the handoff',
+            'order': None,
+            'protection': _protection(model, owned),
+        }
+    if owned * price >= MIN_NOTIONAL and model.adverse:
+        return {
+            'action': 'exit',
+            'reason': 'completed daily close is at least 4% under the entry fill',
+            'order': {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': _step(owned, BASE_STEP)},
+            'protection': None,
+        }
+    if owned * price >= MIN_NOTIONAL and model.extended:
+        return {
+            'action': 'exit',
+            'reason': 'completed daily close is extended at least 60% above its SMA',
+            'order': {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': _step(owned, BASE_STEP)},
+            'protection': None,
+        }
     if owned * price >= MIN_NOTIONAL and not model.bull:
         return {
             'action': 'exit',
@@ -40,16 +61,17 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
     if owned * price >= MIN_NOTIONAL and model.bull:
         return {
             'action': 'hold',
-            'reason': 'still above the SMA; protection would remain a stop 28% under the running high',
+            'reason': 'still above the SMA; protection is a stop 28% under the bullish-streak high',
             'order': None,
             'protection': _protection(model, owned),
         }
-    if not model.enter:
+    armed = model.enter or model.cap_enter
+    if not armed:
         if model.sma is None:
             return _flat('SMA warmup is incomplete')
         if not model.bull:
             return _flat('completed daily close is not above its SMA')
-        return _flat('entry is not armed: confirmation, fresh cross, or the crash filter')
+        return _flat('entry is not armed: confirmation, fresh cross, crash filter, or crash reversal')
     if not entries_enabled:
         return _flat('cold start: no completed daily close after the first checkpoint')
     spend = D(snapshot['usdt_free'])
@@ -60,7 +82,11 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
         return _flat('free USDT is below the 5 USDT minimum notional')
     return {
         'action': 'enter',
-        'reason': 'two confirmed closes cleared the fresh-cross and crash filters',
+        'reason': (
+            'crash reversal: 8% down, then 6% up, still at least half under the 400-day high'
+            if model.cap_enter and not model.enter
+            else 'two confirmed closes cleared the fresh-cross and crash filters'
+        ),
         'order': {
             'symbol': 'BTCUSDT',
             'side': 'BUY',
@@ -72,16 +98,21 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
 
 
 def _protection(model: Model, quantity: D | None) -> dict:
-    peak = model.peak if model.peak is not None else model.close
+    if model.repair and model.repair_peak is not None:
+        peak = model.repair_peak
+    elif model.peak is not None:
+        peak = model.peak
+    else:
+        peak = model.close
     order = {
         'symbol': 'BTCUSDT',
         'side': 'SELL',
         'type': 'STOP_LOSS',
         'stopPrice': _step(model.stop_price(peak), PRICE_STEP),
-        'note': 'amended as the daily high ratchets; 28% is wider than trailingDelta',
+        'note': 'amended STOP_LOSS; 28% under the repair high during a crash reversal, otherwise under the bullish-streak high',
     }
     if quantity is None:
-        order['note'] = 'quantity would be the filled base amount; stop is amended as the high ratchets'
+        order['note'] = 'quantity would be the filled base amount; stop is 28% under the high and is amended as that high ratchets'
     else:
         order['quantity'] = _step(quantity, BASE_STEP)
     return order

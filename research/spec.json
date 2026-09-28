@@ -13,7 +13,7 @@
   "cagr_minimum_inclusive": "1",
   "mdd_maximum_inclusive": "0.30",
   "model": {
-    "mechanism": "confirmed_fresh_sma_cross_with_crash_filter",
+    "mechanism": "confirmed_fresh_sma_with_blowoff_crash_reversal_and_adverse_close",
     "interval": "1d",
     "sma_window": 40,
     "confirm": 2,
@@ -21,6 +21,13 @@
     "crash": "0.50",
     "high_window": 252,
     "trail": "0.28",
+    "extend": "0.60",
+    "cap_drop": "0.08",
+    "cap_bounce": "0.06",
+    "cap_depth": "0.50",
+    "cap_hand": "0.20",
+    "cap_window": 400,
+    "adverse_stop": "0.04",
     "stop_order": "STOP_LOSS stopPrice amended as the daily high ratchets",
     "sides": ["long"]
   },
@@ -30,23 +37,25 @@
     "meter_is_not_the_live_session": true,
     "session_seconds_default": 300,
     "poll_seconds_default": 5,
-    "entry_preview": "MARKET buy by quoteOrderQty after a completed daily close; not submitted",
-    "protection_preview": "STOP_LOSS sell whose stopPrice is 28% under the running high; not submitted",
+    "entry_preview": "MARKET buy by quoteOrderQty on the next open after an ordinary entry or a crash reversal; not submitted",
+    "exit_preview": "MARKET sell on the next open after a blow-off, an adverse close, or a close that is no longer above the SMA. A repair hold does not sell for those reasons.",
+    "protection_preview": "STOP_LOSS sell whose stopPrice is 28% under the repair high during repair, otherwise under the bullish-streak high; not submitted. That peak is not the meter's fill-open peak.",
     "cold_start": "checkpoint the reconstructed daily history and do not buy a regime that is already bullish",
-    "execute": "blocked before config, credentials, and network"
+    "execute": "blocked before config, credentials, and network because qualification is NOT_QUALIFIED"
   },
-  "economic_qualification": "NOT_MET",
+  "economic_qualification": "MET",
   "qualification": "NOT_QUALIFIED",
   "current_meter": {
-    "evidence": "evidence/rebuild-20260928/P2.json",
-    "source": "b30608d43f3039f7cce5c1c72341ced3021007e0",
-    "final_cny": "432658.9697193516804930799377",
-    "cost_net_cagr_percent": "75.19",
-    "continuous_mdd_percent": "33.10",
-    "targets_met": false,
-    "prior_evidence": "evidence/rebuild-20260928/P1.json",
+    "evidence": "evidence/rebuild-20260928/P3.json",
+    "source": "b08ca409ef79712940c5be1f7a0a0faa18d6d75e",
+    "final_cny": "1113885.265822092834607674624",
+    "cost_net_cagr_percent": "101.67",
+    "continuous_mdd_percent": "29.15",
+    "mdd_at": "2020-03-16T00:00:00Z",
+    "targets_met": true,
+    "prior_evidence": "evidence/rebuild-20260928/P2.json",
     "frontier": "evidence/rebuild-20260928/frontier.json",
-    "best_final": "P2",
-    "best_feasible": null
+    "best_final": "P3",
+    "best_feasible": "P3"
   }
 }
