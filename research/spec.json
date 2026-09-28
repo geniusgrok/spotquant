@@ -47,7 +47,7 @@
   "qualification": "NOT_QUALIFIED",
   "current_meter": {
     "evidence": "evidence/rebuild-20260928/P3.json",
-    "source": "b08ca409ef79712940c5be1f7a0a0faa18d6d75e",
+    "source": "2d8750c1644001b6db5f47bbf671f5de153cb9c6",
     "final_cny": "1113885.265822092834607674624",
     "cost_net_cagr_percent": "101.67",
     "continuous_mdd_percent": "29.15",
