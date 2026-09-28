@@ -1,18 +1,22 @@
 """Causal daily BTCUSDT spot regime. Long or cash. No leverage and no short.
 
-A completed UTC daily close above its simple moving average is bullish.
-Entry needs two consecutive bullish closes, a fresh cross since the last
-exit, and a close no more than half below the 252-day highest close.
-A close at least 60% above that average is a blow-off: the account sells
-the next open. A reversal after an 8% down day, while the close is still
-at least half under the 400-day highest close, may enter on the next open
-and keeps the 28% stop until the close is back above the average and within
-20% of that 400-day high. Any other open position sells the next open when
-a completed close finishes 4% or more under its entry fill. The account
-may buy only on a later open.
+A completed UTC daily close strictly above its SMA is bullish. An ordinary
+entry needs two such closes, a fresh cross since the last exit, and a close
+at least half the inclusive 252-day highest close. The buy is the next open.
+A close at least 60% above that SMA is a blow-off and sells the next open.
+A crash reversal is a completed day up at least 6% after a day down at least
+8%, while the close is still at least half under the inclusive 400-day
+highest close. That signal may buy the next open. Until the close is back
+above the SMA and no more than 20% under that 400-day high, the repair
+position ignores the SMA exit, the blow-off, and the 4% close. Any other
+position sells the next open when a completed close is 4% or more under its
+entry fill. There is no same-day re-entry.
 Protection is a stop 28% under the running high. That is wider than Binance
-spot trailingDelta (2000 bips), so the session would amend a STOP_LOSS
-price. The economic meter walks each daily range high-before-low.
+spot trailingDelta (2000 bips), so the preview amends a STOP_LOSS price.
+During repair the preview high is the high since the repair fill. Otherwise
+it is the high of the bullish streak, which can start before the fill. The
+economic meter starts its peak at the fill open and walks each daily range
+high-before-low.
 """
 from __future__ import annotations
 
@@ -26,10 +30,12 @@ from .types import Blocked, number
 # 2019-01-01T00:00:00Z. Warmup for the 252-day high is inside this history.
 ORIGIN = 1546300800000
 DAY = 86_400_000
-# Full-sample search. The selected book keeps the SMA 40 / confirm 2 / fresh /
-# crash 0.50 / trail 0.28 core, sells a close 60% above that average, may enter
-# the day after a crash-reversal that is still 50% under the 400-day high, and
-# sells a non-repair position the next open after a close 4% under the fill.
+# Full-sample P3 book. SMA 40, confirm 2, fresh, crash 0.50 on the inclusive
+# 252-day highest close, trail 0.28. Blow-off is a close at least 60% above
+# the SMA. A crash reversal needs an 8% down day, a 6% up day, and a close
+# still at least half under the inclusive 400-day highest close. Repair holds
+# until the close is back above the SMA and no more than 20% under that high.
+# Any other position sells the next open after a close 4% or more under the fill.
 SMA_WINDOW = 40
 TRAIL = D('0.28')
 CONFIRM = 2
@@ -125,12 +131,12 @@ class Model:
         self.adverse = False
 
     def note_entry(self, price) -> None:
-        """Record the fill. A later close 4% under it exits a non-repair position."""
+        """Record the fill. A later close 4% or more under it exits a non-repair position."""
         self.entry = number(price, 'entry', positive=True)
         self.adverse = False
 
     def note_cap_entry(self) -> None:
-        """This fill is a crash reversal. Hold the stop until the handoff close."""
+        """This fill is a crash reversal. Keep only the 28% stop until the handoff close."""
         self.repair = True
         self.adverse = False
 

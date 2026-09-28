@@ -37,16 +37,17 @@
     "meter_is_not_the_live_session": true,
     "session_seconds_default": 300,
     "poll_seconds_default": 5,
-    "entry_preview": "MARKET buy by quoteOrderQty after a completed daily close; not submitted",
-    "protection_preview": "STOP_LOSS sell whose stopPrice is 28% under the running high; not submitted",
+    "entry_preview": "MARKET buy by quoteOrderQty on the next open after an ordinary entry or a crash reversal; not submitted",
+    "exit_preview": "MARKET sell on the next open after a blow-off, an adverse close, or a close that is no longer above the SMA. A repair hold does not sell for those reasons.",
+    "protection_preview": "STOP_LOSS sell whose stopPrice is 28% under the repair high during repair, otherwise under the bullish-streak high; not submitted. That peak is not the meter's fill-open peak.",
     "cold_start": "checkpoint the reconstructed daily history and do not buy a regime that is already bullish",
-    "execute": "blocked before config, credentials, and network"
+    "execute": "blocked before config, credentials, and network because qualification is NOT_QUALIFIED"
   },
   "economic_qualification": "MET",
   "qualification": "NOT_QUALIFIED",
   "current_meter": {
     "evidence": "evidence/rebuild-20260928/P3.json",
-    "source": "35afe038afe1b0dfd0b4dd51f6f93dae92cb952a",
+    "source": "",
     "final_cny": "1113885.265822092834607674624",
     "cost_net_cagr_percent": "101.67",
     "continuous_mdd_percent": "29.15",

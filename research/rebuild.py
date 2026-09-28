@@ -1,13 +1,13 @@
 """Economic meter for the spot account.
 
-The default trial uses ``spotquant.model`` constants: SMA 40, two confirmed
-closes, a fresh cross, the 252-day crash filter, a 28% stop, the blow-off
-and crash-reversal rules, and the 4% close under the entry fill. ``--grid``
+The default trial is P3. It uses the ``spotquant.model`` constants: SMA 40,
+two confirmed closes, a fresh cross, the 252-day crash filter, a 28% stop,
+a 60% blow-off, an 8% then 6% crash reversal under the 400-day high, and a
+4% close under the entry fill that does not apply during repair. ``--grid``
 sweeps SMA window and trail under those other constants and writes
-``hold-grid.json``. It does not replace the earlier ``frontier.json`` record.
-Partial runs are not written into the evidence directory. The default name
-is P3. Passing P2 writes over the prior measurement, so name that file
-explicitly if it has to be rebuilt.
+``hold-grid.json``. It does not replace ``frontier.json`` or the P1 and P2
+files. Naming the trial P2 overwrites that earlier file. Partial runs are
+not written into the evidence directory.
 """
 from __future__ import annotations
 

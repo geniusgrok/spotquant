@@ -2,9 +2,11 @@
 
 Long or cash, no borrow, no short, no futures. An armed entry, including a
 crash-reversal entry, buys at the next daily open. While long, a 28% stop is
-modeled on the daily range by taking the high before the low. An SMA exit, a
-blow-off exit, or a close 4% under the entry fill sells at the next open. A
-crash-reversal hold ignores those exits until the model hands the trade back.
+modeled on the daily range by taking the high before the low. The meter's
+peak starts at the fill open. An SMA exit, a blow-off exit, or a close 4% or
+more under the entry fill sells at the next open. When those exits share an
+open, the recorded kind is ``adverse``, then ``extend``, then ``sma``. A
+crash-reversal hold ignores all three until the model hands the trade back.
 Costs and the CNY conversion are applied here.
 """
 from __future__ import annotations
@@ -141,6 +143,8 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
             break
         in_window = open_ms >= start_ms
         exited = False
+        # Repair keeps only the 28% stop. Otherwise adverse wins over blow-off and SMA
+        # when they fall on the same open, because the fill is the same.
         if in_window and book.btc > 0 and not repair_prev and (adverse_prev or extend_prev or not bull_prev):
             if adverse_prev:
                 kind = 'adverse'

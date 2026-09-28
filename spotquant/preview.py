@@ -33,7 +33,7 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
     if owned * price >= MIN_NOTIONAL and model.repair:
         return {
             'action': 'hold',
-            'reason': 'crash-reversal hold; protection remains a stop 28% under the running high',
+            'reason': 'crash-reversal hold; SMA, blow-off, and the 4% close stay off until the handoff',
             'order': None,
             'protection': _protection(model, owned),
         }
@@ -61,7 +61,7 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
     if owned * price >= MIN_NOTIONAL and model.bull:
         return {
             'action': 'hold',
-            'reason': 'still above the SMA; protection would remain a stop 28% under the running high',
+            'reason': 'still above the SMA; protection is a stop 28% under the bullish-streak high',
             'order': None,
             'protection': _protection(model, owned),
         }
@@ -71,7 +71,7 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
             return _flat('SMA warmup is incomplete')
         if not model.bull:
             return _flat('completed daily close is not above its SMA')
-        return _flat('entry is not armed: confirmation, fresh cross, or the crash filter')
+        return _flat('entry is not armed: confirmation, fresh cross, crash filter, or crash reversal')
     if not entries_enabled:
         return _flat('cold start: no completed daily close after the first checkpoint')
     spend = D(snapshot['usdt_free'])
@@ -83,7 +83,7 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
     return {
         'action': 'enter',
         'reason': (
-            'crash reversal cleared the 400-day depth filter'
+            'crash reversal: 8% down, then 6% up, still at least half under the 400-day high'
             if model.cap_enter and not model.enter
             else 'two confirmed closes cleared the fresh-cross and crash filters'
         ),
@@ -109,10 +109,10 @@ def _protection(model: Model, quantity: D | None) -> dict:
         'side': 'SELL',
         'type': 'STOP_LOSS',
         'stopPrice': _step(model.stop_price(peak), PRICE_STEP),
-        'note': 'amended as the daily high ratchets; 28% is wider than trailingDelta',
+        'note': 'amended STOP_LOSS; 28% under the repair high during a crash reversal, otherwise under the bullish-streak high',
     }
     if quantity is None:
-        order['note'] = 'quantity would be the filled base amount; stop is amended as the high ratchets'
+        order['note'] = 'quantity would be the filled base amount; stop is 28% under the high and is amended as that high ratchets'
     else:
         order['quantity'] = _step(quantity, BASE_STEP)
     return order
