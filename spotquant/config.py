@@ -1,0 +1,65 @@
+"""One spot account and one bounded session. The file never contains secrets."""
+from __future__ import annotations
+
+from dataclasses import dataclass, fields
+from decimal import Decimal, InvalidOperation
+import json
+from pathlib import Path
+
+from .types import Blocked
+
+ENVIRONMENTS = ('live', 'demo')
+
+
+def scope(environment: str, uid: str) -> str:
+    """One environment, one spot account, one symbol. Futures state cannot satisfy this."""
+    return f'binance:BTCUSDT:spot:{environment}:{uid}'
+
+
+@dataclass(frozen=True)
+class Config:
+    account_uid: str
+    state_dir: str
+    session_seconds: int = 300
+    poll_seconds: int = 5
+    # demo uses Binance spot demo hosts and a separate state scope.
+    environment: str = 'live'
+    # Optional USDT ceiling for sizing previews. It is not a loss limit.
+    capital_limit_usdt: str | None = None
+
+    def __post_init__(self):
+        if (not isinstance(self.account_uid, str) or not self.account_uid.isascii()
+                or not self.account_uid.isdigit() or int(self.account_uid) <= 0
+                or not isinstance(self.state_dir, str) or not self.state_dir.strip()):
+            raise Blocked('explicit Binance UID and persistent state_dir required')
+        if (type(self.session_seconds) is not int or not 1 <= self.session_seconds <= 86400
+                or type(self.poll_seconds) is not int or not 1 <= self.poll_seconds <= 60
+                or self.poll_seconds > self.session_seconds):
+            raise Blocked('session must be 1..86400 seconds; poll 1..60 and no longer than session')
+        if self.environment not in ENVIRONMENTS:
+            raise Blocked('environment must be live or demo')
+        if self.capital_limit_usdt is not None:
+            try:
+                limit = Decimal(self.capital_limit_usdt) if isinstance(self.capital_limit_usdt, str) else None
+            except InvalidOperation:
+                limit = None
+            if limit is None or not limit.is_finite() or limit <= 0:
+                raise Blocked('capital_limit_usdt must be a positive decimal string')
+
+    @property
+    def scope(self) -> str:
+        return scope(self.environment, self.account_uid)
+
+    @property
+    def capital_limit(self):
+        return None if self.capital_limit_usdt is None else Decimal(self.capital_limit_usdt)
+
+
+def load(path) -> Config:
+    try:
+        data = json.loads(Path(path).read_text())
+        if not isinstance(data, dict) or set(data) - {item.name for item in fields(Config)}:
+            raise Blocked('unknown configuration field; no leverage or futures switch')
+        return Config(**data)
+    except (OSError, ValueError, TypeError) as exc:
+        raise Blocked('configuration cannot be read or validated') from exc

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+config.json
+.env*
+*.sqlite*
+*.lock
+data/
+results/
+.venv/
+.pytest_cache/

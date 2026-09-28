@@ -1,0 +1,52 @@
+{
+  "scope": "Binance BTCUSDT spot, long or cash, no leverage",
+  "start": "2020-01-01T00:00:00Z",
+  "end": "2026-09-20T00:00:00Z",
+  "end_exclusive": true,
+  "initial_cny": "10000",
+  "additional_capital": "0",
+  "venue": "binance",
+  "symbol": "BTCUSDT",
+  "market": "spot",
+  "leverage": "0",
+  "shorting": false,
+  "cagr_minimum_inclusive": "1",
+  "mdd_maximum_inclusive": "0.30",
+  "model": {
+    "mechanism": "confirmed_fresh_sma_cross_with_crash_filter",
+    "interval": "1d",
+    "sma_window": 40,
+    "confirm": 2,
+    "fresh": true,
+    "crash": "0.50",
+    "high_window": 252,
+    "trail": "0.28",
+    "stop_order": "STOP_LOSS stopPrice amended as the daily high ratchets",
+    "sides": ["long"]
+  },
+  "execution": {
+    "runner": "spotquant.session.run",
+    "meter": "research.account.simulate via python -m research.rebuild",
+    "meter_is_not_the_live_session": true,
+    "session_seconds_default": 300,
+    "poll_seconds_default": 5,
+    "entry_preview": "MARKET buy by quoteOrderQty after a completed daily close; not submitted",
+    "protection_preview": "STOP_LOSS sell whose stopPrice is 28% under the running high; not submitted",
+    "cold_start": "checkpoint the reconstructed daily history and do not buy a regime that is already bullish",
+    "execute": "blocked before config, credentials, and network"
+  },
+  "economic_qualification": "NOT_MET",
+  "qualification": "NOT_QUALIFIED",
+  "current_meter": {
+    "evidence": "evidence/rebuild-20260928/P2.json",
+    "source": "b30608d43f3039f7cce5c1c72341ced3021007e0",
+    "final_cny": "432658.9697193516804930799377",
+    "cost_net_cagr_percent": "75.19",
+    "continuous_mdd_percent": "33.10",
+    "targets_met": false,
+    "prior_evidence": "evidence/rebuild-20260928/P1.json",
+    "frontier": "evidence/rebuild-20260928/frontier.json",
+    "best_final": "P2",
+    "best_feasible": null
+  }
+}
