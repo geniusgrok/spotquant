@@ -9,6 +9,6 @@ Spotquant is a read-only Binance BTCUSDT spot research path. No futures and no l
 - P2 remains the prior measurement: final CNY 432,659, CAGR 75.19%, MDD 33.10% on 2021-01-31.
 - P1 remains the earlier measurement: final CNY 216,652, CAGR 58.06%, MDD 52.77%.
 - Economic qualification: `MET` on P3. Native qualification: `NOT_QUALIFIED`. Execute stays blocked for that native reason.
-- Evidence directory: `evidence/rebuild-20260928/`. The P3 source commit is `source.git_head` in `P3.json`.
+- Evidence directory: `evidence/rebuild-20260928/`. Source commit of the P3 measurement: `b08ca40`.
 
 The 4% close was chosen on the full sample. 3.8% prints the same account. 3.4% does not qualify. Do not move the window or lower the targets.
