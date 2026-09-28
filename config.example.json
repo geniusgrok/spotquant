@@ -1,0 +1,7 @@
+{
+  "account_uid": "",
+  "state_dir": "~/.spotquant/binance-btcusdt-spot",
+  "session_seconds": 300,
+  "poll_seconds": 5,
+  "environment": "live"
+}
