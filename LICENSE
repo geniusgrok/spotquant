@@ -1,0 +1,84 @@
+Spotquant Proprietary Research License
+Version 1.0 — 2026
+
+Copyright (c) 2026 geniusgrok. All rights reserved.
+
+NOTICE
+
+This repository and all of its contents, including but not limited to source code,
+scripts, configuration files, documentation, research notes, strategy logic,
+models, data-processing logic, tests, examples, and other materials
+(collectively, the "Work"), are proprietary materials of the copyright holder.
+
+The Work is made publicly visible solely for the copyright holder's personal
+research, archival, and source-hosting purposes. Public availability of the Work
+does not constitute an open-source license, a public-domain dedication, or a
+grant of permission to use the Work.
+
+1. NO LICENSE GRANTED TO THIRD PARTIES
+
+Except where applicable law expressly provides otherwise, no person or entity
+other than the copyright holder is granted any license or permission to use,
+copy, reproduce, download for reuse, modify, adapt, translate, merge, port,
+repackage, publish, display outside the hosting platform, distribute,
+redistribute, sublicense, sell, rent, commercialize, create derivative works
+from, or otherwise exploit any part of the Work.
+
+2. PROHIBITED COPYING, MODIFICATION, AND DERIVATIVE WORKS
+
+Without prior written permission from the copyright holder, you may not:
+
+- copy or reproduce the Work, in whole or in part;
+- modify, refactor, adapt, translate, port, or extend the Work;
+- create derivative works or secondary creations based on the Work;
+- incorporate any portion of the Work into another project, product, service,
+  repository, publication, or codebase;
+- republish, redistribute, mirror, sublicense, sell, or otherwise transfer the
+  Work or any modified version of it;
+- present the Work, or a substantially copied portion of it, as your own work;
+- use the Work for commercial, educational, research, competitive, training,
+  benchmarking, or production purposes.
+
+3. NO LIVE OR PRODUCTION TRADING
+
+The Work is intended solely for the copyright holder's personal research.
+It is not licensed, authorized, or intended for live trading, production
+trading, automated execution using real funds, investment management, brokerage,
+or any other activity involving actual financial assets or financial risk.
+
+No third party may use the Work, in whole or in part, to place, manage, route,
+modify, or execute real-money orders or otherwise operate a live trading system.
+
+4. NO FINANCIAL OR INVESTMENT ADVICE
+
+Nothing in the Work constitutes financial, investment, trading, legal, tax, or
+other professional advice. No representation is made regarding profitability,
+accuracy, fitness for any trading purpose, or future performance.
+
+5. NO WARRANTY
+
+THE WORK IS PROVIDED "AS IS" FOR THE COPYRIGHT HOLDER'S PERSONAL RESEARCH AND
+ARCHIVAL PURPOSES ONLY. TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT
+HOLDER DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, RELIABILITY,
+NON-INFRINGEMENT, AND SAFETY.
+
+6. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDER SHALL NOT BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, CONSEQUENTIAL, OR
+OTHER DAMAGES, LOSSES, TRADING LOSSES, LOST PROFITS, DATA LOSS, OR FINANCIAL
+LOSS ARISING FROM OR RELATED TO ACCESS TO, RELIANCE ON, OR UNAUTHORIZED USE OF
+THE WORK.
+
+7. RESERVATION OF RIGHTS
+
+All rights not expressly granted are reserved by the copyright holder. No rights
+are granted by implication, estoppel, publication, repository visibility,
+availability of source code, or otherwise.
+
+Any permission to use any part of the Work must be granted separately and
+explicitly in writing by the copyright holder.
+
+For the avoidance of doubt: this is proprietary software and is not an
+open-source license.
