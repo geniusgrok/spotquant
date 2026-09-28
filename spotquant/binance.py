@@ -100,8 +100,20 @@ class Binance:
         }
 
     def completed_daily(self, after_open_ms: int | None) -> list[tuple[int, D, D, D]]:
-        """Completed UTC daily bars strictly after ``after_open_ms`` (or from the origin)."""
-        cursor = ORIGIN if after_open_ms is None else int(after_open_ms) + DAY
+        """Completed UTC daily bars strictly after ``after_open_ms`` (or from the origin).
+
+        Each page must begin on the requested open and step one UTC day at a
+        time. A startTime is set, so the public route returns the oldest page,
+        but a page that starts later is rejected instead of being stored.
+        """
+        if after_open_ms is None:
+            cursor = ORIGIN
+        elif type(after_open_ms) is not int:
+            raise Blocked('daily cursor must be an integer millisecond timestamp')
+        else:
+            cursor = after_open_ms + DAY
+        if cursor < ORIGIN or (cursor - ORIGIN) % DAY:
+            raise Blocked('daily cursor is not on the UTC day grid')
         today = self._today_open()
         bars = []
         while cursor < today:
@@ -116,20 +128,26 @@ class Binance:
                 raise Unknown('kline response is not a list')
             if not payload:
                 break
+            page = []
             for row in payload:
+                if not isinstance(row, list) or len(row) < 5:
+                    raise Unknown('kline row is incomplete')
                 open_ms = _millis(row[0])
                 if open_ms < cursor or open_ms >= today:
                     continue
-                bars.append((open_ms, number(row[2], 'high', positive=True),
+                page.append((open_ms, number(row[2], 'high', positive=True),
                              number(row[3], 'low', positive=True), number(row[4], 'close', positive=True)))
-            last = _millis(payload[-1][0])
-            nxt = last + DAY
-            if nxt <= cursor:
+            if not page:
                 break
-            cursor = nxt
+            if page[0][0] != cursor:
+                raise Unknown('daily kline page does not start at the requested open')
+            for previous, nxt in zip(page, page[1:]):
+                if nxt[0] - previous[0] != DAY:
+                    raise Unknown('daily kline page is not contiguous')
+            bars.extend(page)
+            cursor = page[-1][0] + DAY
             if len(payload) < 1000:
                 break
-        bars.sort()
         return bars
 
     def _filters(self) -> None:
@@ -138,7 +156,7 @@ class Binance:
         if len(symbols) != 1 or symbols[0].get('symbol') != 'BTCUSDT':
             raise Unknown('BTCUSDT was not the only symbol in the filter response')
         symbol = symbols[0]
-        if symbol.get('status') != 'TRADING' or symbol.get('isSpotTradingAllowed') is False:
+        if symbol.get('status') != 'TRADING' or symbol.get('isSpotTradingAllowed') is not True:
             raise Blocked('BTCUSDT spot trading is not enabled')
         if symbol.get('baseAsset') != 'BTC' or symbol.get('quoteAsset') != 'USDT':
             raise Blocked('BTCUSDT is no longer BTC quoted in USDT')

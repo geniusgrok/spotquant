@@ -36,8 +36,47 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(decision['order']['quoteOrderQty'], '100.00')
         self.assertEqual(decision['order']['side'], 'BUY')
         self.assertEqual(decision['protection']['stopPrice'], '9.60')
+        self.assertIn('two confirmed', decision['reason'])
         self.assertNotIn('quantity', decision['protection'])
         self.assertNotIn('trailingDelta', decision['protection'])
+
+    def test_entry_stop_uses_the_completed_close_when_the_streak_high_is_through_it(self):
+        model = Model(sma_window=2, trail='0.20', confirm=1, fresh=False, crash='0', cap_drop='0')
+        model.update(ORIGIN, 10, 10, 10)
+        model.update(ORIGIN + DAY, 10, 10, 10)
+        model.update(ORIGIN + 2 * DAY, 40, 10, 12)
+        self.assertTrue(model.enter)
+        self.assertFalse(model.cap_enter)
+        decision = preview(model, _snap(), entries_enabled=True, capital_limit=None)
+        self.assertEqual(decision['action'], 'enter')
+        self.assertEqual(decision['protection']['stopPrice'], '9.60')
+
+    def test_crash_reversal_wins_when_the_ordinary_entry_is_also_armed(self):
+        model = Model(
+            sma_window=4, trail='0.28', confirm=2, fresh=False, crash='0',
+            cap_window=6, cap_drop='0.08', cap_bounce='0.06', cap_depth='0.50',
+        )
+        series = ((100, 100), (20, 20), (20, 20), (30, 30), (80, 27), (30, 29))
+        for index, (high, close) in enumerate(series):
+            model.update(ORIGIN + index * DAY, D(high), D(close), D(close))
+        self.assertTrue(model.enter)
+        self.assertTrue(model.cap_enter)
+        decision = preview(model, _snap(), entries_enabled=True, capital_limit=None)
+        self.assertEqual(decision['action'], 'enter')
+        self.assertIn('crash reversal', decision['reason'])
+        self.assertNotIn('two confirmed', decision['reason'])
+        # 29 * 0.72 = 20.88. The streak high of 80 would print 57.60, above the close.
+        self.assertEqual(decision['protection']['stopPrice'], '20.88')
+
+    def test_owned_hold_keeps_the_streak_high(self):
+        model = Model(sma_window=2, trail='0.20', confirm=1, fresh=False, crash='0', cap_drop='0')
+        model.update(ORIGIN, 10, 10, 10)
+        model.update(ORIGIN + DAY, 12, 10, 11)
+        decision = preview(
+            model, _snap(btc='1'), entries_enabled=True, capital_limit=None, owned_btc=D('1'),
+        )
+        self.assertEqual(decision['action'], 'hold')
+        self.assertEqual(decision['protection']['stopPrice'], '9.60')
 
     def test_external_btc_is_unknown(self):
         model = _model((10, 10, 10, 12))

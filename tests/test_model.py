@@ -1,5 +1,7 @@
 """Causal daily regime: warmup, delay, checkpoint, and no same-bar lookahead."""
 from decimal import Decimal as D
+import hashlib
+import json
 import unittest
 
 from spotquant.model import (
@@ -12,6 +14,12 @@ from spotquant.types import Blocked
 def bar(i, close, high=None, low=None):
     close = D(close)
     return ORIGIN + i * DAY, high or close, low or close, close
+
+
+def _resign(saved):
+    body = saved['body']
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+    return {'body': body, 'sha256': digest}
 
 
 class ModelTests(unittest.TestCase):
@@ -92,14 +100,25 @@ class ModelTests(unittest.TestCase):
         self.assertFalse(model.cap_enter)
         model.update(*bar(5, 10))
         self.assertTrue(model.cap_enter)
+        armed = Model.restore(model.checkpoint())
+        self.assertTrue(armed.cap_enter)
+        self.assertTrue(armed.enter)
+        self.assertFalse(armed.repair)
         model.note_cap_entry()
         model.update(*bar(6, 11, high=12))
         self.assertTrue(model.repair)
         self.assertEqual(model.repair_peak, D(12))
+        held = Model.restore(model.checkpoint())
+        self.assertTrue(held.repair)
+        self.assertEqual(held.repair_peak, D(12))
+        self.assertFalse(held.adverse)
         # Back above the average and within 20% of the 4-day high releases the hold.
         model.update(*bar(7, 20))
         self.assertFalse(model.repair)
         self.assertIsNone(model.repair_peak)
+        released = Model.restore(model.checkpoint())
+        self.assertFalse(released.repair)
+        self.assertIsNone(released.repair_peak)
 
     def test_a_close_four_percent_under_the_fill_invalidates_a_normal_entry(self):
         model = Model(sma_window=2, trail='0.28', crash='0', confirm=1, fresh=False, cap_drop='0')
@@ -126,6 +145,42 @@ class ModelTests(unittest.TestCase):
         model.update(*bar(2, 90))
         self.assertTrue(model.repair)
         self.assertFalse(model.adverse)
+
+    def test_empty_checkpoint_roundtrips(self):
+        restored = Model.restore(Model().checkpoint())
+        self.assertIsNone(restored.last)
+        self.assertFalse(restored.bull)
+        self.assertFalse(restored.enter)
+        self.assertFalse(restored.cap_enter)
+        self.assertFalse(restored.crash_ok)
+
+    def test_restore_rejects_a_rehashed_crash_flag(self):
+        model = Model(sma_window=2, trail='0.20')
+        model.update(*bar(0, 10))
+        saved = model.checkpoint()
+        self.assertFalse(saved['body']['crash_ok'])
+        saved['body']['crash_ok'] = True
+        with self.assertRaises(Blocked):
+            Model.restore(_resign(saved))
+
+    def test_restore_rejects_a_rehashed_crash_reversal(self):
+        model = Model(sma_window=2, trail='0.20', crash='0')
+        model.update(*bar(0, 10))
+        model.update(*bar(1, 10))
+        saved = model.checkpoint()
+        self.assertFalse(saved['body']['cap_enter'])
+        saved['body']['cap_enter'] = True
+        with self.assertRaises(Blocked):
+            Model.restore(_resign(saved))
+
+    def test_restore_rejects_a_previous_close_that_is_not_in_the_window(self):
+        model = Model(sma_window=2, trail='0.20', crash='0')
+        model.update(*bar(0, 10))
+        model.update(*bar(1, 11))
+        saved = model.checkpoint()
+        saved['body']['prev_close'] = '9'
+        with self.assertRaises(Blocked):
+            Model.restore(_resign(saved))
 
     def test_equal_close_is_not_bullish(self):
         model = Model(sma_window=2, trail='0.20')

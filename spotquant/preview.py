@@ -84,7 +84,7 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
         'action': 'enter',
         'reason': (
             'crash reversal: 8% down, then 6% up, still at least half under the 400-day high'
-            if model.cap_enter and not model.enter
+            if model.cap_enter
             else 'two confirmed closes cleared the fresh-cross and crash filters'
         ),
         'order': {
@@ -98,22 +98,39 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
 
 
 def _protection(model: Model, quantity: D | None) -> dict:
-    if model.repair and model.repair_peak is not None:
+    # No fill exists yet. A bullish-streak high from before the buy can already
+    # sit through the close, and a crash reversal is a repair hold on the meter
+    # even when the ordinary entry is also armed. Anchor the preview stop on
+    # the completed close; the meter replaces that anchor with the fill open.
+    if quantity is None:
+        peak = model.close
+        if model.cap_enter:
+            note = (
+                'quantity would be the filled base amount; crash-reversal stop starts 28% under '
+                'the completed close and is amended to the fill open'
+            )
+        else:
+            note = (
+                'quantity would be the filled base amount; stop starts 28% under the completed '
+                'close and is amended to the fill open'
+            )
+    elif model.repair and model.repair_peak is not None:
         peak = model.repair_peak
+        note = 'amended STOP_LOSS; 28% under the repair high during a crash reversal'
     elif model.peak is not None:
         peak = model.peak
+        note = 'amended STOP_LOSS; 28% under the bullish-streak high'
     else:
         peak = model.close
+        note = 'amended STOP_LOSS; 28% under the completed close'
     order = {
         'symbol': 'BTCUSDT',
         'side': 'SELL',
         'type': 'STOP_LOSS',
         'stopPrice': _step(model.stop_price(peak), PRICE_STEP),
-        'note': 'amended STOP_LOSS; 28% under the repair high during a crash reversal, otherwise under the bullish-streak high',
+        'note': note,
     }
-    if quantity is None:
-        order['note'] = 'quantity would be the filled base amount; stop is 28% under the high and is amended as that high ratchets'
-    else:
+    if quantity is not None:
         order['quantity'] = _step(quantity, BASE_STEP)
     return order
 

@@ -6,7 +6,7 @@ from decimal import Decimal as D
 import unittest
 
 from spotquant.binance import Binance, ORIGIN, DAY
-from spotquant.types import Blocked
+from spotquant.types import Blocked, Unknown
 
 
 SECRET = 'test-secret'
@@ -125,6 +125,66 @@ class BinanceTests(unittest.TestCase):
         bars = venue.completed_daily(None)
         self.assertEqual(bars, [(ORIGIN, D('110'), D('90'), D('105'))])
         self.assertEqual(venue.completed_daily(ORIGIN), [])
+
+    def test_completed_daily_rejects_a_page_that_does_not_start_at_the_cursor(self):
+        script = Script()
+        script.now = ORIGIN + 5 * DAY
+
+        def opener(method, url, headers):
+            if '/api/v3/klines' in url:
+                row = [ORIGIN + 2 * DAY, '100', '110', '90', '105', '1', 0, '1']
+                return 200, json.dumps([row]).encode()
+            return script(method, url, headers)
+
+        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener, clock=lambda: script.now / 1000)
+        with self.assertRaises(Unknown):
+            venue.completed_daily(None)
+
+    def test_completed_daily_rejects_a_gap_and_keeps_a_contiguous_page(self):
+        script = Script()
+        script.now = ORIGIN + 5 * DAY
+        pages = {'gap': [
+            [ORIGIN, '100', '110', '90', '105', '1', 0, '1'],
+            [ORIGIN + 2 * DAY, '100', '110', '90', '105', '1', 0, '1'],
+        ], 'ok': [
+            [ORIGIN, '100', '110', '90', '105', '1', 0, '1'],
+            [ORIGIN + DAY, '101', '111', '91', '106', '1', 0, '1'],
+        ]}
+
+        def opener(kind):
+            def _open(method, url, headers):
+                if '/api/v3/klines' in url:
+                    return 200, json.dumps(pages[kind]).encode()
+                return script(method, url, headers)
+            return _open
+
+        gapped = Binance(key=KEY, secret=SECRET, environment='live', opener=opener('gap'), clock=lambda: script.now / 1000)
+        with self.assertRaises(Unknown):
+            gapped.completed_daily(None)
+        whole = Binance(key=KEY, secret=SECRET, environment='live', opener=opener('ok'), clock=lambda: script.now / 1000)
+        bars = whole.completed_daily(None)
+        self.assertEqual([item[0] for item in bars], [ORIGIN, ORIGIN + DAY])
+        self.assertEqual(bars[1][3], D('106'))
+
+    def test_missing_spot_permission_blocks_before_the_account_call(self):
+        for allowed in (False, None):
+            script = Script()
+            body = _filters()
+            if allowed is None:
+                del body['symbols'][0]['isSpotTradingAllowed']
+            else:
+                body['symbols'][0]['isSpotTradingAllowed'] = allowed
+
+            def opener(method, url, headers, payload=body, seen=script):
+                if '/api/v3/exchangeInfo' in url:
+                    seen.urls.append(url)
+                    return 200, json.dumps(payload).encode()
+                return seen(method, url, headers)
+
+            venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener, clock=lambda: 1_700_000_000)
+            with self.assertRaises(Blocked):
+                venue.snapshot('10001')
+            self.assertFalse(any('/api/v3/account?' in url for url in script.urls))
 
 
 def self_now():
