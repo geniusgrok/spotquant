@@ -1,6 +1,6 @@
 # 经济重建 2026-09-28
 
-测量器是 `research.rebuild`，账户是 `research.account`。P3 的源码提交见同目录 `P3.json` 的 `source.git_head`。测量时 `spotquant/` 与 `research/` 没有未提交改动。行情文件摘要 `6f545b14a31e596c709fd525b788a2e5e04c8ed31fbe50567e4c33819ea60833`。
+测量器是 `research.rebuild`，账户是 `research.account`。P3 的源码提交 `35afe038afe1b0dfd0b4dd51f6f93dae92cb952a`，测量时 `spotquant/` 与 `research/` 没有未提交改动。行情文件摘要 `6f545b14a31e596c709fd525b788a2e5e04c8ed31fbe50567e4c33819ea60833`。
 
 窗口 2020-01-01 00:00 UTC 至 2026-09-20 00:00 UTC，右端不含。人民币 10,000 元，不追加。现货多头或现金，无杠杆、无做空、无资金费、无强平。费用为现货吃单 0.1%，入场滑点 0.05%，出场滑点 0.05%，止损滑点 0.1%，人民币换汇 0.1% 双向。汇率是 FRED DEXCHUS 的事后估值，不进入决策。
 
