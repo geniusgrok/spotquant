@@ -30,6 +30,27 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
     if snapshot.get('open_orders'):
         raise Unknown('an open order is already on the account; not taking new risk')
     owned = floor_step(owned_btc, BASE_STEP)
+    if owned * price >= MIN_NOTIONAL and model.repair:
+        return {
+            'action': 'hold',
+            'reason': 'crash-reversal hold; protection remains a stop 28% under the running high',
+            'order': None,
+            'protection': _protection(model, owned),
+        }
+    if owned * price >= MIN_NOTIONAL and model.adverse:
+        return {
+            'action': 'exit',
+            'reason': 'completed daily close is at least 4% under the entry fill',
+            'order': {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': _step(owned, BASE_STEP)},
+            'protection': None,
+        }
+    if owned * price >= MIN_NOTIONAL and model.extended:
+        return {
+            'action': 'exit',
+            'reason': 'completed daily close is extended at least 60% above its SMA',
+            'order': {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': _step(owned, BASE_STEP)},
+            'protection': None,
+        }
     if owned * price >= MIN_NOTIONAL and not model.bull:
         return {
             'action': 'exit',
@@ -44,7 +65,8 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
             'order': None,
             'protection': _protection(model, owned),
         }
-    if not model.enter:
+    armed = model.enter or model.cap_enter
+    if not armed:
         if model.sma is None:
             return _flat('SMA warmup is incomplete')
         if not model.bull:
@@ -60,7 +82,11 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
         return _flat('free USDT is below the 5 USDT minimum notional')
     return {
         'action': 'enter',
-        'reason': 'two confirmed closes cleared the fresh-cross and crash filters',
+        'reason': (
+            'crash reversal cleared the 400-day depth filter'
+            if model.cap_enter and not model.enter
+            else 'two confirmed closes cleared the fresh-cross and crash filters'
+        ),
         'order': {
             'symbol': 'BTCUSDT',
             'side': 'BUY',
@@ -72,7 +98,12 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
 
 
 def _protection(model: Model, quantity: D | None) -> dict:
-    peak = model.peak if model.peak is not None else model.close
+    if model.repair and model.repair_peak is not None:
+        peak = model.repair_peak
+    elif model.peak is not None:
+        peak = model.peak
+    else:
+        peak = model.close
     order = {
         'symbol': 'BTCUSDT',
         'side': 'SELL',

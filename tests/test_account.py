@@ -60,6 +60,30 @@ class AccountTests(unittest.TestCase):
         self.assertGreater(result['mdd'], D('0.20'))
         self.assertLess(result['mdd'], D('0.21'))
 
+    def test_a_close_four_percent_under_the_fill_sells_the_next_open(self):
+        spec = [
+            (100, 100, 100, 100),
+            (100, 100, 100, 100),
+            (100, 110, 100, 110),
+            (110, 110, 104, 105),
+            (104, 104, 104, 104),
+            (104, 104, 104, 104),
+        ]
+        series = [
+            (ORIGIN + i * DAY, D(o), D(h), D(l), D(c), D('1'))
+            for i, (o, h, l, c) in enumerate(spec)
+        ]
+        result = simulate(
+            series, fx, start_ms=ORIGIN + 3 * DAY, end_ms=ORIGIN + 6 * DAY,
+            sma_window=2, trail='0.28', confirm=1, fresh=False, crash='0',
+            fee=D('0'), entry_slip=D('0'), exit_slip=D('0'), stop_slip=D('0'), conversion=D('0'),
+        )
+        self.assertEqual(len(result['trades']), 1)
+        trade = result['trades'][0]
+        self.assertEqual(trade['kind'], 'adverse')
+        self.assertEqual(D(trade['entry']), D('110'))
+        self.assertEqual(D(trade['exit']), D('104'))
+
     def test_conversion_haircut_is_applied_twice_on_an_idle_account(self):
         flat = []
         for i in range(12):

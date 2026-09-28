@@ -44,6 +44,30 @@ class PreviewTests(unittest.TestCase):
         with self.assertRaises(Unknown):
             preview(model, _snap(btc='1'), entries_enabled=True, capital_limit=None)
 
+    def test_owned_coins_exit_a_blowoff_while_still_above_the_average(self):
+        model = Model(sma_window=2, trail='0.20', confirm=1, fresh=False, crash='0', cap_drop='0')
+        for index, close in enumerate((10, 10, 40)):
+            model.update(ORIGIN + index * DAY, close, close, close)
+        self.assertTrue(model.extended)
+        decision = preview(
+            model, _snap(btc='1'), entries_enabled=True, capital_limit=None, owned_btc=D('1'),
+        )
+        self.assertEqual(decision['action'], 'exit')
+        self.assertIn('extended', decision['reason'])
+
+    def test_owned_coins_exit_when_the_close_is_four_percent_under_the_fill(self):
+        model = Model(sma_window=2, trail='0.28', confirm=1, fresh=False, crash='0', cap_drop='0')
+        model.update(ORIGIN, 100, 100, 100)
+        model.update(ORIGIN + DAY, 110, 110, 110)
+        model.note_entry(D('100'))
+        model.update(ORIGIN + 2 * DAY, 100, 95, 96)
+        self.assertTrue(model.adverse)
+        decision = preview(
+            model, _snap(btc='1'), entries_enabled=True, capital_limit=None, owned_btc=D('1'),
+        )
+        self.assertEqual(decision['action'], 'exit')
+        self.assertIn('4%', decision['reason'])
+
     def test_owned_coins_exit_when_the_close_is_not_bullish(self):
         model = _model((10, 10, 10, 9))
         self.assertFalse(model.bull)

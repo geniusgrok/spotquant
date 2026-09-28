@@ -1,15 +1,17 @@
 """One continuous spot account. The decision is spotquant.model.Model.
 
-Long or cash, no borrow, no short, no futures. An armed entry buys at the next
-daily open. While long, a 28% stop is modeled on the daily range by taking the
-high before the low. An SMA exit sells at the next open. Costs and the CNY
-conversion are applied here.
+Long or cash, no borrow, no short, no futures. An armed entry, including a
+crash-reversal entry, buys at the next daily open. While long, a 28% stop is
+modeled on the daily range by taking the high before the low. An SMA exit, a
+blow-off exit, or a close 4% under the entry fill sells at the next open. A
+crash-reversal hold ignores those exits until the model hands the trade back.
+Costs and the CNY conversion are applied here.
 """
 from __future__ import annotations
 
 from decimal import Decimal as D
 
-from spotquant.model import CONFIRM, CRASH, DAY, FRESH, HIGH_WINDOW, Model, SMA_WINDOW, TRAIL
+from spotquant.model import ADVERSE, CONFIRM, CRASH, DAY, FRESH, HIGH_WINDOW, Model, SMA_WINDOW, TRAIL
 
 CONVERSION = D('0.001')
 FEE = D('0.001')
@@ -110,7 +112,8 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
              trail: str | None = None, confirm: int | None = None, crash: str | None = None,
              fresh: bool | None = None, high_window: int | None = None,
              fee=FEE, entry_slip=ENTRY_SLIP, exit_slip=EXIT_SLIP, stop_slip=STOP_SLIP,
-             conversion=CONVERSION, skip_entries: set[int] | None = None):
+             conversion=CONVERSION, skip_entries: set[int] | None = None,
+             adverse_stop: str | None = None):
     """Walk daily bars. ``bars`` begin at the model origin and are contiguous."""
     model = Model(
         SMA_WINDOW if sma_window is None else sma_window,
@@ -119,6 +122,7 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
         CRASH if crash is None else crash,
         HIGH_WINDOW if high_window is None else high_window,
         FRESH if fresh is None else fresh,
+        adverse_stop=ADVERSE if adverse_stop is None else adverse_stop,
     )
     book = Book(fx, start_ms, fee=fee, entry_slip=entry_slip, exit_slip=exit_slip,
                 stop_slip=stop_slip, conversion=conversion)
@@ -129,12 +133,22 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
     for open_ms, open_, high, low, close, _quote in bars:
         bull_prev = model.bull
         enter_prev = model.enter
+        extend_prev = model.extended
+        cap_prev = model.cap_enter
+        repair_prev = model.repair
+        adverse_prev = model.adverse
         if open_ms >= end_ms:
             break
         in_window = open_ms >= start_ms
         exited = False
-        if in_window and book.btc > 0 and not bull_prev:
-            book.sell(open_, open_ms, 'sma', book.exit_slip)
+        if in_window and book.btc > 0 and not repair_prev and (adverse_prev or extend_prev or not bull_prev):
+            if adverse_prev:
+                kind = 'adverse'
+            elif extend_prev:
+                kind = 'extend'
+            else:
+                kind = 'sma'
+            book.sell(open_, open_ms, kind, book.exit_slip)
             book.mark(book.usdt, open_ms, adverse=True)
             model.note_exit()
             exited = True
@@ -144,13 +158,17 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
                 model.note_exit()
         if in_window and book.btc == 0 and not exited:
             book.mark(book.usdt, open_ms, adverse=True)
-            if enter_prev and open_ms not in skip_entries:
+            armed = enter_prev or cap_prev
+            if armed and open_ms not in skip_entries:
                 book.buy(open_, open_ms)
                 book.peak_high = open_
+                model.note_entry(book._entry_px)
+                if cap_prev:
+                    model.note_cap_entry()
                 exited = _trail(book, model, open_ms, open_, high, low)
                 if exited:
                     model.note_exit()
-            elif enter_prev and open_ms in skip_entries:
+            elif armed and open_ms in skip_entries:
                 skipped += 1
         model.update(open_ms, high, low, close)
         if in_window:
@@ -179,5 +197,12 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
         'confirm': model.confirm,
         'crash': format(model.crash, 'f'),
         'fresh': model.fresh,
+        'extend': format(model.extend, 'f'),
+        'cap_drop': format(model.cap_drop, 'f'),
+        'cap_bounce': format(model.cap_bounce, 'f'),
+        'cap_depth': format(model.cap_depth, 'f'),
+        'cap_hand': format(model.cap_hand, 'f'),
+        'cap_window': model.cap_window,
+        'adverse_stop': format(model.adverse_stop, 'f'),
         'years': years,
     }
