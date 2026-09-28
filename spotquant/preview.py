@@ -3,15 +3,14 @@ from __future__ import annotations
 
 from decimal import Decimal as D
 
-from .model import TRAIL, Model
+from .model import Model
 from .types import Unknown, floor_step
 
 MIN_NOTIONAL = D('5')
 QUOTE_STEP = D('0.01')
 BASE_STEP = D('0.00001')
 MIN_QTY = D('0.00001')
-# Binance spot trailingDelta is in bips. 20% == 2000, which is the venue maximum.
-TRAILING_DELTA_BIPS = int(TRAIL * 10_000)
+PRICE_STEP = D('0.01')
 
 
 def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limit: D | None,
@@ -41,14 +40,16 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
     if owned * price >= MIN_NOTIONAL and model.bull:
         return {
             'action': 'hold',
-            'reason': 'still above the SMA; protection would remain a 20% trailingDelta',
+            'reason': 'still above the SMA; protection would remain a stop 28% under the running high',
             'order': None,
-            'protection': _protection(owned),
+            'protection': _protection(model, owned),
         }
-    if not model.bull:
-        return _flat('completed daily close is not above its SMA')
-    if model.sma is None:
-        return _flat('SMA warmup is incomplete')
+    if not model.enter:
+        if model.sma is None:
+            return _flat('SMA warmup is incomplete')
+        if not model.bull:
+            return _flat('completed daily close is not above its SMA')
+        return _flat('entry is not armed: confirmation, fresh cross, or the crash filter')
     if not entries_enabled:
         return _flat('cold start: no completed daily close after the first checkpoint')
     spend = D(snapshot['usdt_free'])
@@ -59,31 +60,31 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
         return _flat('free USDT is below the 5 USDT minimum notional')
     return {
         'action': 'enter',
-        'reason': 'a completed close after go-live is above its SMA and the account is flat',
+        'reason': 'two confirmed closes cleared the fresh-cross and crash filters',
         'order': {
             'symbol': 'BTCUSDT',
             'side': 'BUY',
             'type': 'MARKET',
             'quoteOrderQty': _step(spend, QUOTE_STEP),
         },
-        'protection': {
-            'symbol': 'BTCUSDT',
-            'side': 'SELL',
-            'type': 'STOP_LOSS',
-            'trailingDelta': TRAILING_DELTA_BIPS,
-            'note': 'quantity would be the filled base amount, which this preview does not assume',
-        },
+        'protection': _protection(model, None),
     }
 
 
-def _protection(quantity: D) -> dict:
-    return {
+def _protection(model: Model, quantity: D | None) -> dict:
+    peak = model.peak if model.peak is not None else model.close
+    order = {
         'symbol': 'BTCUSDT',
         'side': 'SELL',
         'type': 'STOP_LOSS',
-        'trailingDelta': TRAILING_DELTA_BIPS,
-        'quantity': _step(quantity, BASE_STEP),
+        'stopPrice': _step(model.stop_price(peak), PRICE_STEP),
+        'note': 'amended as the daily high ratchets; 28% is wider than trailingDelta',
     }
+    if quantity is None:
+        order['note'] = 'quantity would be the filled base amount; stop is amended as the high ratchets'
+    else:
+        order['quantity'] = _step(quantity, BASE_STEP)
+    return order
 
 
 def _step(value: D, step: D) -> str:

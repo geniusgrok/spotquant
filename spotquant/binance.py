@@ -146,16 +146,15 @@ class Binance:
         lot = filters.get('LOT_SIZE') or {}
         price = filters.get('PRICE_FILTER') or {}
         notional = filters.get('NOTIONAL') or filters.get('MIN_NOTIONAL') or {}
-        trailing = filters.get('TRAILING_DELTA') or {}
         if (number(lot.get('stepSize', '0'), 'step') != D('0.00001')
                 or number(price.get('tickSize', '0'), 'tick') != D('0.01')):
             raise Blocked('BTCUSDT tick or step no longer matches the researched filters')
         minimum = notional.get('minNotional')
         if number(minimum or '0', 'minNotional') != D('5'):
             raise Blocked('BTCUSDT minimum notional is no longer 5 USDT')
-        below = trailing.get('maxTrailingBelowDelta')
-        if below is None or int(below) < 2000:
-            raise Blocked('BTCUSDT cannot rest a 20% trailingDelta')
+        types = symbol.get('orderTypes') or []
+        if 'STOP_LOSS' not in types or 'MARKET' not in types:
+            raise Blocked('BTCUSDT spot cannot rest the researched market and stop orders')
 
     def _today_open(self) -> int:
         now = self._timestamp()

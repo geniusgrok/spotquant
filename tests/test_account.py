@@ -42,6 +42,7 @@ class AccountTests(unittest.TestCase):
     def test_entry_is_delayed_until_the_next_open_and_trail_exits(self):
         result = simulate(
             bars(), fx, start_ms=START, end_ms=END, sma_window=3, trail='0.20',
+            confirm=1, fresh=False, crash='0',
             fee=D('0.001'), entry_slip=D('0'), exit_slip=D('0'), stop_slip=D('0'), conversion=D('0'),
         )
         self.assertEqual(len(result['trades']), 1)

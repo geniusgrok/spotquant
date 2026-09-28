@@ -1,16 +1,15 @@
 """One continuous spot account. The decision is spotquant.model.Model.
 
-Long or cash, no borrow, no short, no futures. A bullish completed daily close
-buys at the next daily open. While long, a continuous trailing stop (the spot
-``trailingDelta`` order, at most 20%) is modeled on the daily range by taking
-the high before the low. The SMA exit sells at the next open and cancels that
-trail. Costs and the CNY conversion are applied here.
+Long or cash, no borrow, no short, no futures. An armed entry buys at the next
+daily open. While long, a 28% stop is modeled on the daily range by taking the
+high before the low. An SMA exit sells at the next open. Costs and the CNY
+conversion are applied here.
 """
 from __future__ import annotations
 
 from decimal import Decimal as D
 
-from spotquant.model import DAY, Model
+from spotquant.model import CONFIRM, CRASH, DAY, FRESH, HIGH_WINDOW, Model, SMA_WINDOW, TRAIL
 
 CONVERSION = D('0.001')
 FEE = D('0.001')
@@ -107,11 +106,20 @@ def _trail(book: Book, model: Model, open_ms: int, open_: D, high: D, low: D) ->
     return False
 
 
-def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int, trail: str,
+def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = None,
+             trail: str | None = None, confirm: int | None = None, crash: str | None = None,
+             fresh: bool | None = None, high_window: int | None = None,
              fee=FEE, entry_slip=ENTRY_SLIP, exit_slip=EXIT_SLIP, stop_slip=STOP_SLIP,
              conversion=CONVERSION, skip_entries: set[int] | None = None):
     """Walk daily bars. ``bars`` begin at the model origin and are contiguous."""
-    model = Model(sma_window, trail)
+    model = Model(
+        SMA_WINDOW if sma_window is None else sma_window,
+        TRAIL if trail is None else trail,
+        CONFIRM if confirm is None else confirm,
+        CRASH if crash is None else crash,
+        HIGH_WINDOW if high_window is None else high_window,
+        FRESH if fresh is None else fresh,
+    )
     book = Book(fx, start_ms, fee=fee, entry_slip=entry_slip, exit_slip=exit_slip,
                 stop_slip=stop_slip, conversion=conversion)
     book.mark(book.usdt, start_ms, adverse=True)
@@ -120,6 +128,7 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int, trail: st
     skipped = 0
     for open_ms, open_, high, low, close, _quote in bars:
         bull_prev = model.bull
+        enter_prev = model.enter
         if open_ms >= end_ms:
             break
         in_window = open_ms >= start_ms
@@ -127,16 +136,21 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int, trail: st
         if in_window and book.btc > 0 and not bull_prev:
             book.sell(open_, open_ms, 'sma', book.exit_slip)
             book.mark(book.usdt, open_ms, adverse=True)
+            model.note_exit()
             exited = True
         elif in_window and book.btc > 0:
             exited = _trail(book, model, open_ms, open_, high, low)
+            if exited:
+                model.note_exit()
         if in_window and book.btc == 0 and not exited:
             book.mark(book.usdt, open_ms, adverse=True)
-            if bull_prev and open_ms not in skip_entries:
+            if enter_prev and open_ms not in skip_entries:
                 book.buy(open_, open_ms)
                 book.peak_high = open_
                 exited = _trail(book, model, open_ms, open_, high, low)
-            elif bull_prev and open_ms in skip_entries:
+                if exited:
+                    model.note_exit()
+            elif enter_prev and open_ms in skip_entries:
                 skipped += 1
         model.update(open_ms, high, low, close)
         if in_window:
@@ -160,7 +174,10 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int, trail: st
         'position_btc': book.btc,
         'skipped_entries': skipped,
         'daily_cny': daily,
-        'sma_window': sma_window,
-        'trail': str(trail),
+        'sma_window': model.sma_window,
+        'trail': format(model.trail, 'f'),
+        'confirm': model.confirm,
+        'crash': format(model.crash, 'f'),
+        'fresh': model.fresh,
         'years': years,
     }

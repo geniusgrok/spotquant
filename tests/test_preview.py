@@ -8,7 +8,7 @@ from spotquant.types import Unknown
 
 
 def _model(closes):
-    model = Model(sma_window=3, trail='0.20')
+    model = Model(sma_window=3, trail='0.20', confirm=1, fresh=False, crash='0')
     for index, close in enumerate(closes):
         model.update(ORIGIN + index * DAY, close, close, close)
     return model
@@ -29,14 +29,15 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(decision['action'], 'flat')
         self.assertIsNone(decision['order'])
 
-    def test_fresh_bull_close_previews_a_market_buy_and_twenty_percent_trail(self):
+    def test_fresh_bull_close_previews_a_market_buy_and_a_stop_price(self):
         model = _model((10, 10, 10, 12))
         decision = preview(model, _snap('1000.019'), entries_enabled=True, capital_limit=D('100'))
         self.assertEqual(decision['action'], 'enter')
         self.assertEqual(decision['order']['quoteOrderQty'], '100.00')
         self.assertEqual(decision['order']['side'], 'BUY')
-        self.assertEqual(decision['protection']['trailingDelta'], 2000)
+        self.assertEqual(decision['protection']['stopPrice'], '9.60')
         self.assertNotIn('quantity', decision['protection'])
+        self.assertNotIn('trailingDelta', decision['protection'])
 
     def test_external_btc_is_unknown(self):
         model = _model((10, 10, 10, 12))

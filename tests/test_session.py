@@ -52,8 +52,8 @@ def bars(count, close):
 
 
 class SessionTests(unittest.TestCase):
-    def test_cold_start_then_a_new_bullish_close_previews_entry(self):
-        venue = Venue(bars(40, 100))
+    def test_cold_start_then_two_bullish_closes_preview_entry(self):
+        venue = Venue(bars(252, 100))
         with tempfile.TemporaryDirectory() as directory:
             config = Config('10001', directory, session_seconds=2, poll_seconds=1)
             first = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
@@ -62,15 +62,18 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(first['write_attempted'], False)
             self.assertEqual(first['pending_intents'], 0)
             self.assertGreaterEqual(first['cycles'], 1)
-            venue.bars.append((ORIGIN + 40 * DAY, D(200), D(180), D(200)))
+            venue.bars.append((ORIGIN + 252 * DAY, D(200), D(180), D(200)))
             second = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-        self.assertEqual(second['model_preview']['action'], 'enter')
-        self.assertEqual(second['model_preview']['order']['side'], 'BUY')
-        self.assertEqual(second['qualification'], 'NOT_QUALIFIED')
+            self.assertEqual(second['model_preview']['action'], 'flat')
+            venue.bars.append((ORIGIN + 253 * DAY, D(210), D(190), D(210)))
+            third = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        self.assertEqual(third['model_preview']['action'], 'enter')
+        self.assertEqual(third['model_preview']['order']['side'], 'BUY')
+        self.assertEqual(third['qualification'], 'NOT_QUALIFIED')
         self.assertEqual(venue.orders_sent, 0)
 
     def test_external_btc_stops_the_observation(self):
-        venue = Venue(bars(40, 100))
+        venue = Venue(bars(252, 100))
         venue.snapshot = lambda uid: {
             'account_uid': uid, 'btc': D('1'), 'usdt_free': D('1000'),
             'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',

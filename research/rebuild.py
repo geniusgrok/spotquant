@@ -1,7 +1,9 @@
 """Economic meter for the spot account.
 
-The default trial uses ``spotquant.model`` constants. ``--grid`` measures the
-registered SMA/trail family on the same window and writes ``frontier.json``.
+The default trial uses ``spotquant.model`` constants: SMA 40, two confirmed
+closes, a fresh cross, the 252-day crash filter, and a 28% stop. ``--grid``
+sweeps SMA window and trail under those other constants and writes
+``hold-grid.json``. It does not replace the earlier ``frontier.json`` record.
 Partial runs are not written into the evidence directory.
 """
 from __future__ import annotations
@@ -19,7 +21,7 @@ from research.account import (
 )
 from research.fx import BASIS as FX_BASIS, DatedFX
 from research.market import file_digest, load_daily
-from spotquant.model import SMA_WINDOW, TRAIL
+from spotquant.model import CONFIRM, CRASH, FRESH, HIGH_WINDOW, SMA_WINDOW, TRAIL
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'evidence' / 'rebuild-20260928'
@@ -86,6 +88,11 @@ def _public(result: dict, name: str, extra: dict) -> dict:
         'skipped_entries': result['skipped_entries'],
         'sma_window': result['sma_window'],
         'trail': result['trail'],
+        'confirm': result['confirm'],
+        'crash': result['crash'],
+        'fresh': result['fresh'],
+        'high_window': HIGH_WINDOW,
+        'stop_order': 'STOP_LOSS stopPrice, amended as the daily high ratchets',
         'targets': {'cagr_minimum_inclusive': '1', 'mdd_maximum_inclusive': '0.30'},
         'targets_met': result['cagr'] >= 1 and result['mdd'] <= D('0.30'),
         'fee': extra.get('fee', format(FEE, 'f')),
@@ -95,8 +102,8 @@ def _public(result: dict, name: str, extra: dict) -> dict:
         'conversion': format(CONVERSION, 'f'),
         'fx': FX_BASIS,
         'qualification': 'NOT_QUALIFIED',
-        'economic_qualification': 'NOT_MET',
     }
+    out['economic_qualification'] = 'MET' if out['targets_met'] else 'NOT_MET'
     out.update(extra)
     return out
 
@@ -140,7 +147,7 @@ def block_set(bars) -> set[int]:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Spot account rebuild on daily Binance klines')
-    parser.add_argument('name', nargs='?', default='P1')
+    parser.add_argument('name', nargs='?', default='P2')
     parser.add_argument('--market', default='/tmp/spotquant-market/klines')
     parser.add_argument('--sma', type=int, default=SMA_WINDOW)
     parser.add_argument('--trail', default=format(TRAIL, 'f'))
@@ -176,7 +183,8 @@ def main(argv=None):
                 public.pop('daily_close_cny', None)
                 public.pop('trade_list', None)
                 rows.append({key: public[key] for key in (
-                    'trial', 'sma_window', 'trail', 'final_cny', 'cost_net_cagr', 'continuous_mdd',
+                    'trial', 'sma_window', 'trail', 'confirm', 'crash', 'fresh',
+                    'final_cny', 'cost_net_cagr', 'continuous_mdd',
                     'mdd_at', 'trades', 'wins', 'targets_met', 'fees_usdt')})
                 print(public['trial'], round(public['cost_net_cagr'] * 100, 2),
                       round(float(public['continuous_mdd']) * 100, 2), public['final_cny'], flush=True)
@@ -186,27 +194,29 @@ def main(argv=None):
 
         best = max(rows, key=rank)
         feasible = [row for row in rows if row['targets_met']]
-        # 2000 bips is the Binance spot trailingDelta maximum.
-        placeable = [row for row in rows if D(row['trail']) <= D('0.20')]
         payload = {
             'source': identity,
             'market_sha256': market_hash,
-            'rule': ('highest final CNY among rows with targets_met; if none, '
-                     'highest final CNY among trailingDelta-placeable trails (<=0.20). '
-                     'best_final is the highest terminal CNY with no placeability filter'),
+            'rule': ('diagnostic SMA x trail sweep under the current confirm, fresh-cross, '
+                     'and crash-filter constants. Not the P1 frontier. '
+                     'best_final is the highest terminal CNY. Promotion still requires both targets.'),
             'best_final': best['trial'],
             'best_feasible': None if not feasible else max(feasible, key=rank)['trial'],
-            'best_placeable': None if not placeable else max(placeable, key=rank)['trial'],
-            'default': {'sma_window': SMA_WINDOW, 'trail': format(TRAIL, 'f')},
+            'default': {
+                'sma_window': SMA_WINDOW,
+                'trail': format(TRAIL, 'f'),
+                'confirm': CONFIRM,
+                'crash': format(CRASH, 'f'),
+                'fresh': FRESH,
+            },
             'rows': rows,
         }
-        (out_dir / 'frontier.json').write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
-        print(json.dumps({key: payload[key] for key in ('best_final', 'best_feasible', 'best_placeable', 'default')}))
+        (out_dir / 'hold-grid.json').write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
+        print(json.dumps({key: payload[key] for key in ('best_final', 'best_feasible', 'default')}))
         return 0
     public = run_once(bars, fx, args.name, sma=args.sma, trail=args.trail, **kwargs)
     public['source'] = identity
     public['market_sha256'] = market_hash
-    public['economic_qualification'] = 'MET' if public['targets_met'] else 'NOT_MET'
     (out_dir / f'{args.name}.json').write_text(json.dumps(public, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({key: public[key] for key in (
         'trial', 'final_cny', 'cost_net_cagr', 'continuous_mdd', 'trades', 'targets_met',

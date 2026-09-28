@@ -21,6 +21,7 @@ def _filters():
             'baseAsset': 'BTC',
             'quoteAsset': 'USDT',
             'isSpotTradingAllowed': True,
+            'orderTypes': ['LIMIT', 'MARKET', 'STOP_LOSS', 'STOP_LOSS_LIMIT', 'TAKE_PROFIT', 'TAKE_PROFIT_LIMIT'],
             'filters': [
                 {'filterType': 'PRICE_FILTER', 'tickSize': '0.01000000'},
                 {'filterType': 'LOT_SIZE', 'stepSize': '0.00001000', 'minQty': '0.00001000'},
@@ -100,9 +101,18 @@ class BinanceTests(unittest.TestCase):
             venue.place_order(symbol='BTCUSDT')
         self.assertEqual(calls, [])
 
-    def test_trailing_delta_below_twenty_percent_blocks(self):
-        script = Script(trailing=1000)
-        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=script, clock=lambda: 1_700_000_000)
+    def test_missing_stop_loss_blocks_before_the_account_call(self):
+        script = Script()
+        body = _filters()
+        body['symbols'][0]['orderTypes'] = ['LIMIT', 'MARKET']
+
+        def opener(method, url, headers):
+            if '/api/v3/exchangeInfo' in url:
+                script.urls.append(url)
+                return 200, json.dumps(body).encode()
+            return script(method, url, headers)
+
+        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener, clock=lambda: 1_700_000_000)
         with self.assertRaises(Blocked):
             venue.snapshot('10001')
         self.assertFalse(any('/api/v3/account?' in url for url in script.urls))
