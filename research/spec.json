@@ -37,9 +37,9 @@
     "meter_is_not_the_live_session": true,
     "session_seconds_default": 300,
     "poll_seconds_default": 5,
-    "entry_preview": "MARKET buy by quoteOrderQty on the next open after an ordinary entry or a crash reversal; not submitted",
+    "entry_preview": "MARKET buy by quoteOrderQty on the next open after an ordinary entry or a crash reversal. When both are armed the preview is the crash reversal, because that fill is a repair hold. Not submitted",
     "exit_preview": "MARKET sell on the next open after a blow-off, an adverse close, or a close that is no longer above the SMA. A repair hold does not sell for those reasons.",
-    "protection_preview": "STOP_LOSS sell whose stopPrice is 28% under the repair high during repair, otherwise under the bullish-streak high; not submitted. That peak is not the meter's fill-open peak.",
+    "protection_preview": "STOP_LOSS sell. An entry preview, before the fill, uses a stopPrice 28% under the completed close. During repair the stop is 28% under the repair high. Any other hold uses the bullish-streak high. Not submitted. The meter peak starts at the fill open.",
     "cold_start": "checkpoint the reconstructed daily history and do not buy a regime that is already bullish",
     "execute": "blocked before config, credentials, and network because qualification is NOT_QUALIFIED"
   },

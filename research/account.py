@@ -7,7 +7,11 @@ peak starts at the fill open. An SMA exit, a blow-off exit, or a close 4% or
 more under the entry fill sells at the next open. When those exits share an
 open, the recorded kind is ``adverse``, then ``extend``, then ``sma``. A
 crash-reversal hold ignores all three until the model hands the trade back.
-Costs and the CNY conversion are applied here.
+Costs and the CNY conversion are applied here. Open, high, low, and flat
+cash marks inside a bar use that bar's 00:00 UTC timestamp. The stored daily
+curve and the final mark use the last millisecond of the UTC day, so a 17:00
+DEXCHUS print applies to the close curve on its date and to the drawdown path
+from the next open. Fills do not depend on the rate.
 """
 from __future__ import annotations
 

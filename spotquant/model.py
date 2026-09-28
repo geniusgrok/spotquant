@@ -13,10 +13,12 @@ position sells the next open when a completed close is 4% or more under its
 entry fill. There is no same-day re-entry.
 Protection is a stop 28% under the running high. That is wider than Binance
 spot trailingDelta (2000 bips), so the preview amends a STOP_LOSS price.
-During repair the preview high is the high since the repair fill. Otherwise
-it is the high of the bullish streak, which can start before the fill. The
-economic meter starts its peak at the fill open and walks each daily range
-high-before-low.
+An entry preview has no fill yet, so its stop is 28% under the completed
+close and is amended to the fill open. During repair the preview high is the
+high since the repair fill. Any other hold uses the bullish-streak high,
+which can start before the fill. The economic meter starts its peak at the
+fill open and walks each daily range high-before-low. When a crash reversal
+and an ordinary entry are both true, the fill is still a repair hold.
 """
 from __future__ import annotations
 
@@ -140,6 +142,39 @@ class Model:
         self.repair = True
         self.adverse = False
 
+    def _view_sma(self):
+        if self.close is None or len(self.closes) < self.sma_window:
+            return None, False
+        window = list(self.closes)[-self.sma_window:]
+        sma = sum(window, D(0)) / self.sma_window
+        return sma, self.close > sma
+
+    def _view_crash_ok(self):
+        if self.crash == 0:
+            return True
+        if self.close is None or len(self.closes) < self.high_window:
+            return False
+        highest = max(list(self.closes)[-self.high_window:])
+        return self.close >= highest * (D(1) - self.crash)
+
+    def _view_cap_high(self):
+        if len(self.closes) < self.cap_window:
+            return None
+        return max(list(self.closes)[-self.cap_window:])
+
+    def _view_cap_enter(self, cap_high):
+        if (cap_high is None or self.close is None or self.cap_drop <= 0 or self.cap_bounce <= 0
+                or self.prev_close is None or self.older_close is None
+                or self.older_close <= 0 or self.prev_close <= 0):
+            return False
+        yday = self.prev_close / self.older_close
+        today = self.close / self.prev_close
+        return bool(
+            yday <= D(1) - self.cap_drop
+            and today >= D(1) + self.cap_bounce
+            and self.close <= cap_high * (D(1) - self.cap_depth)
+        )
+
     def update(self, open_time: int, high, low, close) -> bool:
         """Consume one completed daily bar. Returns whether the close is bullish."""
         if type(open_time) is not int:
@@ -159,13 +194,7 @@ class Model:
         self.closes.append(close)
         self.last = open_time
         self.close = close
-        if len(self.closes) < self.sma_window:
-            self.sma = None
-            self.bull = False
-        else:
-            window = list(self.closes)[-self.sma_window:]
-            self.sma = sum(window, D(0)) / self.sma_window
-            self.bull = close > self.sma
+        self.sma, self.bull = self._view_sma()
         if self.bull:
             self.streak += 1
             self.peak = high if self.peak is None else max(self.peak, high)
@@ -173,30 +202,12 @@ class Model:
             self.streak = 0
             self.need_reset = False
             self.peak = None
-        if self.crash == 0:
-            self.crash_ok = True
-        elif len(self.closes) < self.high_window:
-            self.crash_ok = False
-        else:
-            highest = max(list(self.closes)[-self.high_window:])
-            self.crash_ok = close >= highest * (D(1) - self.crash)
+        self.crash_ok = self._view_crash_ok()
         self.extended = bool(
             self.extend > 0 and self.sma is not None and close >= self.sma * (D(1) + self.extend)
         )
-        cap_high = None
-        if len(self.closes) >= self.cap_window:
-            cap_high = max(list(self.closes)[-self.cap_window:])
-        self.cap_enter = False
-        if (self.cap_drop > 0 and self.cap_bounce > 0 and cap_high is not None
-                and self.prev_close is not None and self.older_close is not None
-                and self.older_close > 0 and self.prev_close > 0):
-            yday = self.prev_close / self.older_close
-            today = close / self.prev_close
-            self.cap_enter = bool(
-                yday <= D(1) - self.cap_drop
-                and today >= D(1) + self.cap_bounce
-                and close <= cap_high * (D(1) - self.cap_depth)
-            )
+        cap_high = self._view_cap_high()
+        self.cap_enter = self._view_cap_enter(cap_high)
         if self.repair:
             self.repair_peak = high if self.repair_peak is None else max(self.repair_peak, high)
             handed = (
@@ -320,6 +331,42 @@ class Model:
             )
             if bool(model.extended) != expected_ext:
                 raise ValueError('extend flag')
+            if (model.last is None) != (len(model.closes) == 0):
+                raise ValueError('clock')
+            if len(model.closes) >= 2:
+                if model.prev_close != model.closes[-2]:
+                    raise ValueError('closes')
+            elif model.prev_close is not None:
+                raise ValueError('closes')
+            if len(model.closes) >= 3:
+                if model.older_close != model.closes[-3]:
+                    raise ValueError('closes')
+            elif model.older_close is not None:
+                raise ValueError('closes')
+            if model.prev_close is not None and (not model.prev_close.is_finite() or model.prev_close <= 0):
+                raise ValueError('closes')
+            if model.older_close is not None and (not model.older_close.is_finite() or model.older_close <= 0):
+                raise ValueError('closes')
+            expected_sma, _expected_bull = model._view_sma()
+            if (expected_sma is None) != (model.sma is None) or (
+                    expected_sma is not None and model.sma != expected_sma):
+                raise ValueError('sma')
+            if bool(model.crash_ok) != bool(model._view_crash_ok()):
+                raise ValueError('crash flag')
+            if bool(model.cap_enter) != bool(model._view_cap_enter(model._view_cap_high())):
+                raise ValueError('cap flag')
+            if model.bull:
+                if (model.close is None or model.streak < 1 or model.peak is None
+                        or not model.peak.is_finite() or model.peak < model.close):
+                    raise ValueError('streak')
+            elif model.streak != 0 or model.peak is not None or model.need_reset:
+                raise ValueError('streak')
+            if model.repair:
+                if (model.close is None or model.repair_peak is None or not model.repair_peak.is_finite()
+                        or model.repair_peak < model.close):
+                    raise ValueError('repair')
+            elif model.repair_peak is not None:
+                raise ValueError('repair')
             return model
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             raise Blocked('model checkpoint does not match this origin') from exc

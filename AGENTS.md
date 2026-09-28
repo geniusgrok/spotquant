@@ -8,7 +8,7 @@ One manually triggered Binance BTCUSDT spot system. Long or USDT cash. No borrow
 
 Economic window: 2020-01-01T00:00:00Z through 2026-09-20T00:00:00Z exclusive. Start CNY 10,000, no additions. Targets: cost-net CAGR >= 100% and continuous max drawdown <= 30%. P3 measures 101.67% CAGR and 29.15% MDD, so its economic qualification is `MET`. Do not move the window, lower the targets, add leverage, or present a lookahead path as the account result. A stress that misses a target does not change the base trial.
 
-The meter is `python -m research.rebuild`. It is a daily-bar account, not a replay of `session.run` through historical order books. The live session only previews. Say that difference when quoting numbers.
+The meter is `python -m research.rebuild`. It is a daily-bar account, not a replay of `session.run` through historical order books. The live session only previews. Say that difference when quoting numbers. An entry preview stops 28% under the completed close. When a crash reversal and an ordinary entry are both armed, the preview is the repair entry. Path marks use 00:00 UTC; the daily curve and the final mark use the end of that UTC day.
 
 ## Execution safety
 
