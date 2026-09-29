@@ -1,6 +1,6 @@
 # 均线分仓重建 2026-09-29
 
-测量器是 `python3 -m research.rebuild --suite`，账户是 `research.account.simulate_sleeves`。源码提交 `12fb7c742849c00b7cc2368507afe27f45ad9d66`，测量时 `spotquant/` 与 `research/` 没有未提交改动。BTCUSDT 行情文件摘要 `6f545b14a31e596c709fd525b788a2e5e04c8ed31fbe50567e4c33819ea60833`，ETHUSDT 摘要在各 ETH 文件里。窗口、费用、汇率和估值口径与 P3 完全相同：2020-01-01 至 2026-09-20 不含右端，人民币 10,000 元，现货吃单 0.1%，入场与出场滑点 0.05%，止损滑点 0.1%，换汇 0.1% 双向，DEXCHUS 事后估值。目标没有改：成本后年化不低于 100%，连续最大回撤不超过 30%。
+测量器是 `python3 -m research.rebuild --suite`，账户是 `research.account.simulate_sleeves`。源码提交 `dd25cfa5d98de139356b0d91ec0c7d2132edfd5e`，测量时 `spotquant/` 与 `research/` 没有未提交改动。BTCUSDT 行情文件摘要 `6f545b14a31e596c709fd525b788a2e5e04c8ed31fbe50567e4c33819ea60833`，ETHUSDT 摘要在各 ETH 文件里。窗口、费用、汇率和估值口径与 P3 完全相同：2020-01-01 至 2026-09-20 不含右端，人民币 10,000 元，现货吃单 0.1%，入场与出场滑点 0.05%，止损滑点 0.1%，换汇 0.1% 双向，DEXCHUS 事后估值。目标没有改：成本后年化不低于 100%，连续最大回撤不超过 30%。
 
 ## 为什么做这一版
 

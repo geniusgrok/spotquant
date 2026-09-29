@@ -76,7 +76,7 @@ The meter's numbers come from `python3 -m research.rebuild` on a clean committed
 
 ## P4 results
 
-Recorded in `evidence/sleeves-20260929/` from source `12fb7c742849c00b7cc2368507afe27f45ad9d66`; the summary is `RESULT.md` there, and `neighbors.json` holds the single-sleeve SMA 30, 35, 40, 45, and 50 accounts.
+Recorded in `evidence/sleeves-20260929/` from source `dd25cfa5d98de139356b0d91ec0c7d2132edfd5e`; the summary is `RESULT.md` there, and `neighbors.json` holds the single-sleeve SMA 30, 35, 40, 45, and 50 accounts.
 
 - Plateau centers: blow-off 0.61, reversal drop 0.11, bounce 0.07, depth 0.50, handoff 0.11. Together they print the P3 trades.
 - The 4% close is included: all three tested distances pass step 4.
