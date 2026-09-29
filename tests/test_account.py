@@ -56,6 +56,17 @@ class AccountTests(unittest.TestCase):
         self.assertGreater(result['fees'], D(0))
         self.assertLess(result['final_cny'], D('10000'))
         self.assertGreater(result['mdd'], D('0.30'))
+        self.assertFalse(result['pending_stop_exit'])
+
+    def test_a_stop_due_on_the_bar_after_the_window_stays_visible(self):
+        result = simulate(
+            bars(), fx, start_ms=START, end_ms=ORIGIN + 8 * DAY, sma_window=3, trail='0.20',
+            confirm=1, fresh=False, crash='0',
+            fee=D(0), entry_slip=D(0), exit_slip=D(0), stop_slip=D(0), conversion=D(0),
+        )
+        self.assertTrue(result['pending_stop_exit'])
+        self.assertGreater(result['position_btc'], D(0))
+        self.assertEqual(result['trades'], [])
 
     def test_a_close_four_percent_under_the_fill_sells_the_next_open(self):
         spec = [
