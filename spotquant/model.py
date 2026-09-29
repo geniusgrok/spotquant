@@ -14,11 +14,13 @@ entry fill. There is no same-day re-entry.
 Protection is a stop 28% under the running high. That is wider than Binance
 spot trailingDelta (2000 bips), so the preview amends a STOP_LOSS price.
 An entry preview has no fill yet, so its stop is 28% under the completed
-close and is amended to the fill open. During repair the preview high is the
-high since the repair fill. Any other hold uses the bullish-streak high,
-which can start before the fill. The economic meter starts its peak at the
-fill open and walks each daily range high-before-low. When a crash reversal
-and an ordinary entry are both true, the fill is still a repair hold.
+close. A hold with no recorded fill uses that same close: the bullish-streak
+high can start before the fill and is not the stop. Once a fill is recorded,
+the preview peak starts at the fill and then takes later highs. During repair
+the preview high is the high since that fill. The economic meter starts its
+peak at the fill open and walks each daily range high-before-low. When a
+crash reversal and an ordinary entry are both true, the fill is still a
+repair hold. The 4% close sells the next open; it is not a fill at the 4% price.
 """
 from __future__ import annotations
 
@@ -123,6 +125,9 @@ class Model:
         self.crash_ok = crash == 0
         self.peak: D | None = None
         self.repair_peak: D | None = None
+        # Runtime only. Not part of the checkpoint, so a price-only history
+        # stays valid when this process restarts.
+        self.position_peak: D | None = None
 
     def note_exit(self) -> None:
         """A fill closed the position. The next entry waits for a fresh cross."""
@@ -131,11 +136,30 @@ class Model:
         self.repair_peak = None
         self.entry = None
         self.adverse = False
+        self.position_peak = None
 
-    def note_entry(self, price) -> None:
-        """Record the fill. A later close 4% or more under it exits a non-repair position."""
+    def note_entry(self, price, peak=None) -> None:
+        """Record the fill. A later close 4% or more under it exits a non-repair position.
+
+        ``peak`` is the fill price the preview stop starts from. The meter does
+        not pass it; the book keeps its own peak from the fill open.
+        """
         self.entry = number(price, 'entry', positive=True)
         self.adverse = False
+        if peak is not None:
+            self.position_peak = number(peak, 'peak', positive=True)
+
+    def note_flat(self) -> None:
+        """A followed position is gone. A bullish regime still needs a fresh cross."""
+        self.position_peak = None
+        if not (self.bull and self.fresh):
+            return
+        self.need_reset = True
+        self.repair = False
+        self.repair_peak = None
+        self.entry = None
+        self.adverse = False
+        self.enter = False
 
     def note_cap_entry(self) -> None:
         """This fill is a crash reversal. Keep only the 28% stop until the handoff close."""
@@ -221,6 +245,8 @@ class Model:
             not self.repair and self.entry is not None and self.adverse_stop > 0
             and close <= self.entry * (D(1) - self.adverse_stop)
         )
+        if self.position_peak is not None:
+            self.position_peak = max(self.position_peak, high)
         blocked = self.fresh and self.need_reset
         self.enter = self.streak >= self.confirm and self.crash_ok and not blocked
         return self.bull
