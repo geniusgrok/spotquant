@@ -1,9 +1,9 @@
 {
   "rule": "one sleeve at a time under the P4 constants: how much the P3 result depends on SMA 40",
   "source": {
-    "git_head": "3ac2c663128c6a8b423ccb9a29fc7476735ee1cf",
+    "git_head": "12fb7c742849c00b7cc2368507afe27f45ad9d66",
     "dirty": false,
-    "python_sources_sha256": "761a358e88affd8ed306d3579a4a913f3d88039ae1877c4f68859a1e26e0def0"
+    "python_sources_sha256": "e729fc0e4f99a9715b2a915358fa34b4110ddbf25e089a88d1416713df7c833c"
   },
   "results": {
     "30": {

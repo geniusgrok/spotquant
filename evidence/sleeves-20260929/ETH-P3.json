@@ -22,6 +22,8 @@
   "fees_usdt": "1971.184689189122478566764813",
   "trades": 34,
   "wins": 12,
+  "gross_wins": 12,
+  "wins_are": "net of the fee on both sides",
   "exit_kinds": {
     "adverse": 13,
     "sma": 18,
@@ -42,7 +44,7 @@
   "high_window": 252,
   "trail": "0.28",
   "cap_window": 400,
-  "stop_order": "STOP_LOSS stopPrice, amended as the daily high ratchets",
+  "stop_order": "STOP_LOSS stopPrice from the prior peak; a completed bar tightens it for the next day",
   "targets": {
     "cagr_minimum_inclusive": "1",
     "mdd_maximum_inclusive": "0.30"
@@ -339,9 +341,9 @@
     }
   ],
   "source": {
-    "git_head": "3ac2c663128c6a8b423ccb9a29fc7476735ee1cf",
+    "git_head": "12fb7c742849c00b7cc2368507afe27f45ad9d66",
     "dirty": false,
-    "python_sources_sha256": "761a358e88affd8ed306d3579a4a913f3d88039ae1877c4f68859a1e26e0def0"
+    "python_sources_sha256": "e729fc0e4f99a9715b2a915358fa34b4110ddbf25e089a88d1416713df7c833c"
   },
   "market_sha256": "7ad2dfa577ea48ca8f15825472761d18a01e90da8d4af1d34df14902e4728833"
 }

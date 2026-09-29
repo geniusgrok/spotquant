@@ -9,6 +9,6 @@ Spotquant is a read-only Binance BTCUSDT spot research path. No futures and no l
 - P3 (single SMA 40, the earlier default) remains the in-sample upper bound: final CNY 1,113,885, CAGR 101.67%, MDD 29.15% on 2020-03-16, 37 trades. P2 remains 75.19% and 33.10%. P1 remains 58.06% and 52.77%.
 - ETHUSDT with the frozen rules: P4 71.00% and 42.75%, single SMA 40 76.31% and 43.42%. Forward ledger from 2026-09-20: no fill through 2026-09-27.
 - Economic qualification: `NOT_MET` on P4. Native qualification: `NOT_QUALIFIED`. Execute stays blocked for that native reason.
-- Evidence: `evidence/sleeves-20260929/` (P4, source `3ac2c663128c6a8b423ccb9a29fc7476735ee1cf`), `evidence/forward/`, and the unchanged `evidence/rebuild-20260928/` (P1, P2, P3, frontier).
+- Evidence: `evidence/sleeves-20260929/` (P4, source `12fb7c742849c00b7cc2368507afe27f45ad9d66`), `evidence/forward/`, and the unchanged `evidence/rebuild-20260928/` (P1, P2, P3, frontier).
 
 Everything was chosen on the full sample. Do not move the window or lower the targets.

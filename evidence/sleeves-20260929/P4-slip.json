@@ -23,7 +23,9 @@
   "mdd_at": "2024-10-13T00:00:00Z",
   "fees_usdt": "3119.883074864797512616415299",
   "trades": 123,
-  "wins": 43,
+  "wins": 42,
+  "gross_wins": 43,
+  "wins_are": "net of the fee on both sides",
   "exit_kinds": {
     "sma": 97,
     "extend": 2,
@@ -48,7 +50,7 @@
   "high_window": 252,
   "trail": "0.28",
   "cap_window": 400,
-  "stop_order": "STOP_LOSS stopPrice, amended as the daily high ratchets",
+  "stop_order": "STOP_LOSS stopPrice from the prior peak; a completed bar tightens it for the next day",
   "targets": {
     "cagr_minimum_inclusive": "1",
     "mdd_maximum_inclusive": "0.30"
@@ -1057,9 +1059,9 @@
     }
   ],
   "source": {
-    "git_head": "3ac2c663128c6a8b423ccb9a29fc7476735ee1cf",
+    "git_head": "12fb7c742849c00b7cc2368507afe27f45ad9d66",
     "dirty": false,
-    "python_sources_sha256": "761a358e88affd8ed306d3579a4a913f3d88039ae1877c4f68859a1e26e0def0"
+    "python_sources_sha256": "e729fc0e4f99a9715b2a915358fa34b4110ddbf25e089a88d1416713df7c833c"
   },
   "market_sha256": "6f545b14a31e596c709fd525b788a2e5e04c8ed31fbe50567e4c33819ea60833"
 }
