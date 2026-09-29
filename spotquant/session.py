@@ -4,11 +4,14 @@ from __future__ import annotations
 import time
 from decimal import Decimal as D
 
-from .follow import advance, reconcile
+from .follow import advance, apply_day, day_open, unexplained
 from .model import DAY, SLEEVES, Model
 from .preview import MIN_NOTIONAL, portfolio
 from .state import State
 from .types import Blocked, Unknown
+
+# A state directory written by another rule is not reused over an open position.
+RULE = '2026-09-29-static-stop'
 
 # Dropped when a cycle fails so the previous success cannot be read as current.
 STALE_REPORT_FIELDS = (
@@ -19,7 +22,8 @@ STALE_REPORT_FIELDS = (
 RECORDED_LIMITS = {
     'adverse_exit': 'next_open',
     'adverse_loss_capped': False,
-    'path_convention': 'high_before_low',
+    'path_convention': 'stop_from_prior_peak',
+    'execution': 'not_implemented',
     'selection': 'full_sample',
     'sleeves': list(SLEEVES),
     'economic_targets_met': False,
@@ -33,33 +37,31 @@ def clear_stale(report: dict) -> None:
 
 
 def cycle(venue, state: State, config) -> dict:
-    models, enabled, steps = _sync_models(state, venue)
-    snapshot = venue.snapshot(config.account_uid)
+    """Derive the whole observation in memory, then commit it once.
+
+    A failed snapshot or preview leaves the previous checkpoint and positions
+    where they were, so the next cycle replays the same bars onto both.
+    """
     if getattr(venue, 'environment', None) != config.environment:
         raise Blocked('exchange adapter and configuration differ in environment')
     if getattr(venue, 'capital_limit', None) != config.capital_limit:
         raise Blocked('exchange adapter and configuration differ in capital limit')
-    positions, follows, ledger = _positions(state, venue, models, snapshot, steps)
-    # The model checkpoint already moved to the new bar. Keep the positions in step with it
-    # even when the preview below fails.
-    state.set_many({
-        'positions': {str(window): item for window, item in positions.items()},
-        'follows': {str(window): item for window, item in follows.items()},
-        'ledger_ms': ledger,
-    })
+    models, enabled, fresh = _load_models(state, venue)
+    snapshot = venue.snapshot(config.account_uid)
+    positions, follows, accounted, exit_through = _fold(state, venue, models, snapshot)
+    if fresh:
+        for model in models.values():
+            model.note_flat()
+        enabled = False
     views = {}
     owned = {}
     for window, model in models.items():
         views[window], owned[window] = _view(model, positions[window])
     decision = portfolio(
         views, owned, snapshot, entries_enabled=enabled, capital_limit=config.capital_limit)
-    follows = _follow_after(decision, models, positions, follows)
-    state.set_many({
-        'positions': {str(window): item for window, item in positions.items()},
-        'follows': {str(window): item for window, item in follows.items()},
-        'ledger_ms': ledger,
-    })
+    follows = _follow_after(decision, models, positions, follows, exit_through)
     reference = models[SLEEVES[0]]
+    _commit(state, models, positions, follows, accounted, exit_through, fresh, reference.last)
     return {
         'status': 'read_only',
         'model_preview': decision,
@@ -93,8 +95,12 @@ def run(config, venue, *, monotonic=time.monotonic, wait=time.sleep, stopping=la
         'sleeves': list(SLEEVES),
         'stop_reason': 'deadline',
         'session_started_at_ms': int(venue.clock() * 1000),
+        'session_ended': False,
+        'stops_while_down': 'this process does not amend a stop while it is stopped',
         'recorded_limits': dict(RECORDED_LIMITS),
     }
+    if hasattr(venue, '_stop'):
+        venue._stop = lambda: monotonic() >= deadline
     with State(config.state_dir, config.scope) as state:
         try:
             while monotonic() < deadline and not stopping():
@@ -113,6 +119,9 @@ def run(config, venue, *, monotonic=time.monotonic, wait=time.sleep, stopping=la
                     )
                     report['errors'] = (report['errors'] + [{'cycle': report['cycles'], 'reason': str(exc)}])[-10:]
                     clear_stale(report)
+                    if 'rate limit' in str(exc) or 'session deadline' in str(exc):
+                        report['stop_reason'] = 'rate_limit' if 'rate limit' in str(exc) else 'deadline'
+                        break
                 except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
                     report.update(status='unknown', reason='Invalid observation or state', observation_current=False)
                     report['errors'] = (report['errors'] + [{
@@ -135,15 +144,24 @@ def run(config, venue, *, monotonic=time.monotonic, wait=time.sleep, stopping=la
             report['elapsed_seconds'] = max(0, monotonic() - started)
             report['pending_intents'] = len(state.pending())
             report['write_attempted'] = False
+            report['session_ended'] = True
+            report['observation_current'] = False
+            report['stops_while_down'] = 'this process does not amend a stop while it is stopped'
             state.report(report)
     return report
 
 
-def _sync_models(state: State, venue):
+def _load_models(state: State, venue):
+    state._staged = None
     saved = state.get('models')
     anchor = state.get('entries_after')
     if saved is not None and set(saved) != {str(window) for window in SLEEVES}:
         raise Blocked('state was written for other sleeves; use a new state directory')
+    stored_rule = state.get('rule')
+    positions = state.get('positions') or {}
+    held = any(positions.get(str(window)) is not None for window in SLEEVES)
+    if held and stored_rule != RULE:
+        raise Blocked('state was written for another rule; a new directory is not a flat account')
     models = {}
     for window in SLEEVES:
         models[window] = Model(window) if saved is None else Model.restore(saved[str(window)])
@@ -152,73 +170,125 @@ def _sync_models(state: State, venue):
     last = models[SLEEVES[0]].last
     if saved is not None and any(model.last != last for model in models.values()):
         raise Blocked('sleeve checkpoints are not on the same daily bar')
-    steps = {window: [] for window in SLEEVES}
     for open_ms, high, low, close in venue.completed_daily(None if saved is None else last):
-        for window, model in models.items():
-            model.update(open_ms, high, low, close)
-            steps[window].append({
-                'open_ms': open_ms,
-                'high': high,
-                'close': close,
-                'bull': model.bull,
-                'cap_high': model._view_cap_high(),
-            })
-    last = models[SLEEVES[0]].last
-    if last is None:
+        _consume_bar(state, venue, models, open_ms, high, low, close)
+    if models[SLEEVES[0]].last is None:
         raise Unknown('no completed daily bar is available to anchor the model')
-    checkpoints = {str(window): model.checkpoint() for window, model in models.items()}
-    if saved is None:
-        state.set_many({'models': checkpoints, 'entries_after': last})
-        return models, False, steps
-    state.set('models', checkpoints)
-    enabled = anchor is not None and last > int(anchor)
-    return models, enabled, steps
+    enabled = saved is not None and anchor is not None and models[SLEEVES[0]].last > int(anchor)
+    return models, enabled, saved is None
 
 
-def _positions(state: State, venue, models: dict, snapshot: dict, steps: dict):
-    stored = state.get('positions') or {}
-    pending = state.get('follows') or {}
-    positions = {window: stored.get(str(window)) for window in models}
-    follows = {window: pending.get(str(window)) for window in models}
-    ledger = state.get('ledger_ms')
-    balance = D(snapshot['btc'])
-    mark = models[SLEEVES[0]].close
+def _consume_bar(state, venue, models, open_ms, high, low, close):
+    """Fills of this day land on the model as it stood before the bar."""
+    positions, follows, accounted, exit_through = _stored(state)
+    trades = _trades_for(venue, positions, follows, accounted)
+    positions, follows, accounted, closed = apply_day(
+        models, positions, follows, accounted, open_ms, trades, lambda: venue.completed_daily(None),
+    )
+    for window in closed:
+        exit_through[str(window)] = models[window].last
+    step_models = {}
+    for window, model in models.items():
+        model.update(open_ms, high, low, close)
+        step_models[window] = {
+            'open_ms': open_ms,
+            'high': high,
+            'low': low,
+            'close': close,
+            'bull': model.bull,
+            'cap_high': model._view_cap_high(),
+        }
     for window, item in positions.items():
         if item is not None:
-            for step in steps[window]:
-                item = advance(item, step, models[window])
-            positions[window] = item
-    active = any(item is not None for item in positions.values()) or any(follows.values())
-    if not active:
-        if mark is not None and balance * mark >= MIN_NOTIONAL:
-            raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
-        return positions, follows, ledger
-    starts = [int(item['first_ms']) for item in positions.values() if item is not None]
-    starts += [int(item['signal_ms']) + DAY for item in follows.values() if item and item.get('signal_ms') is not None]
-    trades = venue.trades(min(starts))
-    flagged = {
-        window for window, item in positions.items()
-        if item is not None and not item['repair']
-        and (item['adverse'] or models[window].extended or not models[window].bull)
-    }
-    positions, follows, ledger, closed = reconcile(
-        positions, follows, trades, balance, mark, ledger, flagged,
-        lambda: venue.completed_daily(None),
-    )
-    if closed:
+            positions[window] = advance(item, step_models[window], models[window])
+    _stash(state, positions, follows, accounted, exit_through)
+
+
+def _fold(state, venue, models, snapshot):
+    """Fills after the last completed bar, then the balance check.
+
+    Bars themselves are consumed in ``_load_models`` so a sell and the later
+    bars of one catch-up see the model in time order. The stash is memory on
+    the state object until ``_commit``.
+    """
+    positions, follows, accounted, exit_through = _stored(state)
+    trades = _trades_for(venue, positions, follows, accounted)
+    last = models[SLEEVES[0]].last
+    later = sorted({
+        day_open(trade['time']) for trade in trades
+        if trade['id'] not in accounted and (last is None or day_open(trade['time']) > last)
+    })
+    for open_ms in later:
+        positions, follows, accounted, closed = apply_day(
+            models, positions, follows, accounted, open_ms, trades, lambda: venue.completed_daily(None),
+        )
         for window in closed:
-            models[window].note_flat()
-        state.set('models', {str(window): model.checkpoint() for window, model in models.items()})
-    return positions, follows, ledger
+            exit_through[str(window)] = models[window].last
+    mark = models[SLEEVES[0]].close
+    if any(item is not None for item in positions.values()) or any(follows.values()):
+        unexplained(positions, D(snapshot['btc']), mark)
+    elif mark is not None and D(snapshot['btc']) * mark >= MIN_NOTIONAL:
+        raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
+    _stash(state, positions, follows, accounted, exit_through)
+    return positions, follows, accounted, exit_through
 
 
-def _follow_after(decision: dict, models: dict, positions: dict, follows: dict) -> dict:
-    """Remember a previewed entry until its fill is recorded or the signal is gone."""
+def _stored(state: State):
+    staged = getattr(state, '_staged', None)
+    if staged is not None:
+        return staged
+    positions = {window: (state.get('positions') or {}).get(str(window)) for window in SLEEVES}
+    follows = {window: (state.get('follows') or {}).get(str(window)) for window in SLEEVES}
+    accounted = set(state.get('accounted_ids') or [])
+    exit_through = dict(state.get('exit_through') or {})
+    return positions, follows, accounted, exit_through
+
+
+def _stash(state, positions, follows, accounted, exit_through):
+    state._staged = (positions, follows, accounted, exit_through)
+
+
+def _trades_for(venue, positions, follows, accounted):
+    starts = [int(item['first_ms']) for item in positions.values() if item is not None]
+    starts += [
+        int(item['signal_ms']) + DAY for item in follows.values()
+        if item and item.get('signal_ms') is not None
+    ]
+    if not starts and not accounted:
+        return []
+    since = min(starts) if starts else 0
+    return list(venue.trades(since))
+
+
+def _commit(state, models, positions, follows, accounted, exit_through, fresh, last):
+    values = {
+        'rule': RULE,
+        'models': {str(window): model.checkpoint() for window, model in models.items()},
+        'positions': {str(window): item for window, item in positions.items()},
+        'follows': {str(window): item for window, item in follows.items()},
+        'accounted_ids': sorted(accounted),
+        'exit_through': {str(key): value for key, value in exit_through.items()},
+    }
+    if fresh:
+        values['entries_after'] = last
+    state.set_many(values)
+    state._staged = None
+
+
+def _follow_after(decision: dict, models: dict, positions: dict, follows: dict, exit_through: dict) -> dict:
+    """Remember a previewed entry until its fill is recorded or the signal is gone.
+
+    A sleeve that exited on the current completed bar does not arm again until
+    a newer bar. That is the same-day rule the meter already uses.
+    """
     out = {}
     for window, model in models.items():
         sleeve = decision['sleeves'].get(str(window), {})
         follow = follows.get(window)
+        blocked = exit_through.get(str(window))
         if positions[window] is not None:
+            out[window] = None
+        elif blocked is not None and model.last is not None and model.last <= int(blocked):
             out[window] = None
         elif sleeve.get('action') == 'enter' and model.last is not None:
             if follow and follow.get('signal_ms') is not None:
@@ -241,6 +311,7 @@ def _view(model: Model, position):
     view.repair = bool(position['repair'])
     view.repair_peak = None if position['repair_peak'] is None else D(position['repair_peak'])
     view.adverse = bool(position['adverse'])
+    view.protection = position.get('protection', 'resting')
     return view, D(position['qty'])
 
 

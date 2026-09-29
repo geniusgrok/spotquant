@@ -108,10 +108,12 @@ class SessionTests(unittest.TestCase):
                 'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
             }
             venue.trade_rows = [{
+                'id': 1,
                 'time': ORIGIN + 254 * DAY + 60_000,
                 'qty': D('0.6'),
                 'quote': D('66.6'),
                 'buyer': True,
+                'order_id': 1,
                 'commission': D('0'),
                 'commission_asset': 'BNB',
             }]
@@ -121,8 +123,8 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(held['followed_sleeves'], [30, 40, 50])
             self.assertEqual(held['model_preview']['action'], 'hold')
             # 111 * 0.72 for each sleeve. The bullish-streak high is not the anchor.
-            self.assertEqual(
-                [item['stopPrice'] for item in held['model_preview']['protections']], ['79.92'] * 3)
+            self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '79.92')
+            self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [30, 40, 50])
             self.assertIn('since the fill', held['model_preview']['sleeves']['40']['reason'])
             venue.snapshot = lambda uid: (_ for _ in ()).throw(Unknown('feed broke'))
             failed = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
@@ -147,8 +149,8 @@ class SessionTests(unittest.TestCase):
             'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
         }
         venue.trade_rows = [{
-            'time': ORIGIN + 254 * DAY + 60_000, 'qty': D('0.6'), 'quote': D('66.6'),
-            'buyer': True, 'commission': D('0'), 'commission_asset': 'BNB',
+            'id': 1, 'time': ORIGIN + 254 * DAY + 60_000, 'qty': D('0.6'), 'quote': D('66.6'),
+            'buyer': True, 'order_id': 1, 'commission': D('0'), 'commission_asset': 'BNB',
         }]
         held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertTrue(held['followed_position'])
@@ -176,8 +178,8 @@ class SessionTests(unittest.TestCase):
                 'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
             }
             venue.trade_rows.append({
-                'time': ORIGIN + 255 * DAY + 60_000, 'qty': D('0.6'), 'quote': D('30'),
-                'buyer': False, 'commission': D('0'), 'commission_asset': 'BNB',
+                'id': 2, 'time': ORIGIN + 255 * DAY + 60_000, 'qty': D('0.6'), 'quote': D('30'),
+                'buyer': False, 'order_id': 2, 'commission': D('0'), 'commission_asset': 'BNB',
             })
             report = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(report['status'], 'read_only')
@@ -188,7 +190,7 @@ class SessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config, venue = self._held_venue(directory)
             healthy = venue.snapshot
-            venue.snapshot = lambda uid: dict(healthy(uid), open_orders=1)
+            venue.snapshot = lambda uid: (_ for _ in ()).throw(Unknown('feed broke'))
             venue.bars.append((ORIGIN + 254 * DAY, D(111), D(111), D(111)))
             venue.bars.append((ORIGIN + 255 * DAY, D(150), D(111), D(150)))
             failed = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
@@ -197,8 +199,8 @@ class SessionTests(unittest.TestCase):
             held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(held['status'], 'read_only')
         # The 150 high arrived while the preview failed and still lifts the stop: 150 * 0.72.
-        self.assertEqual(
-            [item['stopPrice'] for item in held['model_preview']['protections']], ['108.00'] * 3)
+        self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '108.00')
+        self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [30, 40, 50])
 
 
 if __name__ == '__main__':

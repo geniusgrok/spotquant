@@ -110,7 +110,7 @@ def _public(result: dict, name: str, extra: dict) -> dict:
         'cap_hand': result['cap_hand'],
         'cap_window': result['cap_window'],
         'adverse_stop': result['adverse_stop'],
-        'stop_order': 'STOP_LOSS stopPrice, amended as the daily high ratchets',
+        'stop_order': 'STOP_LOSS stopPrice from the prior peak; a completed bar tightens it for the next day',
         'targets': {'cagr_minimum_inclusive': '1', 'mdd_maximum_inclusive': '0.30'},
         'targets_met': result['cagr'] >= 1 and result['mdd'] <= D('0.30'),
         'fee': extra.get('fee', format(FEE, 'f')),
@@ -154,6 +154,15 @@ def skip_set(bars, ratio: D = D('0.2')) -> set[int]:
     return chosen
 
 
+def outage_set(bars) -> set[int]:
+    """21 daily opens from 2020-03-01. That month holds the recorded P3 drawdown.
+
+    The set is a fixed calendar, not a search for a large effect.
+    """
+    start = 1583020800000
+    return {open_ms for open_ms, *_rest in bars if start <= open_ms < start + 21 * 86_400_000}
+
+
 def block_set(bars) -> set[int]:
     """One seeded 21-day window of daily opens, derived without looking at prices."""
     opens = [open_ms for open_ms, *_rest in bars if START_MS <= open_ms < END_MS]
@@ -185,9 +194,17 @@ def model_constants(adverse=None) -> dict:
     }
 
 
+def _win_counts(trades, fee) -> tuple[int, int]:
+    """Gross is exit price above entry price. Net charges the fee on both sides."""
+    threshold = D(1) / (D(1) - D(fee)) ** 2
+    gross = sum(1 for item in trades if D(item['exit']) > D(item['entry']))
+    net = sum(1 for item in trades if D(item['exit']) / D(item['entry']) > threshold)
+    return gross, net
+
+
 def _public_sleeves(result: dict, name: str, symbol: str, windows, constants: dict, extra: dict) -> dict:
     trades = result['trades']
-    wins = sum(1 for item in trades if D(item['exit']) > D(item['entry']))
+    gross_wins, wins = _win_counts(trades, extra.get('fee', FEE))
     kinds = {}
     per_sleeve = {}
     for item in trades:
@@ -216,6 +233,8 @@ def _public_sleeves(result: dict, name: str, symbol: str, windows, constants: di
         'fees_usdt': format(result['fees'], 'f'),
         'trades': len(trades),
         'wins': wins,
+        'gross_wins': gross_wins,
+        'wins_are': 'net of the fee on both sides',
         'exit_kinds': kinds,
         'trades_per_sleeve': per_sleeve,
         'position_base': format(result['position_btc'], 'f'),
@@ -227,7 +246,7 @@ def _public_sleeves(result: dict, name: str, symbol: str, windows, constants: di
         'high_window': HIGH_WINDOW,
         'trail': format(TRAIL, 'f'),
         'cap_window': CAP_WINDOW,
-        'stop_order': 'STOP_LOSS stopPrice, amended as the daily high ratchets',
+        'stop_order': 'STOP_LOSS stopPrice from the prior peak; a completed bar tightens it for the next day',
         'targets': {'cagr_minimum_inclusive': '1', 'mdd_maximum_inclusive': '0.30'},
         'targets_met': result['cagr'] >= 1 and result['mdd'] <= D('0.30'),
         'conversion': format(CONVERSION, 'f'),
@@ -329,9 +348,22 @@ def run_suite(bars, eth_bars, fx, out_dir: Path, identity: dict, hashes: dict, s
         'P4-slip': {'exit_slip': D('0.001'), 'stop_slip': D('0.002')},
         'P4-skip': {'skip_entries': sequences['skip']},
         'P4-block': {'skip_entries': sequences['block']},
+        'P4-outage': {'frozen': sequences['outage']},
     }
     for name, kwargs in stresses.items():
-        summary[name] = line(save(run_sleeves(bars, fx, name, series=False, **kwargs), name))
+        public = run_sleeves(bars, fx, name, series=False, **kwargs)
+        if name == 'P4-block':
+            public['note'] = (
+                'Skips new buys only. skipped_entries of 0 means the seeded 21 days contained '
+                'no armed open. It is not a 21-day loss of the position or the stop.'
+            )
+        if name == 'P4-outage':
+            public['note'] = (
+                '21 days from 2020-03-01 freeze signal exits and stop tightening. '
+                'The resting stop from before the window still trades. '
+                'The date is the month of the recorded P3 drawdown, not a searched window.'
+            )
+        summary[name] = line(save(public, name))
     variants = {}
     for label, distance in (('P4-adv000', '0'), ('P4-adv035', '0.035'), ('P4-adv040', '0.04'), ('P4-adv045', '0.045')):
         public = save(run_sleeves(bars, fx, label, adverse=distance, series=False), label)
@@ -412,7 +444,7 @@ def main(argv=None):
     out_dir = Path(args.out) if args.out else OUT
     if out_dir.resolve() == OLD_OUT.resolve():
         raise SystemExit('refusing to write into the P1, P2, and P3 evidence directory')
-    bars = load_daily(Path(args.market), END_MS + 86_400_000, args.symbol)
+    bars = load_daily(Path(args.market), END_MS + 86_400_000, args.symbol, require_through=END_MS)
     fx = DatedFX()
     identity = source_identity()
     market_hash = file_digest(Path(args.market), args.symbol)
@@ -426,11 +458,11 @@ def main(argv=None):
         'stop_slip': D(args.stop_slip),
     }
     if args.suite:
-        eth_bars = load_daily(Path(args.eth_market), END_MS + 86_400_000, 'ETHUSDT')
+        eth_bars = load_daily(Path(args.eth_market), END_MS + 86_400_000, 'ETHUSDT', require_through=END_MS)
         payload = run_suite(
             bars, eth_bars, fx, out_dir, identity,
             {'BTCUSDT': market_hash, 'ETHUSDT': file_digest(Path(args.eth_market), 'ETHUSDT')},
-            {'skip': skip_set(bars), 'block': block_set(bars)},
+            {'skip': skip_set(bars), 'block': block_set(bars), 'outage': outage_set(bars)},
         )
         print(json.dumps(payload['decisions'], indent=2))
         for name, item in payload['results'].items():

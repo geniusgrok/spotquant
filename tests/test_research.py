@@ -34,6 +34,8 @@ class ResearchTests(unittest.TestCase):
                 load_daily(root / 'eth', ORIGIN + 10 * DAY, 'BTCUSDT')
             self.assertNotEqual(file_digest(root / 'eth', 'ETHUSDT'), file_digest(root / 'btc', 'BTCUSDT'))
             self.assertEqual(eth[0][1:], (D(10), D(12), D(9), D(11), D(100)))
+            with self.assertRaises(ValueError):
+                load_daily(root / 'eth', ORIGIN + 10 * DAY, 'ETHUSDT', require_through=ORIGIN + 10 * DAY)
 
     def test_the_forward_rules_hash_is_the_one_in_the_spec(self):
         spec = json.loads((ROOT / 'research' / 'spec.json').read_text(encoding='utf-8'))

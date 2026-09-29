@@ -47,18 +47,15 @@ class AccountTests(unittest.TestCase):
         )
         self.assertEqual(len(result['trades']), 1)
         trade = result['trades'][0]
-        self.assertEqual(trade['kind'], 'trail')
+        # The high of 140 tightens the stop only after the low. The close is
+        # already through that new stop, so the sell is the next open, 90.
+        self.assertEqual(trade['kind'], 'stop')
         self.assertEqual(D(trade['entry']), D('110'))
-        # High 140 tightens the stop to 112 before the low at 100.
-        self.assertEqual(D(trade['exit']), D('112'))
+        self.assertEqual(D(trade['exit']), D('90'))
         self.assertEqual(result['position_btc'], D(0))
         self.assertGreater(result['fees'], D(0))
-        # Bought the whole cash balance and sold above the entry, so CNY exceeds the start.
-        self.assertGreater(result['final_cny'], D('10000'))
-        # The same-day high is marked before the stop. Selling 20% under that high
-        # is a continuous drawdown of about 20% plus the exit fee.
-        self.assertGreater(result['mdd'], D('0.20'))
-        self.assertLess(result['mdd'], D('0.21'))
+        self.assertLess(result['final_cny'], D('10000'))
+        self.assertGreater(result['mdd'], D('0.30'))
 
     def test_a_close_four_percent_under_the_fill_sells_the_next_open(self):
         spec = [
@@ -143,6 +140,18 @@ class AccountTests(unittest.TestCase):
         )
         self.assertEqual(result['trades'], [])
         self.assertEqual(result['position_btc'], D(0))
+
+    def test_the_final_cny_mark_enters_the_drawdown(self):
+        def falling(now):
+            return D('1') if now < END - DAY else D('0.5')
+
+        flat = [(ORIGIN + i * DAY, D(100), D(100), D(100), D(100), D(1)) for i in range(12)]
+        result = simulate(
+            flat, falling, start_ms=START, end_ms=END, sma_window=3, trail='0.20',
+            fee=D(0), entry_slip=D(0), exit_slip=D(0), stop_slip=D(0), conversion=D(0),
+        )
+        self.assertEqual(result['final_cny'], D('5000'))
+        self.assertGreater(result['mdd'], D('0.49'))
 
 
 if __name__ == '__main__':

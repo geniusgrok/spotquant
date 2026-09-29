@@ -25,9 +25,11 @@ from spotquant.model import (
     FRESH, HIGH_WINDOW, SLEEVES, TRAIL,
 )
 
-START_MS = 1789862400000  # 2026-09-20T00:00:00Z
+START_MS = 1789862400000  # 2026-09-20T00:00:00Z, the backfill, not a pre-registered sample
+LIVE_START_MS = 1790640000000  # 2026-09-29T00:00:00Z, the first day after this meter's freeze
 INITIAL_USDT = D('10000')
-OUT = ROOT / 'evidence' / 'forward' / 'forward.json'
+BACKFILL = ROOT / 'evidence' / 'forward' / 'forward.json'
+OUT = ROOT / 'evidence' / 'forward' / 'forward-20260929.json'
 SPEC = ROOT / 'research' / 'spec.json'
 
 
@@ -51,6 +53,8 @@ def rules() -> dict:
         'exit_slip': format(EXIT_SLIP, 'f'),
         'stop_slip': format(STOP_SLIP, 'f'),
         'vol_scaling': None,
+        'stop_update': 'prior_peak_then_next_open',
+        'cold_start': 'fresh_cross',
     }
 
 
@@ -61,7 +65,7 @@ def rules_sha256() -> str:
 def ledger(bars) -> dict:
     end_ms = bars[-1][0] + DAY
     result = simulate_sleeves(
-        bars, lambda _now: D(1), start_ms=START_MS, end_ms=end_ms, windows=SLEEVES,
+        bars, lambda _now: D(1), start_ms=LIVE_START_MS, end_ms=end_ms, windows=SLEEVES,
         model_kwargs={
             'extend': EXTEND, 'cap_drop': CAP_DROP, 'cap_bounce': CAP_BOUNCE,
             'cap_depth': CAP_DEPTH, 'cap_hand': CAP_HAND, 'adverse_stop': ADVERSE,
@@ -70,7 +74,7 @@ def ledger(bars) -> dict:
     )
     days = [[iso(day)[:10], format(value, 'f')] for day, value in result['daily_cny']]
     return {
-        'start': iso(START_MS),
+        'start': iso(LIVE_START_MS),
         'through': iso(bars[-1][0])[:10],
         'initial_usdt': format(INITIAL_USDT, 'f'),
         'days': days,
@@ -88,10 +92,23 @@ def build(market: Path, extra: list[Path]) -> dict:
     pinned = spec.get('forward', {}).get('rules_sha256')
     if pinned != rules_sha256():
         raise SystemExit('the rule constants differ from the hash pinned in research/spec.json')
-    bars = load_daily(market, START_MS + 3650 * DAY, 'BTCUSDT', extra)
-    if bars[-1][0] < START_MS:
-        raise SystemExit('no daily file on or after the ledger start')
-    out = ledger(bars)
+    bars = load_daily(market, LIVE_START_MS + 3650 * DAY, 'BTCUSDT', extra)
+    if bars[-1][0] < LIVE_START_MS:
+        out = {
+            'start': iso(LIVE_START_MS),
+            'through': None,
+            'status': 'awaiting_first_bar',
+            'days': [],
+            'trades': [],
+            'final_usdt': format(INITIAL_USDT, 'f'),
+            'return': 0.0,
+            'continuous_mdd': '0',
+            'fees_usdt': '0',
+            'position_by_sleeve': {},
+        }
+    else:
+        out = ledger(bars)
+        out['status'] = 'observing'
     out.update({
         'trial': 'P4-forward',
         'symbol': 'BTCUSDT',
@@ -100,7 +117,8 @@ def build(market: Path, extra: list[Path]) -> dict:
         'rules_sha256': rules_sha256(),
         'cold_start': 'all cash; a regime already bullish at the start waits for a fresh cross',
         'qualification': 'NOT_QUALIFIED',
-        'note': 'A ledger of a few days is not evidence of an edge. It is a record that starts before the result is known.',
+        'note': ('Observation from 2026-09-29. The file evidence/forward/forward.json is the '
+                 '2026-09-20 backfill under the previous meter and is not a pre-registered sample.'),
         'source': source_identity(),
         'market_sha256': file_digest(market, 'BTCUSDT', extra),
     })
@@ -115,6 +133,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     out = build(Path(args.market), [Path(item) for item in args.extra])
     path = Path(args.out)
+    if path.resolve() == BACKFILL.resolve():
+        raise SystemExit('the 2026-09-20 backfill is not rewritten')
     if path.exists():
         previous = json.loads(path.read_text(encoding='utf-8'))
         if out['days'][:len(previous['days'])] != previous['days']:

@@ -49,17 +49,17 @@
     "protection_preview": "One STOP_LOSS sell per held sleeve. An entry preview, before the fill, uses a stopPrice 28% under the completed close. A hold with no recorded fill uses that close. A followed fill starts the stop at the fill. During repair the stop is 28% under the high since that fill. Not submitted. When the distance is outside the sell band and trailingDelta, the preview marks the stop not placeable and does not add a limit price. The meter peak starts at the fill open.",
     "followed_fill": "A later BTC balance is recorded only when the previous preview was an entry and account trades explain the coins. Sleeves previewed on one signal day share the fill equally. A balance drop is recorded only when account sells leave exactly the coins of recorded sleeves. Anything else at or above 5 USDT is unknown.",
     "adverse_exit": "next open; the loss is not capped at 4%",
-    "path_convention": "high_before_low; low-before-high was checked on the single-sleeve P3 book only, where it prints the same account",
+    "path_convention": "stop from the prior completed peak; the bar high tightens the stop for the next day; end-of-day CNY enters the drawdown. Under this timing the registered P3 account and the P4 final CNY, CAGR, and MDD are unchanged",
     "selection": "full_sample",
     "skip_stress_targets_met": false,
-    "cold_start": "checkpoint the reconstructed daily history of every sleeve and do not buy a regime that is already bullish",
+    "cold_start": "the session and the forward ledger both call note_flat at the start: an already bullish regime waits for a fresh cross",
     "execute": "blocked before config, credentials, and network because qualification is NOT_QUALIFIED"
   },
   "economic_qualification": "NOT_MET",
   "qualification": "NOT_QUALIFIED",
   "current_meter": {
     "evidence": "evidence/sleeves-20260929/P4.json",
-    "source": "3ac2c663128c6a8b423ccb9a29fc7476735ee1cf",
+    "source": "12fb7c742849c00b7cc2368507afe27f45ad9d66",
     "final_cny": "490442.4950794574893094706194",
     "cost_net_cagr_percent": "78.49",
     "continuous_mdd_percent": "31.40",
@@ -80,9 +80,11 @@
     "frontier": "evidence/rebuild-20260928/frontier.json"
   },
   "forward": {
-    "ledger": "evidence/forward/forward.json",
-    "start": "2026-09-20T00:00:00Z",
-    "rules_sha256": "11de2e154fc5fd872311b0e804ecf0b342b558c498f939a313204c939022a968",
+    "backfill": "evidence/forward/forward.json",
+    "backfill_span": "2026-09-20 to 2026-09-27 under the previous meter; not a pre-registered forward sample",
+    "ledger": "evidence/forward/forward-20260929.json",
+    "start": "2026-09-29T00:00:00Z",
+    "rules_sha256": "3211be7aa8d252d54082393c48ea6dc036755f221d7546c8fc7aa0491ced4b3e",
     "append_only": true
   }
 }

@@ -20,8 +20,9 @@ close. A hold with no recorded fill uses that same close: the bullish-streak
 high can start before the fill and is not the stop. Once a fill is recorded,
 the preview peak starts at the fill and then takes later highs. During repair
 the preview high is the high since that fill. The economic meter starts its
-peak at the fill open and walks each daily range high-before-low. When a
-crash reversal and an ordinary entry are both true, the fill is still a
+peak at the fill open. The stop in force during a day is the one from the
+prior completed peak; that day's high tightens the stop only for the next
+day. When a crash reversal and an ordinary entry are both true, the fill is still a
 repair hold. The 4% close sells the next open; it is not a fill at the 4% price.
 """
 from __future__ import annotations

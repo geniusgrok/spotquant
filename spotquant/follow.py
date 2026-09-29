@@ -50,14 +50,24 @@ def advance(position: dict, step: dict, model: Model) -> dict:
     if position['through'] is not None and open_ms <= position['through']:
         return position
     high = step['high']
+    low = step.get('low')
     close = step['close']
     peak = D(position['peak'])
     repair = position['repair']
     repair_peak = None if position['repair_peak'] is None else D(position['repair_peak'])
+    prior_stop = peak * (D(1) - model.trail)
+    breached = low is not None and low <= prior_stop
     if _high_counts(open_ms, position['first_ms']):
         peak = max(peak, high)
         if repair and repair_peak is not None:
             repair_peak = max(repair_peak, high)
+    updated_stop = peak * (D(1) - model.trail)
+    if breached:
+        protection = 'breached'
+    elif close <= updated_stop:
+        protection = 'through_close'
+    else:
+        protection = 'resting'
     if repair:
         cap_high = step['cap_high']
         if (step['bull'] and cap_high is not None and model.cap_hand > 0
@@ -75,6 +85,7 @@ def advance(position: dict, step: dict, model: Model) -> dict:
     updated['repair_peak'] = None if repair_peak is None else format(repair_peak, 'f')
     updated['adverse'] = adverse
     updated['through'] = open_ms
+    updated['protection'] = protection
     return updated
 
 
@@ -90,6 +101,7 @@ def replay(bars, *, entry_fill: D, first_ms: int, repair: bool, window: int = SM
         'repair_peak': format(entry_fill, 'f') if repair else None,
         'adverse': False,
         'through': None,
+        'protection': 'resting',
     }
     for open_ms, high, _low, close in bars:
         model.update(open_ms, high, _low, close)
@@ -107,21 +119,29 @@ def normalize_trade(row: dict) -> dict:
     if not isinstance(row, dict):
         raise Unknown('trade row is incomplete')
     try:
-        commission = number(row.get('commission', '0'), 'commission')
+        if 'commission' not in row or 'isBuyer' not in row or 'orderId' not in row:
+            raise Unknown('trade row is incomplete')
+        if type(row['isBuyer']) is not bool:
+            raise Unknown('trade row is incomplete')
+        commission = number(row['commission'], 'commission', nonnegative=True)
         trade_id = int(row['id'])
+        order_id = int(row['orderId'])
         trade_time = int(row['time'])
         qty = number(row['qty'], 'qty', positive=True)
         quote = number(row['quoteQty'], 'quote', positive=True)
         price = number(row['price'], 'price', positive=True)
     except (KeyError, TypeError, ValueError, Blocked) as exc:
         raise Unknown('trade row is incomplete') from exc
+    if commission > 0 and not row.get('commissionAsset'):
+        raise Unknown('trade row is incomplete')
     return {
         'id': trade_id,
+        'order_id': order_id,
         'time': trade_time,
         'qty': qty,
         'quote': quote,
         'price': price,
-        'buyer': row.get('isBuyer') is True,
+        'buyer': row['isBuyer'],
         'commission': commission,
         'commission_asset': row.get('commissionAsset'),
     }
@@ -133,8 +153,15 @@ def _out(trade: dict) -> D:
     return trade['qty'] + commission
 
 
+def _one_order(trades) -> int:
+    orders = {int(trade['order_id']) for trade in trades}
+    if len(orders) != 1:
+        raise Unknown('trades from more than one order have no recorded sleeve; refusing new risk')
+    return orders.pop()
+
+
 def _region_buy(region):
-    """The net buy after the last sell in a cohort's time region, or None."""
+    """The net buy of one order after the last sell, or None when there is no buy."""
     last_sell = None
     for index, trade in enumerate(region):
         if not trade['buyer']:
@@ -143,18 +170,24 @@ def _region_buy(region):
         region = region[last_sell + 1:]
     if not region:
         return None
+    _one_order(region)
     gross = sum((trade['qty'] for trade in region), D(0))
     quote = sum((trade['quote'] for trade in region), D(0))
     net = sum((_base_delta(trade) for trade in region), D(0))
     if gross <= 0 or quote <= 0 or net <= 0:
         raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
-    return {'qty': net, 'entry_fill': quote / gross, 'first_ms': min(trade['time'] for trade in region)}
+    return {
+        'qty': net,
+        'entry_fill': quote / gross,
+        'first_ms': min(trade['time'] for trade in region),
+        'ids': [trade['id'] for trade in region],
+    }
 
 
-def _closed(held: dict, sells: list, sold: D, flagged, tolerance: D):
-    """The sleeves whose coins the sells left. An unflagged tie is unknown."""
-    best_score = None
-    best = []
+def _closed(held: dict, sells: list, sold: D, tolerance: D):
+    """The sleeves whose coins the sells left. Two matches are unknown."""
+    _one_order(sells)
+    matches = []
     for size in range(1, len(held) + 1):
         for group in combinations(sorted(held), size):
             total = sum((D(held[window]['qty']) for window in group), D(0))
@@ -163,82 +196,83 @@ def _closed(held: dict, sells: list, sold: D, flagged, tolerance: D):
             earliest = min(int(held[window]['first_ms']) for window in group)
             if any(trade['time'] < earliest for trade in sells):
                 continue
-            score = sum(1 for window in group if window in flagged)
-            if best_score is None or score > best_score:
-                best_score, best = score, [group]
-            elif score == best_score:
-                best.append(group)
-    if not best:
-        raise Unknown('a sell on the account does not match any recorded sleeve; refusing new risk')
-    if len(best) > 1 and best_score == 0:
-        raise Unknown('a sell on the account fits more than one sleeve; refusing new risk')
-    return list(best[0])
+            matches.append(group)
+    if len(matches) != 1:
+        raise Unknown('a sell on the account does not match one recorded sleeve group; refusing new risk')
+    return list(matches[0])
 
 
-def reconcile(positions: dict, follows: dict, trades, balance: D, mark: D, ledger_ms, flagged, history):
-    """Match the account to the recorded sleeves. Returns positions, follows, ledger_ms, closed.
+def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open_ms: int,
+              trades, history) -> tuple[dict, dict, set, list]:
+    """Apply one UTC day's fills before that day's bar updates the model.
 
-    A sell after the last accounted trade must leave exactly the coins of some recorded
-    sleeves. A buy after a previewed entry is adopted per signal day. Any balance that
-    the recorded sleeves and those buys do not explain, above the minimum notional, is
-    unknown. ``history`` is called only when a cohort is adopted.
+    A sell closes the matching sleeves and consumes their entry signal before any
+    later bar. The same day cannot open a new sleeve. Two orders, or two sleeve
+    groups of the same size, are unknown. Trade ids already accounted are ignored,
+    including a second fill that shares the first fill's millisecond.
     """
     positions = dict(positions)
     follows = dict(follows)
-    trades = sorted(trades, key=lambda trade: (trade['time'], trade.get('id', 0)))
+    accounted = set(accounted)
+    day = [
+        trade for trade in trades
+        if trade['id'] not in accounted and day_open(trade['time']) == open_ms
+    ]
+    day.sort(key=lambda trade: (trade['time'], trade['id']))
     held = {window: item for window, item in positions.items() if item is not None}
     tolerance = BASE_STEP * (len(positions) + 1)
     closed = []
-    if held:
-        floor = min(int(item['first_ms']) for item in held.values())
-        if ledger_ms is not None:
-            floor = max(floor, int(ledger_ms) + 1)
-        sells = [trade for trade in trades if not trade['buyer'] and trade['time'] >= floor]
-        sold = sum((_out(trade) for trade in sells), D(0))
-        if sold > tolerance:
-            closed = _closed(held, sells, sold, flagged, tolerance)
-            for window in closed:
-                positions[window] = None
-                follows[window] = None
-                held.pop(window)
-            ledger_ms = max(trade['time'] for trade in sells)
-    if ledger_ms is not None:
-        # Sells up to the ledger already belong to closed sleeves, not to a later buy.
-        trades = [trade for trade in trades if trade['buyer'] or trade['time'] > int(ledger_ms)]
+    sells = [trade for trade in day if not trade['buyer']]
+    sold = sum((_out(trade) for trade in sells), D(0))
+    if sold > tolerance:
+        if not held:
+            raise Unknown('a sell on the account does not match one recorded sleeve group; refusing new risk')
+        closed = _closed(held, sells, sold, tolerance)
+        for window in closed:
+            models[window].note_flat()
+            positions[window] = None
+            follows[window] = None
+            held.pop(window)
+        accounted.update(trade['id'] for trade in sells)
     active = {
         window: item for window, item in follows.items()
         if positions.get(window) is None and item and item.get('signal_ms') is not None
+        and int(item['signal_ms']) < open_ms
     }
     cohorts = sorted({int(item['signal_ms']) for item in active.values()})
-    adopted = {}
-    for index, signal in enumerate(cohorts):
-        start = signal + DAY
-        end = cohorts[index + 1] + DAY if index + 1 < len(cohorts) else None
-        region = [trade for trade in trades if trade['time'] >= start and (end is None or trade['time'] < end)]
-        found = _region_buy(region)
-        if found is not None:
-            adopted[signal] = found
-    recorded = sum((D(item['qty']) for item in held.values()), D(0))
-    expected = recorded + sum((item['qty'] for item in adopted.values()), D(0))
-    gap = balance - expected
+    buys = [trade for trade in day if trade['buyer'] and trade['id'] not in accounted]
+    if not buys or not cohorts:
+        return positions, follows, accounted, closed
+    # One signal day owns the buys. A second cohort on the same fill day is unknown.
+    if len(cohorts) != 1:
+        raise Unknown('trades from more than one order have no recorded sleeve; refusing new risk')
+    found = _region_buy(buys)
+    if found is None:
+        return positions, follows, accounted, closed
+    group = sorted(window for window, item in active.items() if int(item['signal_ms']) == cohorts[0])
+    bars = history()
+    share = floor_step(found['qty'] / len(group), BASE_STEP)
+    given = D(0)
+    for order, window in enumerate(group):
+        qty = found['qty'] - given if order == len(group) - 1 else share
+        given += qty
+        built = replay(
+            bars, entry_fill=found['entry_fill'], first_ms=found['first_ms'],
+            repair=bool(active[window].get('repair')), window=window,
+        )
+        built['qty'] = format(qty, 'f')
+        positions[window] = built
+        follows[window] = None
+    accounted.update(found['ids'])
+    return positions, follows, accounted, closed
+
+
+def unexplained(positions: dict, balance: D, mark: D) -> None:
+    """A material gap between the recorded sleeves and the balance is unknown."""
+    tolerance = BASE_STEP * (len(positions) + 1)
+    recorded = sum((D(item['qty']) for item in positions.values() if item is not None), D(0))
+    gap = balance - recorded
     if abs(gap) > tolerance and abs(gap) * mark >= MIN_NOTIONAL:
         if gap > 0:
             raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
         raise Unknown('BTC balance does not match the recorded spotquant fills; refusing new risk')
-    if adopted:
-        bars = history()
-    for signal, found in adopted.items():
-        group = sorted(window for window, item in active.items() if int(item['signal_ms']) == signal)
-        share = floor_step(found['qty'] / len(group), BASE_STEP)
-        given = D(0)
-        for order, window in enumerate(group):
-            qty = found['qty'] - given if order == len(group) - 1 else share
-            given += qty
-            built = replay(
-                bars, entry_fill=found['entry_fill'], first_ms=found['first_ms'],
-                repair=bool(active[window].get('repair')), window=window,
-            )
-            built['qty'] = format(qty, 'f')
-            positions[window] = built
-            follows[window] = None
-    return positions, follows, ledger_ms, closed

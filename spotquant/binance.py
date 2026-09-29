@@ -32,16 +32,16 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise Blocked('refusing an HTTP redirect')
 
 
-def _default_opener(method: str, url: str, headers: dict) -> tuple[int, bytes]:
+def _default_opener(method: str, url: str, headers: dict):
     if method != 'GET':
         raise Blocked('spot adapter issues GET requests only')
     request = urllib.request.Request(url, headers=headers, method='GET')
     opener = urllib.request.build_opener(_NoRedirect)
     try:
         with opener.open(request, timeout=10) as response:
-            return response.status, response.read()
+            return response.status, response.read(), dict(response.headers.items())
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read()
+        return exc.code, exc.read(), dict(exc.headers.items())
     except Blocked:
         raise
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -63,9 +63,19 @@ class Binance:
         self._opener = opener or _default_opener
         self._clock = clock or time.time
         self._offset_ms = None
+        self._clock_retried = False
+        self._stop = None
         self.ask_multiplier_down = None
         self.ask_multiplier_up = None
         self.trailing_max_bips = None
+        self.min_price = None
+        self.max_price = None
+        self.min_qty = None
+        self.max_qty = None
+        self.market_min_qty = None
+        self.market_max_qty = None
+        self.market_step = None
+        self.max_notional = None
 
     def clock(self) -> float:
         return self._clock()
@@ -74,38 +84,62 @@ class Binance:
         raise Blocked('spot execution is not qualified; no order request is sent')
 
     def snapshot(self, expected_uid: str) -> dict:
-        """Balances, open-order count, and a UID check. No order payload is kept."""
+        """Balances, open orders, and the UID from the account response. No order is sent."""
         self._filters()
         average = self._get('/api/v3/avgPrice', {'symbol': 'BTCUSDT'}, signed=False)
         account = self._get('/api/v3/account', signed=True)
-        uid_body = self._get('/sapi/v1/account/uid', signed=True)
-        uid = str(uid_body.get('uid', ''))
-        if uid != str(expected_uid):
+        if not isinstance(account, dict) or 'uid' not in account or 'balances' not in account:
+            raise Unknown('account response is missing uid or balances')
+        if not isinstance(account['balances'], list):
+            raise Unknown('account balances are not a list')
+        uid = str(account['uid'])
+        if not uid or uid != str(expected_uid):
             raise Blocked('exchange UID does not match account_uid')
-        orders = self._get('/api/v3/openOrders', {'symbol': 'BTCUSDT'}, signed=True)
-        if not isinstance(orders, list):
+        raw_orders = self._get('/api/v3/openOrders', {'symbol': 'BTCUSDT'}, signed=True)
+        if not isinstance(raw_orders, list):
             raise Unknown('open orders response is not a list')
+        orders = [_order(row) for row in raw_orders]
         btc = D(0)
         usdt_free = D(0)
         usdt_locked = D(0)
-        for row in account.get('balances') or []:
-            asset = row.get('asset')
+        seen = set()
+        for row in account['balances']:
+            if not isinstance(row, dict) or 'asset' not in row or 'free' not in row or 'locked' not in row:
+                raise Unknown('account balance row is incomplete')
+            asset = row['asset']
+            if asset in seen:
+                raise Unknown('account balance row is repeated')
+            seen.add(asset)
+            free = number(row['free'], asset, nonnegative=True)
+            locked = number(row['locked'], asset, nonnegative=True)
             if asset == 'BTC':
-                btc += number(row.get('free', '0'), 'btc') + number(row.get('locked', '0'), 'btc')
+                btc = free + locked
             elif asset == 'USDT':
-                usdt_free += number(row.get('free', '0'), 'usdt')
-                usdt_locked += number(row.get('locked', '0'), 'usdt')
+                usdt_free = free
+                usdt_locked = locked
+        if not isinstance(average, dict) or 'price' not in average:
+            raise Unknown('average price response is incomplete')
         return {
             'account_uid': uid,
             'btc': btc,
             'usdt_free': usdt_free,
             'usdt_locked': usdt_locked,
             'open_orders': len(orders),
+            'orders': orders,
+            'can_trade': account.get('canTrade') is True,
             'environment': self.environment,
-            'avg_price': number(average.get('price'), 'avgPrice', positive=True),
+            'avg_price': number(average['price'], 'avgPrice', positive=True),
             'ask_multiplier_down': self.ask_multiplier_down,
             'ask_multiplier_up': self.ask_multiplier_up,
             'trailing_max_bips': self.trailing_max_bips,
+            'min_price': self.min_price,
+            'max_price': self.max_price,
+            'min_qty': self.min_qty,
+            'max_qty': self.max_qty,
+            'market_min_qty': self.market_min_qty,
+            'market_max_qty': self.market_max_qty,
+            'market_step': self.market_step,
+            'max_notional': self.max_notional,
         }
 
     def trades(self, since_ms: int) -> list[dict]:
@@ -205,12 +239,24 @@ class Binance:
         lot = filters.get('LOT_SIZE') or {}
         price = filters.get('PRICE_FILTER') or {}
         notional = filters.get('NOTIONAL') or filters.get('MIN_NOTIONAL') or {}
+        market = filters.get('MARKET_LOT_SIZE') or {}
         if (number(lot.get('stepSize', '0'), 'step') != D('0.00001')
                 or number(price.get('tickSize', '0'), 'tick') != D('0.01')):
             raise Blocked('BTCUSDT tick or step no longer matches the researched filters')
-        minimum = notional.get('minNotional')
-        if number(minimum or '0', 'minNotional') != D('5'):
+        if 'minNotional' not in notional:
+            raise Blocked('BTCUSDT minimum notional is missing')
+        if number(notional['minNotional'], 'minNotional') != D('5'):
             raise Blocked('BTCUSDT minimum notional is no longer 5 USDT')
+        self.min_qty = number(lot['minQty'], 'minQty', positive=True) if 'minQty' in lot else None
+        self.max_qty = number(lot['maxQty'], 'maxQty', positive=True) if 'maxQty' in lot else None
+        self.min_price = number(price['minPrice'], 'minPrice', positive=True) if price.get('minPrice') not in (None, '0', '0.00000000') else None
+        self.max_price = number(price['maxPrice'], 'maxPrice', positive=True) if price.get('maxPrice') not in (None, '0', '0.00000000') else None
+        if market:
+            self.market_step = number(market.get('stepSize', '0.00001'), 'market step', positive=True)
+            self.market_min_qty = number(market['minQty'], 'market minQty', positive=True) if 'minQty' in market else None
+            self.market_max_qty = number(market['maxQty'], 'market maxQty', positive=True) if 'maxQty' in market else None
+        if notional.get('maxNotional') not in (None, ''):
+            self.max_notional = number(notional['maxNotional'], 'maxNotional', positive=True)
         types = symbol.get('orderTypes') or []
         if 'STOP_LOSS' not in types or 'MARKET' not in types:
             raise Blocked('BTCUSDT spot cannot rest the researched market and stop orders')
@@ -260,15 +306,69 @@ class Binance:
         url = self.base + path + ('?' + query if query else '')
         if not url.startswith(self.base + '/'):
             raise Blocked('refusing a request outside the configured Binance host')
-        status, body = self._opener('GET', url, headers)
+        self._check_deadline()
+        opened = self._opener('GET', url, headers)
+        if not isinstance(opened, tuple) or len(opened) not in (2, 3):
+            raise Unknown('Binance response is incomplete')
+        status, body = opened[0], opened[1]
+        response_headers = opened[2] if len(opened) == 3 else {}
         try:
             payload = json.loads(body.decode())
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise Unknown(f'Binance {path} returned status {status} without JSON') from exc
+        if status in (418, 429):
+            retry = _header(response_headers, 'Retry-After')
+            raise Unknown(f'Binance rate limit HTTP {status}; retry after {retry or "unknown"}')
         if status != 200:
             code = payload.get('code') if isinstance(payload, dict) else None
+            if signed and code == -1021 and not self._clock_retried:
+                self._clock_retried = True
+                self._offset_ms = None
+                try:
+                    return self._get(path, params, signed=signed)
+                finally:
+                    self._clock_retried = False
             raise Unknown(f'Binance {path} failed with HTTP {status} code {code}')
         return payload
+
+    def _check_deadline(self) -> None:
+        if self._stop is not None and self._stop():
+            raise Unknown('session deadline reached; not starting another request')
+
+
+def _header(headers, name: str):
+    for key, value in dict(headers).items():
+        if str(key).lower() == name.lower():
+            return value
+    return None
+
+
+def _order(row: dict) -> dict:
+    if not isinstance(row, dict):
+        raise Unknown('open order row is incomplete')
+    try:
+        order_id = int(row['orderId'])
+        side = row['side']
+        order_type = row['type']
+        status = row['status']
+        original = number(row['origQty'], 'origQty', nonnegative=True)
+        executed = number(row['executedQty'], 'executedQty', nonnegative=True)
+    except (KeyError, TypeError, ValueError, Blocked) as exc:
+        raise Unknown('open order row is incomplete') from exc
+    if side not in ('BUY', 'SELL') or not order_type or not status:
+        raise Unknown('open order row is incomplete')
+    parsed = {
+        'order_id': order_id,
+        'client_id': row.get('clientOrderId'),
+        'side': side,
+        'type': order_type,
+        'status': status,
+        'orig_qty': format(original, 'f'),
+        'executed_qty': format(executed, 'f'),
+    }
+    if row.get('stopPrice') not in (None, ''):
+        parsed['stop_price'] = format(number(row['stopPrice'], 'stopPrice', nonnegative=True), 'f')
+    return parsed
 
 
 def _millis(raw) -> int:

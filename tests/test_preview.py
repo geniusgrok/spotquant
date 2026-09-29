@@ -80,11 +80,11 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(decision['protection']['stopPrice'], '9.60')
         self.assertIn('completed close', decision['reason'])
         self.assertNotIn('streak', decision['protection']['note'])
-        model.position_peak = D('15')
+        model.position_peak = D('14')
         filled = preview(
             model, _snap(btc='1'), entries_enabled=True, capital_limit=None, owned_btc=D('1'),
         )
-        self.assertEqual(filled['protection']['stopPrice'], '12.00')
+        self.assertEqual(filled['protection']['stopPrice'], '11.20')
         self.assertIn('since the fill', filled['reason'])
 
     def test_a_stop_wider_than_the_sell_band_is_not_placeable(self):
@@ -96,10 +96,11 @@ class PreviewTests(unittest.TestCase):
         decision = preview(model, snap, entries_enabled=True, capital_limit=None)
         protection = decision['protection']
         self.assertEqual(protection['stopPrice'], '8.64')
-        self.assertFalse(protection['placeable'])
-        self.assertFalse(protection['limit_placeable'])
+        self.assertTrue(protection['placeable'])
+        self.assertIsNone(protection['limit_placeable'])
         self.assertFalse(protection['trailing_placeable'])
         self.assertNotIn('price', protection)
+        self.assertIn('fixed stopPrice', protection['note'])
 
     def test_external_btc_is_unknown(self):
         model = _model((10, 10, 10, 12))
@@ -159,9 +160,9 @@ class PreviewTests(unittest.TestCase):
         # Two sleeves hold nothing after the exit: (300 + 20 * 12) / 2 each, and only one is armed.
         self.assertEqual(decision['orders'][1]['quoteOrderQty'], '270.00')
         self.assertEqual(decision['orders'][1]['sleeves'], [30])
-        self.assertIn('estimated proceeds', decision['orders'][1]['note'])
+        self.assertIn('real buy waits', decision['orders'][1]['note'])
         self.assertEqual(decision['sleeves']['40']['action'], 'exit')
-        self.assertEqual([item['sleeve'] for item in decision['protections']], [30])
+        self.assertEqual(decision['protections'][0]['sleeves'], [30])
 
     def test_a_balance_the_sleeves_do_not_own_is_unknown(self):
         with self.assertRaises(Unknown):
@@ -174,6 +175,21 @@ class PreviewTests(unittest.TestCase):
             entries_enabled=True, capital_limit=D('100'),
         )
         self.assertEqual(decision['orders'][0]['quoteOrderQty'], '100.00')
+
+    def test_dust_on_three_sleeves_exits_together_and_does_not_buy_again(self):
+        falling = _model((80000, 80000, 80000, 70000))
+        self.assertFalse(falling.bull)
+        dust = D('0.00006')
+        decision = portfolio(
+            {30: falling, 40: falling, 50: falling},
+            {30: dust, 40: dust, 50: dust},
+            _snap(usdt='1000', btc='0.00018'),
+            entries_enabled=True, capital_limit=None,
+        )
+        self.assertEqual(decision['action'], 'exit')
+        self.assertEqual(decision['orders'][0]['side'], 'SELL')
+        self.assertEqual(decision['orders'][0]['quantity'], '0.00018')
+        self.assertFalse(any(order['side'] == 'BUY' for order in decision['orders']))
 
 
 if __name__ == '__main__':

@@ -13,9 +13,13 @@ open, the recorded kind is ``adverse``, then ``extend``, then ``sma``. A
 crash-reversal hold ignores all three until the model hands the trade back.
 Costs and the CNY conversion are applied here. Open, high, low, and flat
 cash marks inside a bar use that bar's 00:00 UTC timestamp. The stored daily
-curve and the final mark use the last millisecond of the UTC day, so a 17:00
-DEXCHUS print applies to the close curve on its date and to the drawdown path
-from the next open. Fills do not depend on the rate.
+curve and the final mark use the last millisecond of the UTC day, and those
+CNY values also update the drawdown. A 17:00 DEXCHUS print therefore applies
+to the close curve and to the drawdown on its date. The stop tested on a bar
+is the stop from the prior completed peak. That bar's high tightens the stop
+only after the low is tested, for the next day. If the tightened stop is
+already through the close, the sell is the next open. Fills do not depend
+on the rate.
 """
 from __future__ import annotations
 
@@ -54,12 +58,15 @@ class Book:
         self.trades: list[dict] = []
         self._entry_px = D(0)
         self._entry_ms = 0
+        self.exit_next: str | None = None
 
     def _cny(self, usdt_equity: D, now_ms: int) -> D:
         return usdt_equity * self.fx(now_ms) * (D(1) - self.conversion)
 
     def mark(self, usdt_equity: D, now_ms: int, *, adverse: bool):
-        cny = self._cny(usdt_equity, now_ms)
+        self.mark_cny(self._cny(usdt_equity, now_ms), now_ms, adverse=adverse)
+
+    def mark_cny(self, cny: D, now_ms: int, *, adverse: bool):
         if cny > self.peak_cny:
             self.peak_cny = cny
         if adverse and self.peak_cny > 0:
@@ -96,28 +103,31 @@ class Book:
         })
         self.btc = D(0)
         self.peak_high = None
+        self.exit_next = None
 
 
-def _trail(book: Book, model: Model, open_ms: int, open_: D, high: D, low: D) -> bool:
-    """Continuous trailing stop on one daily range. True when it sells.
+def _trail(book: Book, model: Model, open_ms: int, open_: D, high: D, low: D, close: D) -> bool:
+    """Resting stop from the prior peak. True when it sells on this bar.
 
-    The high tightens the stop before the low is tested. A gap through the
-    stop inherited from prior days sells at the open.
+    A gap through that stop sells at the open. The low is tested against the
+    same stop. The high tightens the stop only afterward. A tightened stop
+    that is already through the close sells at the next open.
     """
     stop = model.stop_price(book.peak_high)
     if open_ <= stop:
         book.sell(open_, open_ms, 'gap', book.stop_slip)
         book.mark(book.usdt, open_ms, adverse=True)
         return True
-    if high > book.peak_high:
-        book.peak_high = high
-        stop = model.stop_price(book.peak_high)
     book.mark(book.equity_usdt(high), open_ms, adverse=False)
     if low <= stop:
         book.sell(stop, open_ms, 'trail', book.stop_slip)
         book.mark(book.usdt, open_ms, adverse=True)
         return True
     book.mark(book.equity_usdt(low), open_ms, adverse=True)
+    if high > book.peak_high:
+        book.peak_high = high
+    if close <= model.stop_price(book.peak_high):
+        book.exit_next = 'stop'
     return False
 
 
@@ -154,9 +164,14 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
             break
         in_window = open_ms >= start_ms
         exited = False
+        if in_window and book.btc > 0 and book.exit_next:
+            book.sell(open_, open_ms, book.exit_next, book.exit_slip)
+            book.mark(book.usdt, open_ms, adverse=True)
+            model.note_exit()
+            exited = True
         # Repair keeps only the 28% stop. Otherwise adverse wins over blow-off and SMA
         # when they fall on the same open, because the fill is the same.
-        if in_window and book.btc > 0 and not repair_prev and (adverse_prev or extend_prev or not bull_prev):
+        elif in_window and book.btc > 0 and not repair_prev and (adverse_prev or extend_prev or not bull_prev):
             if adverse_prev:
                 kind = 'adverse'
             elif extend_prev:
@@ -168,7 +183,7 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
             model.note_exit()
             exited = True
         elif in_window and book.btc > 0:
-            exited = _trail(book, model, open_ms, open_, high, low)
+            exited = _trail(book, model, open_ms, open_, high, low, close)
             if exited:
                 model.note_exit()
         if in_window and book.btc == 0 and not exited:
@@ -180,7 +195,7 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
                 model.note_entry(book._entry_px)
                 if cap_prev:
                     model.note_cap_entry()
-                exited = _trail(book, model, open_ms, open_, high, low)
+                exited = _trail(book, model, open_ms, open_, high, low, close)
                 if exited:
                     model.note_exit()
             elif armed and open_ms in skip_entries:
@@ -189,10 +204,13 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
         if in_window:
             price = close if book.btc > 0 else D(0)
             equity = book.usdt if book.btc == 0 else book.equity_usdt(price)
-            daily.append((open_ms, book._cny(equity, open_ms + DAY - 1)))
+            close_cny = book._cny(equity, open_ms + DAY - 1)
+            book.mark_cny(close_cny, open_ms + DAY - 1, adverse=True)
+            daily.append((open_ms, close_cny))
     last = [bar for bar in bars if bar[0] < end_ms][-1]
     final_usdt = book.usdt if book.btc == 0 else book.equity_usdt(last[4])
     final_cny = book._cny(final_usdt, end_ms - 1)
+    book.mark_cny(final_cny, end_ms - 1, adverse=True)
     years = D(end_ms - start_ms) / YEAR_MS
     growth = final_cny / INITIAL_CNY
     cagr = (float(growth) ** (1 / float(years)) - 1) if growth > 0 else -1
@@ -252,7 +270,9 @@ class _Meter:
         return usdt_equity * self.fx(now_ms) * (D(1) - self.conversion)
 
     def mark(self, usdt_equity: D, now_ms: int, *, adverse: bool):
-        value = self.cny(usdt_equity, now_ms)
+        self.mark_cny(self.cny(usdt_equity, now_ms), now_ms, adverse=adverse)
+
+    def mark_cny(self, value: D, now_ms: int, *, adverse: bool):
         if value > self.peak:
             self.peak = value
         if adverse and self.peak > 0:
@@ -270,12 +290,14 @@ class _Sleeve:
         self.peak_high = D(0)
         self.entry_px = D(0)
         self.entry_ms = 0
+        self.exit_next: str | None = None
 
 
 def simulate_sleeves(bars, fx, *, start_ms: int, end_ms: int, windows=SLEEVES, model_kwargs=None,
                      fee=FEE, entry_slip=ENTRY_SLIP, exit_slip=EXIT_SLIP, stop_slip=STOP_SLIP,
                      conversion=CONVERSION, skip_entries: set[int] | None = None,
-                     vol_target=None, cold_start: bool = False, initial_cny=INITIAL_CNY):
+                     vol_target=None, cold_start: bool = False, initial_cny=INITIAL_CNY,
+                     frozen: set[int] | None = None):
     """Several SMA sleeves on one USDT pool. Each sleeve is a ``Model`` with its own window.
 
     An armed sleeve buys at the open with the pool divided by the number of sleeves
@@ -290,6 +312,7 @@ def simulate_sleeves(bars, fx, *, start_ms: int, end_ms: int, windows=SLEEVES, m
     pool = (D(initial_cny) / fx(start_ms)) * (D(1) - conversion)
     meter.mark(pool, start_ms, adverse=True)
     skip_entries = skip_entries or set()
+    frozen = frozen or set()
     trades: list[dict] = []
     fees = D(0)
     skipped = 0
@@ -314,6 +337,7 @@ def simulate_sleeves(bars, fx, *, start_ms: int, end_ms: int, windows=SLEEVES, m
             'kind': kind,
         })
         sleeve.btc = D(0)
+        sleeve.exit_next = None
 
     started = False
     for open_ms, open_, high, low, close, _quote in bars:
@@ -332,10 +356,19 @@ def simulate_sleeves(bars, fx, *, start_ms: int, end_ms: int, windows=SLEEVES, m
             blocked_entries.add(open_ms)
         if in_window:
             started = True
+            quiet = open_ms in frozen
             exited = set()
             acted = False
             for sleeve in sleeves:
+                if sleeve.btc > 0 and sleeve.exit_next and not quiet:
+                    sell(sleeve, open_, open_ms, sleeve.exit_next, exit_slip)
+                    sleeve.model.note_exit()
+                    exited.add(sleeve.window)
+                    acted = True
+            for sleeve in sleeves:
                 bull, _enter, extended, _cap, repair, adverse = prev[sleeve.window]
+                if quiet or sleeve.window in exited:
+                    continue
                 if sleeve.btc > 0 and not repair and (adverse or extended or not bull):
                     kind = 'adverse' if adverse else ('extend' if extended else 'sma')
                     sell(sleeve, open_, open_ms, kind, exit_slip)
@@ -356,7 +389,7 @@ def simulate_sleeves(bars, fx, *, start_ms: int, end_ms: int, windows=SLEEVES, m
             budget = pool / len(flat) if flat else D(0)
             for sleeve in flat:
                 _bull, enter, _extended, cap_enter, _repair, _adverse = prev[sleeve.window]
-                if sleeve.window in exited or not (enter or cap_enter):
+                if quiet or sleeve.window in exited or not (enter or cap_enter):
                     continue
                 if open_ms in blocked_entries:
                     skipped += 1
@@ -380,9 +413,6 @@ def simulate_sleeves(bars, fx, *, start_ms: int, end_ms: int, windows=SLEEVES, m
             holders = [s for s in sleeves if s.btc > 0 and s.window not in exited]
             if holders:
                 meter.mark(equity(high), open_ms, adverse=False)
-                for sleeve in holders:
-                    if high > sleeve.peak_high:
-                        sleeve.peak_high = high
                 stopped = []
                 for sleeve in holders:
                     stop = sleeve.model.stop_price(sleeve.peak_high)
@@ -391,14 +421,25 @@ def simulate_sleeves(bars, fx, *, start_ms: int, end_ms: int, windows=SLEEVES, m
                 for sleeve, stop in stopped:
                     sell(sleeve, stop, open_ms, 'trail', stop_slip)
                     sleeve.model.note_exit()
+                    exited.add(sleeve.window)
+                for sleeve in holders:
+                    if sleeve.window in exited or quiet:
+                        continue
+                    if high > sleeve.peak_high:
+                        sleeve.peak_high = high
+                    if close <= sleeve.model.stop_price(sleeve.peak_high):
+                        sleeve.exit_next = 'stop'
                 meter.mark(equity(low), open_ms, adverse=True)
         for sleeve in sleeves:
             sleeve.model.update(open_ms, high, low, close)
         if in_window:
-            daily.append((open_ms, meter.cny(equity(close), open_ms + DAY - 1)))
+            close_cny = meter.cny(equity(close), open_ms + DAY - 1)
+            meter.mark_cny(close_cny, open_ms + DAY - 1, adverse=True)
+            daily.append((open_ms, close_cny))
     last = [bar for bar in bars if bar[0] < end_ms][-1]
     final_usdt = equity(last[4])
     final_cny = meter.cny(final_usdt, end_ms - 1)
+    meter.mark_cny(final_cny, end_ms - 1, adverse=True)
     years = D(end_ms - start_ms) / YEAR_MS
     growth = final_cny / D(initial_cny)
     cagr = (float(growth) ** (1 / float(years)) - 1) if growth > 0 else -1
