@@ -53,3 +53,23 @@ P2 remains `evidence/rebuild-20260928/P2.json`, source `b30608d43f3039f7cce5c1c7
 `python -m research.rebuild` writes P3. `python -m research.rebuild --grid` writes `hold-grid.json` under the current constants, including the blow-off, the crash reversal, and the 4% close. It leaves `frontier.json` and the P1 and P2 files in place.
 
 The account is still long at the window end, so the last mark uses the final daily close and does not charge an exit fee. The continuous MDD of P3 is on 2020-03-16, inside the crash-reversal hold that began on 2020-03-14. A lookahead that sells every losing day is not a result of this meter.
+
+## P4 protocol (declared 2026-09-29, before any P4 number is computed)
+
+Why: the P3 account clears both targets at SMA 40 only. Its neighbors SMA 35 and SMA 45 print 59.1% and 94.8% CAGR, SMA 30 and SMA 50 print 58.9% and 70.4%, and the top three trades carry about 48% of the positive log return. The owner accepted a lower in-sample return in exchange for less dependence on one parameter. The targets are not changed, not withdrawn, and the window is not moved.
+
+What is already known and therefore not counted as out-of-sample: the P3 numbers, the SMA neighbor table above, the ablations of the 4% close, the blow-off, and the crash reversal, and a float scan of close-curve drawdowns for several sleeve sets (35/40/45 about 89.8% CAGR, 30/40/50 about 82.3%, 20/40/80 about 79.7%). Those diagnostics were read before this protocol. They can bias the choice of sleeve set. The set below was chosen for equal spacing and a middle sleeve equal to the P3 window, and it is chosen once.
+
+Declared, in this order:
+
+1. Book. Three sleeves with SMA windows 30, 40, and 50. Each sleeve is a `Model` with the constants of that window. There is one shared USDT balance. When a sleeve is armed at an open, it buys with the free USDT divided by the number of sleeves that are flat at that open. Sleeves buy and sell independently; a sleeve exit sells only that sleeve's coins. Every fee, slip, stop, and CNY conversion is the P3 value. The drawdown path marks the combined equity at the same open, high, and low points as the single-sleeve meter. Only the long sleeves are valued at the high or the low. The combined stop is each sleeve's own 28% stop.
+2. Equivalence. With one sleeve of window 40, this engine must print the trades and the final CNY of `research.account.simulate`. A test enforces it.
+3. Plateau-centered thresholds. For each of the blow-off extension, the crash-reversal drop, bounce and depth, and the handoff distance, scan the single-sleeve SMA 40 book in steps of 0.005 around the P3 value. The contiguous interval that prints the P3 trades exactly is the plateau. The adopted value is the midpoint of that interval rounded to 0.01, and it is adopted only if that rounded value itself prints the P3 trades exactly. If not, the P3 value stays. All sleeves use one value.
+4. The 4% close. Measure the sleeves book with the close off and at 3.5%, 4.0%, and 4.5%. The close is included only if all three distances print a continuous MDD no higher than the book without it and a CAGR no more than one point lower. Otherwise the default is off.
+5. Volatility scaling. One test only. At an entry, the sleeve buys `min(1, 0.70 / v)` of its share, where `v` is the sample standard deviation of the last 30 daily log returns at the signal close, times the square root of 365. The rest stays in the pool. It is adopted only if continuous MDD falls by at least one point and CAGR falls by no more than three points against the book adopted in step 4. Otherwise it is recorded and not adopted.
+6. Qualification. The targets are unchanged: cost-net CAGR at least 100% and continuous MDD at most 30%. Economic qualification of P4 is recomputed from its own numbers. If P4 misses a target it is recorded as `NOT_MET`. P3 stays in the evidence unchanged as the in-sample upper bound and is not deleted or hidden.
+7. Stresses. The same four stresses as P3 (fee x1.5, exit and stop slip x2, seeded 20% skip, seeded 21-day block), registered on the adopted P4.
+8. Second asset. The frozen P4 rules, with no re-fit, run on ETHUSDT over the same window and costs. It is a check, not a selection. A bad ETH result is reported.
+9. Forward ledger. From 2026-09-20 00:00 UTC, the frozen P4 rules run on BTCUSDT in a USDT ledger with a cold start: all cash, and a regime that is already bullish waits for a fresh cross. The SHA-256 of the rule constants is pinned in `spec.json`. The ledger is extended as daily files are published and is never edited backward.
+
+The meter's numbers come from `python3 -m research.rebuild` on a clean committed tree.
