@@ -8,6 +8,7 @@ import sys
 
 from .binance import Binance
 from .config import load
+from .model import SLEEVES
 from .session import RECORDED_LIMITS, clear_stale, cycle, run
 from .state import State
 from .types import Blocked, Unknown, serial
@@ -31,7 +32,8 @@ def connect(config):
 def _base_report(config) -> dict:
     return dict(
         status='read_only', exchange='Binance', environment=config.environment,
-        symbol='BTCUSDT', market='spot', leverage='0', qualification='NOT_QUALIFIED',
+        symbol='BTCUSDT', market='spot', leverage='0', sleeves=list(SLEEVES),
+        qualification='NOT_QUALIFIED',
         write_attempted=False, observation_current=False,
         recorded_limits=dict(RECORDED_LIMITS),
         reason='Account observation only',

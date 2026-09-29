@@ -1,0 +1,55 @@
+{
+  "rule": "one sleeve at a time under the P4 constants: how much the P3 result depends on SMA 40",
+  "source": {
+    "git_head": "3ac2c663128c6a8b423ccb9a29fc7476735ee1cf",
+    "dirty": false,
+    "python_sources_sha256": "761a358e88affd8ed306d3579a4a913f3d88039ae1877c4f68859a1e26e0def0"
+  },
+  "results": {
+    "30": {
+      "trial": "single-30",
+      "final_cny": "224845.6376530968900936436934",
+      "cost_net_cagr": 0.5893095800923596,
+      "continuous_mdd": "0.3693961897771772872790044244",
+      "mdd_at": "2024-10-13T00:00:00Z",
+      "trades": 51,
+      "targets_met": false
+    },
+    "35": {
+      "trial": "single-35",
+      "final_cny": "226229.9216095114667541842758",
+      "cost_net_cagr": 0.5907620959403317,
+      "continuous_mdd": "0.2915191117003870482867181018",
+      "mdd_at": "2020-03-16T00:00:00Z",
+      "trades": 47,
+      "targets_met": false
+    },
+    "40": {
+      "trial": "single-40",
+      "final_cny": "1113885.265822092834607674624",
+      "cost_net_cagr": 1.0167063966736367,
+      "continuous_mdd": "0.2915191117003870482867181018",
+      "mdd_at": "2020-03-16T00:00:00Z",
+      "trades": 37,
+      "targets_met": true
+    },
+    "45": {
+      "trial": "single-45",
+      "final_cny": "883245.0606354938970520440882",
+      "cost_net_cagr": 0.9482564205979014,
+      "continuous_mdd": "0.2915191117003870482867181018",
+      "mdd_at": "2020-03-16T00:00:00Z",
+      "trades": 36,
+      "targets_met": false
+    },
+    "50": {
+      "trial": "single-50",
+      "final_cny": "358722.7064582776440293881166",
+      "cost_net_cagr": 0.7037404299166685,
+      "continuous_mdd": "0.3573382705891626999160101454",
+      "mdd_at": "2022-11-21T00:00:00Z",
+      "trades": 35,
+      "targets_met": false
+    }
+  }
+}

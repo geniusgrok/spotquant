@@ -22,6 +22,9 @@ def client_id(account: str, bar: int, operation: str) -> str:
     return 'sq-' + hashlib.sha256(identity).hexdigest()[:30]
 
 
+OBSERVATION_LIMIT = 1000
+
+
 class State:
     def __init__(self, directory: str | Path, identity: str):
         self.directory = Path(directory).expanduser().resolve()
@@ -105,6 +108,10 @@ class State:
             self.db.execute(
                 'INSERT INTO observations(recorded_at,payload) VALUES (?,?)',
                 (time(), json.dumps(serial(value), sort_keys=True, allow_nan=False)),
+            )
+            self.db.execute(
+                'DELETE FROM observations WHERE sequence <= (SELECT MAX(sequence) FROM observations) - ?',
+                (OBSERVATION_LIMIT,),
             )
         output = self.directory / 'latest.json'
         temporary = output.with_suffix('.tmp')

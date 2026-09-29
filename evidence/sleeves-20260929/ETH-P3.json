@@ -1,0 +1,347 @@
+{
+  "trial": "ETH-P3",
+  "symbol": "ETHUSDT",
+  "market": "spot",
+  "leverage": "0",
+  "shorting": false,
+  "book": "single",
+  "sleeves": [
+    40
+  ],
+  "pool_rule": "one USDT pool; an armed sleeve buys pool / sleeves holding nothing after that open's exits; each sleeve exits and stops on its own coins",
+  "start": "2020-01-01T00:00:00Z",
+  "end": "2026-09-20T00:00:00Z",
+  "end_exclusive": true,
+  "initial_cny": "10000",
+  "additional_capital": "0",
+  "final_usdt": "67492.91829185160760845173204",
+  "final_cny": "451581.7864394164658156478698",
+  "cost_net_cagr": 0.763127200113372,
+  "continuous_mdd": "0.4342161506809056260075274200",
+  "mdd_at": "2020-03-16T00:00:00Z",
+  "fees_usdt": "1971.184689189122478566764813",
+  "trades": 34,
+  "wins": 12,
+  "exit_kinds": {
+    "adverse": 13,
+    "sma": 18,
+    "extend": 1,
+    "trail": 2
+  },
+  "trades_per_sleeve": {
+    "40": 34
+  },
+  "position_base": "25.63648522684083868911711293",
+  "position_by_sleeve": {
+    "40": "25.63648522684083868911711293"
+  },
+  "skipped_entries": 0,
+  "confirm": 2,
+  "crash": "0.50",
+  "fresh": true,
+  "high_window": 252,
+  "trail": "0.28",
+  "cap_window": 400,
+  "stop_order": "STOP_LOSS stopPrice, amended as the daily high ratchets",
+  "targets": {
+    "cagr_minimum_inclusive": "1",
+    "mdd_maximum_inclusive": "0.30"
+  },
+  "targets_met": false,
+  "conversion": "0.001",
+  "fx": "FRED DEXCHUS, ex-post: each observation applies from 17:00 UTC of its date; USDT at USD par; conversion charged separately",
+  "qualification": "NOT_QUALIFIED",
+  "extend": "0.61",
+  "cap_drop": "0.11",
+  "cap_bounce": "0.07",
+  "cap_depth": "0.50",
+  "cap_hand": "0.11",
+  "adverse_stop": "0.04",
+  "economic_qualification": "NOT_MET",
+  "fee": "0.001",
+  "entry_slip": "0.0005",
+  "exit_slip": "0.0005",
+  "stop_slip": "0.001",
+  "vol_target": null,
+  "vol_window": null,
+  "trade_list": [
+    {
+      "sleeve": 40,
+      "entry_ms": 1579305600000,
+      "exit_ms": 1579824000000,
+      "entry": "170.004960000000",
+      "exit": "162.768575000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1583539200000,
+      "exit_ms": 1583712000000,
+      "entry": "245.052465000000",
+      "exit": "199.330285000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1584144000000,
+      "exit_ms": 1599177600000,
+      "entry": "134.127030000000",
+      "exit": "381.159325000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1602460800000,
+      "exit_ms": 1609804800000,
+      "entry": "374.357085000000",
+      "exit": "1040.929275000000",
+      "kind": "extend"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1615161600000,
+      "exit_ms": 1616457600000,
+      "entry": "1727.323230000000",
+      "exit": "1680.329415000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1617148800000,
+      "exit_ms": 1621209600000,
+      "entry": "1841.330205000000",
+      "exit": "3145.2100416000000",
+      "kind": "trail"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1627171200000,
+      "exit_ms": 1631318400000,
+      "entry": "2185.992450000000",
+      "exit": "3207.245575000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1631750400000,
+      "exit_ms": 1631923200000,
+      "entry": "3615.356775000000",
+      "exit": "3398.190055000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1633305600000,
+      "exit_ms": 1637280000000,
+      "entry": "3419.438865000000",
+      "exit": "3994.901550000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1638316800000,
+      "exit_ms": 1638576000000,
+      "entry": "4632.565125000000",
+      "exit": "4212.902495000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1644364800000,
+      "exit_ms": 1644624000000,
+      "entry": "3118.248345000000",
+      "exit": "2926.076230000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1645056000000,
+      "exit_ms": 1645142400000,
+      "entry": "3123.871155000000",
+      "exit": "2890.434060000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1646179200000,
+      "exit_ms": 1646352000000,
+      "entry": "2977.818165000000",
+      "exit": "2832.583000000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1647648000000,
+      "exit_ms": 1649721600000,
+      "entry": "2940.309420000000",
+      "exit": "2978.260125000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1668124800000,
+      "exit_ms": 1690243200000,
+      "entry": "1299.929640000000",
+      "exit": "1849.075000000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1696032000000,
+      "exit_ms": 1696550400000,
+      "entry": "1668.283725000000",
+      "exit": "1610.984105000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1698019200000,
+      "exit_ms": 1704326400000,
+      "entry": "1664.521845000000",
+      "exit": "2208.615140000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1704844800000,
+      "exit_ms": 1705968000000,
+      "entry": "2345.472150000000",
+      "exit": "2313.032905000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1707350400000,
+      "exit_ms": 1710892800000,
+      "entry": "2426.302545000000",
+      "exit": "3157.070675000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1711411200000,
+      "exit_ms": 1712016000000,
+      "entry": "3592.225215000000",
+      "exit": "3502.048100000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1716336000000,
+      "exit_ms": 1718150400000,
+      "entry": "3791.484795000000",
+      "exit": "3495.581335000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1721174400000,
+      "exit_ms": 1721865600000,
+      "entry": "3445.862070000000",
+      "exit": "3334.152090000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1726963200000,
+      "exit_ms": 1727827200000,
+      "entry": "2613.706200000000",
+      "exit": "2446.556110000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1728864000000,
+      "exit_ms": 1729900800000,
+      "entry": "2470.154460000000",
+      "exit": "2439.409685000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1730246400000,
+      "exit_ms": 1730419200000,
+      "entry": "2640.119400000000",
+      "exit": "2517.350695000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1731024000000,
+      "exit_ms": 1734652800000,
+      "entry": "2896.917735000000",
+      "exit": "3415.301495000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1736121600000,
+      "exit_ms": 1736294400000,
+      "entry": "3637.818000000000",
+      "exit": "3379.619345000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1746748800000,
+      "exit_ms": 1750118400000,
+      "entry": "2208.493695000000",
+      "exit": "2542.897915000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1751587200000,
+      "exit_ms": 1751673600000,
+      "entry": "2592.555630000000",
+      "exit": "2506.785980000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1751932800000,
+      "exit_ms": 1758499200000,
+      "entry": "2543.571150000000",
+      "exit": "4442.757510000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1759536000000,
+      "exit_ms": 1760054400000,
+      "entry": "4515.136440000000",
+      "exit": "4365.905955000000",
+      "kind": "sma"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1765411200000,
+      "exit_ms": 1765584000000,
+      "entry": "3325.802070000000",
+      "exit": "3083.317570000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1767484800000,
+      "exit_ms": 1768953600000,
+      "entry": "3128.673555000000",
+      "exit": "2938.410060000000",
+      "kind": "adverse"
+    },
+    {
+      "sleeve": 40,
+      "entry_ms": 1770422400000,
+      "exit_ms": 1780444800000,
+      "entry": "2064.401685000000",
+      "exit": "1772.9604648000000",
+      "kind": "trail"
+    }
+  ],
+  "source": {
+    "git_head": "3ac2c663128c6a8b423ccb9a29fc7476735ee1cf",
+    "dirty": false,
+    "python_sources_sha256": "761a358e88affd8ed306d3579a4a913f3d88039ae1877c4f68859a1e26e0def0"
+  },
+  "market_sha256": "7ad2dfa577ea48ca8f15825472761d18a01e90da8d4af1d34df14902e4728833"
+}
