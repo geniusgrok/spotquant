@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 from decimal import Decimal as D
 
+from .follow import normalize_trade
 from .types import Blocked, Unknown, number
 
 HOSTS = {
@@ -62,6 +63,9 @@ class Binance:
         self._opener = opener or _default_opener
         self._clock = clock or time.time
         self._offset_ms = None
+        self.ask_multiplier_down = None
+        self.ask_multiplier_up = None
+        self.trailing_max_bips = None
 
     def clock(self) -> float:
         return self._clock()
@@ -72,6 +76,7 @@ class Binance:
     def snapshot(self, expected_uid: str) -> dict:
         """Balances, open-order count, and a UID check. No order payload is kept."""
         self._filters()
+        average = self._get('/api/v3/avgPrice', {'symbol': 'BTCUSDT'}, signed=False)
         account = self._get('/api/v3/account', signed=True)
         uid_body = self._get('/sapi/v1/account/uid', signed=True)
         uid = str(uid_body.get('uid', ''))
@@ -97,14 +102,48 @@ class Binance:
             'usdt_locked': usdt_locked,
             'open_orders': len(orders),
             'environment': self.environment,
+            'avg_price': number(average.get('price'), 'avgPrice', positive=True),
+            'ask_multiplier_down': self.ask_multiplier_down,
+            'ask_multiplier_up': self.ask_multiplier_up,
+            'trailing_max_bips': self.trailing_max_bips,
         }
+
+    def trades(self, since_ms: int) -> list[dict]:
+        """BTCUSDT fills at or after ``since_ms``. A page that does not advance is unknown."""
+        if type(since_ms) is not int:
+            raise Blocked('trade cursor must be an integer millisecond timestamp')
+        params = {'symbol': 'BTCUSDT', 'startTime': str(since_ms), 'limit': '1000'}
+        found = []
+        seen = set()
+        while True:
+            payload = self._get('/api/v3/myTrades', params, signed=True)
+            if not isinstance(payload, list):
+                raise Unknown('trade response is not a list')
+            if not payload:
+                break
+            ids = []
+            for row in payload:
+                trade = normalize_trade(row)
+                ids.append(trade['id'])
+                if trade['time'] >= since_ms and trade['id'] not in seen:
+                    seen.add(trade['id'])
+                    found.append(trade)
+            if len(payload) < 1000:
+                break
+            nxt = max(ids) + 1
+            if params.get('fromId') is not None and nxt <= int(params['fromId']):
+                raise Unknown('trade page does not advance')
+            params = {'symbol': 'BTCUSDT', 'fromId': str(nxt), 'limit': '1000'}
+        found.sort(key=lambda item: (item['time'], item['id']))
+        return found
 
     def completed_daily(self, after_open_ms: int | None) -> list[tuple[int, D, D, D]]:
         """Completed UTC daily bars strictly after ``after_open_ms`` (or from the origin).
 
         Each page must begin on the requested open and step one UTC day at a
         time. A startTime is set, so the public route returns the oldest page,
-        but a page that starts later is rejected instead of being stored.
+        but a page that starts later is rejected instead of being stored. A
+        short or empty page that ends before the current UTC day is unknown.
         """
         if after_open_ms is None:
             cursor = ORIGIN
@@ -148,6 +187,8 @@ class Binance:
             cursor = page[-1][0] + DAY
             if len(payload) < 1000:
                 break
+        if cursor < today:
+            raise Unknown('completed daily history stops before the current UTC day')
         return bars
 
     def _filters(self) -> None:
@@ -173,6 +214,23 @@ class Binance:
         types = symbol.get('orderTypes') or []
         if 'STOP_LOSS' not in types or 'MARKET' not in types:
             raise Blocked('BTCUSDT spot cannot rest the researched market and stop orders')
+        trailing = filters.get('TRAILING_DELTA') or {}
+        try:
+            self.trailing_max_bips = int(trailing['maxTrailingBelowDelta'])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise Blocked('BTCUSDT trailingDelta bound is missing') from exc
+        if self.trailing_max_bips <= 0:
+            raise Blocked('BTCUSDT trailingDelta bound is missing')
+        band = filters.get('PERCENT_PRICE_BY_SIDE') or {}
+        try:
+            down = number(band['askMultiplierDown'], 'askMultiplierDown', positive=True)
+            up = number(band['askMultiplierUp'], 'askMultiplierUp', positive=True)
+        except (KeyError, Blocked) as exc:
+            raise Blocked('BTCUSDT percent price band is missing') from exc
+        if up < 1:
+            raise Blocked('BTCUSDT percent price band is invalid')
+        self.ask_multiplier_down = down
+        self.ask_multiplier_up = up
 
     def _today_open(self) -> int:
         now = self._timestamp()

@@ -27,6 +27,8 @@ def _filters():
                 {'filterType': 'LOT_SIZE', 'stepSize': '0.00001000', 'minQty': '0.00001000'},
                 {'filterType': 'NOTIONAL', 'minNotional': '5.00000000'},
                 {'filterType': 'TRAILING_DELTA', 'maxTrailingBelowDelta': 2000, 'maxTrailingAboveDelta': 2000},
+                {'filterType': 'PERCENT_PRICE_BY_SIDE', 'bidMultiplierUp': '1.2', 'bidMultiplierDown': '0.5',
+                 'askMultiplierUp': '2', 'askMultiplierDown': '0.8', 'avgPriceMins': 5},
             ],
         }],
     }
@@ -66,6 +68,10 @@ class Script:
         if '/api/v3/klines' in url:
             row = [ORIGIN, '100', '110', '90', '105', '1', ORIGIN + DAY - 1, '1000']
             return 200, json.dumps([row]).encode()
+        if '/api/v3/avgPrice' in url:
+            return 200, json.dumps({'mins': 5, 'price': '100.00'}).encode()
+        if '/api/v3/myTrades' in url:
+            return 200, b'[]'
         raise AssertionError(url)
 
 
@@ -151,20 +157,52 @@ class BinanceTests(unittest.TestCase):
             [ORIGIN + DAY, '101', '111', '91', '106', '1', 0, '1'],
         ]}
 
-        def opener(kind):
+        def opener(kind, now):
             def _open(method, url, headers):
                 if '/api/v3/klines' in url:
                     return 200, json.dumps(pages[kind]).encode()
+                if '/api/v3/time' in url:
+                    return 200, json.dumps({'serverTime': now}).encode()
                 return script(method, url, headers)
             return _open
 
-        gapped = Binance(key=KEY, secret=SECRET, environment='live', opener=opener('gap'), clock=lambda: script.now / 1000)
+        gapped = Binance(
+            key=KEY, secret=SECRET, environment='live', opener=opener('gap', script.now),
+            clock=lambda: script.now / 1000,
+        )
         with self.assertRaises(Unknown):
             gapped.completed_daily(None)
-        whole = Binance(key=KEY, secret=SECRET, environment='live', opener=opener('ok'), clock=lambda: script.now / 1000)
+        reached = ORIGIN + 2 * DAY
+        whole = Binance(
+            key=KEY, secret=SECRET, environment='live', opener=opener('ok', reached),
+            clock=lambda: reached / 1000,
+        )
         bars = whole.completed_daily(None)
         self.assertEqual([item[0] for item in bars], [ORIGIN, ORIGIN + DAY])
         self.assertEqual(bars[1][3], D('106'))
+
+    def test_completed_daily_rejects_a_short_page_before_today(self):
+        script = Script()
+        script.now = ORIGIN + 5 * DAY
+
+        def opener(method, url, headers):
+            if '/api/v3/klines' in url:
+                return 200, json.dumps([[ORIGIN, '100', '110', '90', '105', '1', 0, '1']]).encode()
+            return script(method, url, headers)
+
+        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener, clock=lambda: script.now / 1000)
+        with self.assertRaises(Unknown) as caught:
+            venue.completed_daily(None)
+        self.assertIn('stops before', str(caught.exception))
+
+        def empty(method, url, headers):
+            if '/api/v3/klines' in url:
+                return 200, b'[]'
+            return script(method, url, headers)
+
+        blank = Binance(key=KEY, secret=SECRET, environment='live', opener=empty, clock=lambda: script.now / 1000)
+        with self.assertRaises(Unknown):
+            blank.completed_daily(None)
 
     def test_missing_spot_permission_blocks_before_the_account_call(self):
         for allowed in (False, None):
@@ -185,6 +223,24 @@ class BinanceTests(unittest.TestCase):
             with self.assertRaises(Blocked):
                 venue.snapshot('10001')
             self.assertFalse(any('/api/v3/account?' in url for url in script.urls))
+
+    def test_missing_percent_band_blocks_before_the_account_call(self):
+        script = Script()
+        body = _filters()
+        body['symbols'][0]['filters'] = [
+            item for item in body['symbols'][0]['filters'] if item['filterType'] != 'PERCENT_PRICE_BY_SIDE'
+        ]
+
+        def opener(method, url, headers):
+            if '/api/v3/exchangeInfo' in url:
+                script.urls.append(url)
+                return 200, json.dumps(body).encode()
+            return script(method, url, headers)
+
+        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener, clock=lambda: 1_700_000_000)
+        with self.assertRaises(Blocked):
+            venue.snapshot('10001')
+        self.assertFalse(any('/api/v3/account?' in url for url in script.urls))
 
 
 def self_now():

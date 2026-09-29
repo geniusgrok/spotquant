@@ -35,12 +35,16 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
             'action': 'hold',
             'reason': 'crash-reversal hold; SMA, blow-off, and the 4% close stay off until the handoff',
             'order': None,
-            'protection': _protection(model, owned),
+            'protection': _protection(model, owned, snapshot),
         }
     if owned * price >= MIN_NOTIONAL and model.adverse:
         return {
             'action': 'exit',
-            'reason': 'completed daily close is at least 4% under the entry fill',
+            'reason': (
+                'completed daily close is at least 4% under the entry fill; '
+                'the sell is the next open, so the loss is not capped at 4%'
+            ),
+            'loss_capped': False,
             'order': {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': _step(owned, BASE_STEP)},
             'protection': None,
         }
@@ -59,11 +63,17 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
             'protection': None,
         }
     if owned * price >= MIN_NOTIONAL and model.bull:
+        if model.position_peak is not None:
+            reason = 'still above the SMA; protection is a stop 28% under the high since the fill'
+        else:
+            reason = (
+                'still above the SMA; no fill is recorded, so the stop stays 28% under the completed close'
+            )
         return {
             'action': 'hold',
-            'reason': 'still above the SMA; protection is a stop 28% under the bullish-streak high',
+            'reason': reason,
             'order': None,
-            'protection': _protection(model, owned),
+            'protection': _protection(model, owned, snapshot),
         }
     armed = model.enter or model.cap_enter
     if not armed:
@@ -93,36 +103,35 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
             'type': 'MARKET',
             'quoteOrderQty': _step(spend, QUOTE_STEP),
         },
-        'protection': _protection(model, None),
+        'protection': _protection(model, None, snapshot),
     }
 
 
-def _protection(model: Model, quantity: D | None) -> dict:
-    # No fill exists yet. A bullish-streak high from before the buy can already
-    # sit through the close, and a crash reversal is a repair hold on the meter
-    # even when the ordinary entry is also armed. Anchor the preview stop on
-    # the completed close; the meter replaces that anchor with the fill open.
+def _protection(model: Model, quantity: D | None, snapshot: dict) -> dict:
+    # No recorded fill yet. The bullish-streak high can start before the buy,
+    # so it is not the stop. A crash reversal is still a repair hold on the
+    # meter when the ordinary entry is also armed.
     if quantity is None:
         peak = model.close
         if model.cap_enter:
             note = (
                 'quantity would be the filled base amount; crash-reversal stop starts 28% under '
-                'the completed close and is amended to the fill open'
+                'the completed close and is amended to the fill'
             )
         else:
             note = (
                 'quantity would be the filled base amount; stop starts 28% under the completed '
-                'close and is amended to the fill open'
+                'close and is amended to the fill'
             )
     elif model.repair and model.repair_peak is not None:
         peak = model.repair_peak
-        note = 'amended STOP_LOSS; 28% under the repair high during a crash reversal'
-    elif model.peak is not None:
-        peak = model.peak
-        note = 'amended STOP_LOSS; 28% under the bullish-streak high'
+        note = 'amended STOP_LOSS; 28% under the high since the repair fill'
+    elif model.position_peak is not None:
+        peak = model.position_peak
+        note = 'amended STOP_LOSS; 28% under the high since the fill'
     else:
         peak = model.close
-        note = 'amended STOP_LOSS; 28% under the completed close'
+        note = 'amended STOP_LOSS; 28% under the completed close until a fill is recorded'
     order = {
         'symbol': 'BTCUSDT',
         'side': 'SELL',
@@ -132,7 +141,35 @@ def _protection(model: Model, quantity: D | None) -> dict:
     }
     if quantity is not None:
         order['quantity'] = _step(quantity, BASE_STEP)
+    _annotate_venue(order, model, snapshot)
     return order
+
+
+def _annotate_venue(order: dict, model: Model, snapshot: dict) -> None:
+    """Say whether this stop can be rested. Do not add a limit price."""
+    down = snapshot.get('ask_multiplier_down')
+    up = snapshot.get('ask_multiplier_up')
+    average = snapshot.get('avg_price')
+    trailing = snapshot.get('trailing_max_bips')
+    if down is None or up is None or average is None or trailing is None:
+        return
+    stop = D(order['stopPrice'])
+    limit_ok = D(average) * D(down) <= stop <= D(average) * D(up)
+    bips = int((model.trail * D(10000)).to_integral_value())
+    trailing_ok = bips <= int(trailing)
+    order['limit_placeable'] = limit_ok
+    order['trailing_placeable'] = trailing_ok
+    order['placeable'] = bool(limit_ok and trailing_ok)
+    if order['placeable']:
+        return
+    extra = []
+    if not limit_ok:
+        extra.append('a limit at this stop is outside the symbol sell band')
+    if not trailing_ok:
+        extra.append('trailingDelta cannot express this distance')
+    order['note'] = order['note'] + '. ' + '; '.join(extra)
+    if 'price' in order:
+        del order['price']
 
 
 def _step(value: D, step: D) -> str:

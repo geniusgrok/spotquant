@@ -8,7 +8,7 @@ import sys
 
 from .binance import Binance
 from .config import load
-from .session import cycle, run
+from .session import RECORDED_LIMITS, clear_stale, cycle, run
 from .state import State
 from .types import Blocked, Unknown, serial
 
@@ -28,20 +28,56 @@ def connect(config):
     return Binance(key=key, secret=secret, environment=config.environment, capital_limit=config.capital_limit)
 
 
+def _base_report(config) -> dict:
+    return dict(
+        status='read_only', exchange='Binance', environment=config.environment,
+        symbol='BTCUSDT', market='spot', leverage='0', qualification='NOT_QUALIFIED',
+        write_attempted=False, observation_current=False,
+        recorded_limits=dict(RECORDED_LIMITS),
+        reason='Account observation only',
+    )
+
+
+def _failure_report(config, exc) -> dict:
+    report = _base_report(config)
+    report.update(
+        status='unknown' if isinstance(exc, Unknown) else 'blocked',
+        reason=str(exc),
+        observation_current=False,
+        write_attempted=False,
+    )
+    clear_stale(report)
+    return report
+
+
+def _persist(config, report: dict) -> dict:
+    with State(config.state_dir, config.scope) as state:
+        state.report(report)
+    return report
+
+
 def observe(config_path) -> dict:
     config = load(config_path)
-    venue = connect(config)
     with State(config.state_dir, config.scope) as state:
-        current = cycle(venue, state, config)
-        report = dict(
-            status='read_only', exchange='Binance', environment=config.environment,
-            symbol='BTCUSDT', market='spot', leverage='0', qualification='NOT_QUALIFIED',
-            write_attempted=False, reason='Account observation only',
-        )
-        report.update(current)
-        if state.pending():
-            report.update(status='unknown', reason='Durable intents remain unresolved; no new risk authorized')
-        report['pending_intents'] = len(state.pending())
+        try:
+            venue = connect(config)
+            current = cycle(venue, state, config)
+            report = _base_report(config)
+            report.update(current)
+            if state.pending():
+                report.update(
+                    status='unknown',
+                    reason='Durable intents remain unresolved; no new risk authorized',
+                    observation_current=False,
+                )
+                clear_stale(report)
+            report['pending_intents'] = len(state.pending())
+        except (Blocked, Unknown) as exc:
+            report = _failure_report(config, exc)
+        except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
+            report = _failure_report(config, Unknown('Invalid observation or state'))
+            report['reason'] = 'Invalid observation or state'
+            report['status'] = 'unknown'
         state.report(report)
         return report
 
@@ -67,7 +103,12 @@ def main(argv=None):
             report = observe(args.config)
         else:
             config = load(args.config)
-            report = run(config, connect(config))
+            try:
+                venue = connect(config)
+            except (Blocked, Unknown) as exc:
+                report = _persist(config, _failure_report(config, exc))
+            else:
+                report = run(config, venue)
     except (Blocked, Unknown) as exc:
         report = dict(status='unknown' if isinstance(exc, Unknown) else 'blocked', reason=str(exc))
     except (OSError, ValueError, KeyError, TypeError, ArithmeticError):

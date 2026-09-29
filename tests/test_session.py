@@ -6,6 +6,7 @@ import unittest
 from spotquant.config import Config
 from spotquant.model import DAY, ORIGIN
 from spotquant.session import run
+from spotquant.types import Unknown
 
 
 class Clock:
@@ -23,6 +24,7 @@ class Venue:
         self.environment = 'live'
         self.capital_limit = None
         self.orders_sent = 0
+        self.trade_rows = []
 
     def clock(self):
         return 1_700_000_000.0
@@ -41,6 +43,9 @@ class Venue:
         if after is None:
             return list(self.bars)
         return [bar for bar in self.bars if bar[0] > after]
+
+    def trades(self, since):
+        return [row for row in self.trade_rows if row['time'] >= since]
 
     def place_order(self, *args, **kwargs):
         self.orders_sent += 1
@@ -83,6 +88,45 @@ class SessionTests(unittest.TestCase):
             report = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(report['status'], 'unknown')
         self.assertIn('no recorded spotquant fill', report['reason'])
+        self.assertNotIn('model_bull', report)
+        self.assertNotIn('model_preview', report)
+
+    def test_a_followed_buy_previews_the_fill_stop_and_a_failed_cycle_drops_the_old_view(self):
+        venue = Venue(bars(252, 100))
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('10001', directory, session_seconds=2, poll_seconds=1)
+            run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+            venue.bars.append((ORIGIN + 252 * DAY, D(110), D(100), D(110)))
+            run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+            venue.bars.append((ORIGIN + 253 * DAY, D(111), D(100), D(111)))
+            armed = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+            self.assertEqual(armed['model_preview']['action'], 'enter')
+            venue.snapshot = lambda uid: {
+                'account_uid': uid, 'btc': D('0.05'), 'usdt_free': D('0'),
+                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
+            }
+            venue.trade_rows = [{
+                'time': ORIGIN + 254 * DAY + 60_000,
+                'qty': D('0.05'),
+                'quote': D('5.55'),
+                'buyer': True,
+                'commission': D('0'),
+                'commission_asset': 'BNB',
+            }]
+            held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+            self.assertEqual(held['status'], 'read_only')
+            self.assertTrue(held['followed_position'])
+            self.assertEqual(held['model_preview']['action'], 'hold')
+            # 111 * 0.72. The bullish-streak high is not the anchor.
+            self.assertEqual(held['model_preview']['protection']['stopPrice'], '79.92')
+            self.assertIn('since the fill', held['model_preview']['reason'])
+            venue.snapshot = lambda uid: (_ for _ in ()).throw(Unknown('feed broke'))
+            failed = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        self.assertEqual(failed['status'], 'unknown')
+        self.assertNotIn('model_bull', failed)
+        self.assertNotIn('model_preview', failed)
+        self.assertFalse(failed['recorded_limits']['adverse_loss_capped'])
+        self.assertFalse(failed['recorded_limits']['skip_stress_targets_met'])
 
 
 if __name__ == '__main__':

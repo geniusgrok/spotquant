@@ -182,6 +182,26 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(Blocked):
             Model.restore(_resign(saved))
 
+    def test_a_flat_followed_position_rearms_only_after_a_fresh_cross(self):
+        model = Model(sma_window=2, trail='0.28', confirm=1, fresh=True, crash='0', cap_drop='0')
+        model.update(*bar(0, 10))
+        model.update(*bar(1, 12))
+        self.assertTrue(model.bull)
+        self.assertTrue(model.enter)
+        model.note_flat()
+        self.assertFalse(model.enter)
+        self.assertTrue(model.need_reset)
+        restored = Model.restore(model.checkpoint())
+        self.assertFalse(restored.enter)
+        self.assertIsNone(restored.position_peak)
+        bearish = Model(sma_window=2, trail='0.28', confirm=1, fresh=True, crash='0', cap_drop='0')
+        bearish.update(*bar(0, 10))
+        bearish.update(*bar(1, 9))
+        self.assertFalse(bearish.bull)
+        bearish.note_flat()
+        self.assertFalse(bearish.need_reset)
+        Model.restore(bearish.checkpoint())
+
     def test_equal_close_is_not_bullish(self):
         model = Model(sma_window=2, trail='0.20')
         model.update(*bar(0, 5))
