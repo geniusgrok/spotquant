@@ -1,5 +1,9 @@
 """One continuous spot account. The decision is spotquant.model.Model.
 
+``simulate`` is one sleeve on the whole balance (the P3 book). ``simulate_sleeves``
+runs several sleeves on one USDT pool (the P4 book) and prints the same trades and
+final CNY as ``simulate`` when it has one sleeve. The description below is one sleeve.
+
 Long or cash, no borrow, no short, no futures. An armed entry, including a
 crash-reversal entry, buys at the next daily open. While long, a 28% stop is
 modeled on the daily range by taking the high before the low. The meter's
@@ -16,8 +20,11 @@ from the next open. Fills do not depend on the rate.
 from __future__ import annotations
 
 from decimal import Decimal as D
+import math
 
-from spotquant.model import ADVERSE, CONFIRM, CRASH, DAY, FRESH, HIGH_WINDOW, Model, SMA_WINDOW, TRAIL
+from spotquant.model import (
+    ADVERSE, CONFIRM, CRASH, DAY, FRESH, HIGH_WINDOW, Model, SLEEVES, SMA_WINDOW, TRAIL,
+)
 
 CONVERSION = D('0.001')
 FEE = D('0.001')
@@ -30,14 +37,14 @@ YEAR_MS = D('31556952000')  # 365.2425 * 86400 * 1000
 
 class Book:
     def __init__(self, fx, start_ms: int, *, fee=FEE, entry_slip=ENTRY_SLIP, exit_slip=EXIT_SLIP,
-                 stop_slip=STOP_SLIP, conversion=CONVERSION):
+                 stop_slip=STOP_SLIP, conversion=CONVERSION, initial_cny=INITIAL_CNY):
         self.fx = fx
         self.fee = D(fee)
         self.entry_slip = D(entry_slip)
         self.exit_slip = D(exit_slip)
         self.stop_slip = D(stop_slip)
         self.conversion = D(conversion)
-        self.usdt = (INITIAL_CNY / fx(start_ms)) * (D(1) - self.conversion)
+        self.usdt = (D(initial_cny) / fx(start_ms)) * (D(1) - self.conversion)
         self.btc = D(0)
         self.fees = D(0)
         self.peak_cny = self._cny(self.usdt, start_ms)
@@ -213,4 +220,201 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
         'cap_window': model.cap_window,
         'adverse_stop': format(model.adverse_stop, 'f'),
         'years': years,
+    }
+
+
+VOL_TARGET = D('0.70')
+VOL_WINDOW = 30
+
+
+def realized_vol(closes) -> D | None:
+    """Annualized sample deviation of the last VOL_WINDOW daily log returns."""
+    values = list(closes)[-(VOL_WINDOW + 1):]
+    if len(values) < VOL_WINDOW + 1:
+        return None
+    returns = [math.log(float(b) / float(a)) for a, b in zip(values, values[1:])]
+    mean = sum(returns) / len(returns)
+    variance = sum((item - mean) ** 2 for item in returns) / (len(returns) - 1)
+    return D(repr(math.sqrt(variance * 365)))
+
+
+class _Meter:
+    """Continuous mark-to-market drawdown of the combined CNY equity."""
+
+    def __init__(self, fx, conversion):
+        self.fx = fx
+        self.conversion = conversion
+        self.peak = D(0)
+        self.mdd = D(0)
+        self.mdd_at = 0
+
+    def cny(self, usdt_equity: D, now_ms: int) -> D:
+        return usdt_equity * self.fx(now_ms) * (D(1) - self.conversion)
+
+    def mark(self, usdt_equity: D, now_ms: int, *, adverse: bool):
+        value = self.cny(usdt_equity, now_ms)
+        if value > self.peak:
+            self.peak = value
+        if adverse and self.peak > 0:
+            drawdown = D(1) - value / self.peak
+            if drawdown > self.mdd:
+                self.mdd = drawdown
+                self.mdd_at = now_ms
+
+
+class _Sleeve:
+    def __init__(self, window: int, model: Model):
+        self.window = window
+        self.model = model
+        self.btc = D(0)
+        self.peak_high = D(0)
+        self.entry_px = D(0)
+        self.entry_ms = 0
+
+
+def simulate_sleeves(bars, fx, *, start_ms: int, end_ms: int, windows=SLEEVES, model_kwargs=None,
+                     fee=FEE, entry_slip=ENTRY_SLIP, exit_slip=EXIT_SLIP, stop_slip=STOP_SLIP,
+                     conversion=CONVERSION, skip_entries: set[int] | None = None,
+                     vol_target=None, cold_start: bool = False, initial_cny=INITIAL_CNY):
+    """Several SMA sleeves on one USDT pool. Each sleeve is a ``Model`` with its own window.
+
+    An armed sleeve buys at the open with the pool divided by the number of sleeves
+    that hold no coins after that open's exits. Each sleeve exits and stops on its own
+    coins. With one sleeve this prints the trades and the final CNY of ``simulate``.
+    """
+    fee, entry_slip, exit_slip = D(fee), D(entry_slip), D(exit_slip)
+    stop_slip, conversion = D(stop_slip), D(conversion)
+    extra = dict(model_kwargs or {})
+    sleeves = [_Sleeve(window, Model(window, **extra)) for window in windows]
+    meter = _Meter(fx, conversion)
+    pool = (D(initial_cny) / fx(start_ms)) * (D(1) - conversion)
+    meter.mark(pool, start_ms, adverse=True)
+    skip_entries = skip_entries or set()
+    trades: list[dict] = []
+    fees = D(0)
+    skipped = 0
+    daily = []
+
+    def equity(price):
+        return pool + sum((s.btc * price for s in sleeves), D(0))
+
+    def sell(sleeve, price, now_ms, kind, slip):
+        nonlocal pool, fees
+        fill = price * (D(1) - slip)
+        gross = sleeve.btc * fill
+        charge = gross * fee
+        fees += charge
+        pool += gross - charge
+        trades.append({
+            'sleeve': sleeve.window,
+            'entry_ms': sleeve.entry_ms,
+            'exit_ms': now_ms,
+            'entry': format(sleeve.entry_px, 'f'),
+            'exit': format(fill, 'f'),
+            'kind': kind,
+        })
+        sleeve.btc = D(0)
+
+    started = False
+    for open_ms, open_, high, low, close, _quote in bars:
+        if open_ms >= end_ms:
+            break
+        in_window = open_ms >= start_ms
+        prev = {s.window: (s.model.bull, s.model.enter, s.model.extended, s.model.cap_enter,
+                           s.model.repair, s.model.adverse) for s in sleeves}
+        closes_before = list(sleeves[0].model.closes)
+        blocked_entries = set(skip_entries)
+        if in_window and cold_start and not started:
+            for sleeve in sleeves:
+                sleeve.model.note_flat()
+            prev = {s.window: (s.model.bull, s.model.enter, s.model.extended, s.model.cap_enter,
+                               s.model.repair, s.model.adverse) for s in sleeves}
+            blocked_entries.add(open_ms)
+        if in_window:
+            started = True
+            exited = set()
+            acted = False
+            for sleeve in sleeves:
+                bull, _enter, extended, _cap, repair, adverse = prev[sleeve.window]
+                if sleeve.btc > 0 and not repair and (adverse or extended or not bull):
+                    kind = 'adverse' if adverse else ('extend' if extended else 'sma')
+                    sell(sleeve, open_, open_ms, kind, exit_slip)
+                    sleeve.model.note_exit()
+                    exited.add(sleeve.window)
+                    acted = True
+            for sleeve in sleeves:
+                if sleeve.btc > 0 and sleeve.window not in exited:
+                    stop = sleeve.model.stop_price(sleeve.peak_high)
+                    if open_ <= stop:
+                        sell(sleeve, open_, open_ms, 'gap', stop_slip)
+                        sleeve.model.note_exit()
+                        exited.add(sleeve.window)
+                        acted = True
+            flat = [s for s in sleeves if s.btc == 0]
+            if flat or acted:
+                meter.mark(equity(open_), open_ms, adverse=True)
+            budget = pool / len(flat) if flat else D(0)
+            for sleeve in flat:
+                _bull, enter, _extended, cap_enter, _repair, _adverse = prev[sleeve.window]
+                if sleeve.window in exited or not (enter or cap_enter):
+                    continue
+                if open_ms in blocked_entries:
+                    skipped += 1
+                    continue
+                spend = min(budget, pool)
+                if vol_target is not None:
+                    vol = realized_vol(closes_before)
+                    if vol is not None and vol > D(vol_target):
+                        spend = spend * D(vol_target) / vol
+                charge = spend * fee
+                fees += charge
+                fill = open_ * (D(1) + entry_slip)
+                sleeve.btc = (spend - charge) / fill
+                pool -= spend
+                sleeve.entry_px = fill
+                sleeve.entry_ms = open_ms
+                sleeve.peak_high = open_
+                sleeve.model.note_entry(fill)
+                if cap_enter:
+                    sleeve.model.note_cap_entry()
+            holders = [s for s in sleeves if s.btc > 0 and s.window not in exited]
+            if holders:
+                meter.mark(equity(high), open_ms, adverse=False)
+                for sleeve in holders:
+                    if high > sleeve.peak_high:
+                        sleeve.peak_high = high
+                stopped = []
+                for sleeve in holders:
+                    stop = sleeve.model.stop_price(sleeve.peak_high)
+                    if low <= stop:
+                        stopped.append((sleeve, stop))
+                for sleeve, stop in stopped:
+                    sell(sleeve, stop, open_ms, 'trail', stop_slip)
+                    sleeve.model.note_exit()
+                meter.mark(equity(low), open_ms, adverse=True)
+        for sleeve in sleeves:
+            sleeve.model.update(open_ms, high, low, close)
+        if in_window:
+            daily.append((open_ms, meter.cny(equity(close), open_ms + DAY - 1)))
+    last = [bar for bar in bars if bar[0] < end_ms][-1]
+    final_usdt = equity(last[4])
+    final_cny = meter.cny(final_usdt, end_ms - 1)
+    years = D(end_ms - start_ms) / YEAR_MS
+    growth = final_cny / D(initial_cny)
+    cagr = (float(growth) ** (1 / float(years)) - 1) if growth > 0 else -1
+    return {
+        'final_usdt': final_usdt,
+        'final_cny': final_cny,
+        'cagr': cagr,
+        'mdd': meter.mdd,
+        'mdd_at': meter.mdd_at,
+        'fees': fees,
+        'trades': sorted(trades, key=lambda item: (item['exit_ms'], item['sleeve'])),
+        'position_btc': sum((s.btc for s in sleeves), D(0)),
+        'positions': {s.window: s.btc for s in sleeves},
+        'skipped_entries': skipped,
+        'daily_cny': daily,
+        'windows': list(windows),
+        'years': years,
+        'model': sleeves[0].model,
     }

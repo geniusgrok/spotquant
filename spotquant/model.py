@@ -1,13 +1,15 @@
 """Causal daily BTCUSDT spot regime. Long or cash. No leverage and no short.
 
-A completed UTC daily close strictly above its SMA is bullish. An ordinary
-entry needs two such closes, a fresh cross since the last exit, and a close
-at least half the inclusive 252-day highest close. The buy is the next open.
-A close at least 60% above that SMA is a blow-off and sells the next open.
-A crash reversal is a completed day up at least 6% after a day down at least
-8%, while the close is still at least half under the inclusive 400-day
+The book is three SMA sleeves (30, 40, and 50 days) on one USDT pool. Each
+sleeve is one ``Model`` and decides on its own coins. A completed UTC daily
+close strictly above the sleeve's SMA is bullish. An ordinary entry needs two
+such closes, a fresh cross since that sleeve's last exit, and a close at least
+half the inclusive 252-day highest close. The buy is the next open.
+A close at least 61% above the SMA is a blow-off and sells the next open.
+A crash reversal is a completed day up at least 7% after a day down at least
+11%, while the close is still at least half under the inclusive 400-day
 highest close. That signal may buy the next open. Until the close is back
-above the SMA and no more than 20% under that 400-day high, the repair
+above the SMA and no more than 11% under that 400-day high, the repair
 position ignores the SMA exit, the blow-off, and the 4% close. Any other
 position sells the next open when a completed close is 4% or more under its
 entry fill. There is no same-day re-entry.
@@ -34,26 +36,35 @@ from .types import Blocked, number
 # 2019-01-01T00:00:00Z. Warmup for the 252-day high is inside this history.
 ORIGIN = 1546300800000
 DAY = 86_400_000
-# Full-sample P3 book. SMA 40, confirm 2, fresh, crash 0.50 on the inclusive
-# 252-day highest close, trail 0.28. Blow-off is a close at least 60% above
-# the SMA. A crash reversal needs an 8% down day, a 6% up day, and a close
-# still at least half under the inclusive 400-day highest close. Repair holds
-# until the close is back above the SMA and no more than 20% under that high.
-# Any other position sells the next open after a close 4% or more under the fill.
+# P4 book: sleeves 30, 40, and 50 on one pool. Every sleeve uses confirm 2,
+# fresh, crash 0.50 on the inclusive 252-day highest close, and trail 0.28.
+# A blow-off is a close at least 61% above the SMA. A crash reversal needs an
+# 11% down day, a 7% up day, and a close still at least half under the
+# inclusive 400-day highest close. Repair holds until the close is back above
+# the SMA and no more than 11% under that high. The blow-off and reversal
+# distances are the centers of the plateaus on which the single SMA 40 (P3)
+# book prints identical trades; see research/PROTOCOL.md. Any other position
+# sells the next open after a close 4% or more under the fill.
+SLEEVES = (30, 40, 50)
 SMA_WINDOW = 40
 TRAIL = D('0.28')
 CONFIRM = 2
 CRASH = D('0.50')
 HIGH_WINDOW = 252
 FRESH = True
-EXTEND = D('0.60')
-CAP_DROP = D('0.08')
-CAP_BOUNCE = D('0.06')
+EXTEND = D('0.61')
+CAP_DROP = D('0.11')
+CAP_BOUNCE = D('0.07')
 CAP_DEPTH = D('0.50')
-CAP_HAND = D('0.20')
+CAP_HAND = D('0.11')
 CAP_WINDOW = 400
 ADVERSE = D('0.04')
-VERSION = 3
+VERSION = 4
+
+
+def percent(value) -> str:
+    """A fraction as a plain percent for a reason string: 0.11 -> '11%'."""
+    return format((D(value) * 100).normalize(), 'f') + '%'
 
 
 class Model:

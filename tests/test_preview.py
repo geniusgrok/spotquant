@@ -3,7 +3,7 @@ from decimal import Decimal as D
 import unittest
 
 from spotquant.model import DAY, ORIGIN, Model
-from spotquant.preview import preview
+from spotquant.preview import portfolio, preview
 from spotquant.types import Unknown
 
 
@@ -108,7 +108,7 @@ class PreviewTests(unittest.TestCase):
 
     def test_owned_coins_exit_a_blowoff_while_still_above_the_average(self):
         model = Model(sma_window=2, trail='0.20', confirm=1, fresh=False, crash='0', cap_drop='0')
-        for index, close in enumerate((10, 10, 40)):
+        for index, close in enumerate((10, 10, 42)):
             model.update(ORIGIN + index * DAY, close, close, close)
         self.assertTrue(model.extended)
         decision = preview(
@@ -141,6 +141,39 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(decision['action'], 'exit')
         self.assertEqual(decision['order']['side'], 'SELL')
         self.assertEqual(decision['order']['quantity'], '1.00000')
+
+    def test_sleeves_share_the_pool_and_an_exit_frees_cash_for_an_entry_at_the_same_open(self):
+        rising = _model((10, 10, 10, 12))
+        falling = _model((10, 10, 10, 9))
+        self.assertTrue(rising.enter)
+        self.assertFalse(falling.bull)
+        snap = _snap(usdt='300', btc='20')
+        decision = portfolio(
+            {30: rising, 40: falling}, {30: D(0), 40: D('20')}, snap,
+            entries_enabled=True, capital_limit=None,
+        )
+        self.assertEqual(decision['action'], 'exit')
+        self.assertEqual([order['side'] for order in decision['orders']], ['SELL', 'BUY'])
+        self.assertEqual(decision['orders'][0]['sleeves'], [40])
+        self.assertEqual(decision['orders'][0]['quantity'], '20.00000')
+        # Two sleeves hold nothing after the exit: (300 + 20 * 12) / 2 each, and only one is armed.
+        self.assertEqual(decision['orders'][1]['quoteOrderQty'], '270.00')
+        self.assertEqual(decision['orders'][1]['sleeves'], [30])
+        self.assertIn('estimated proceeds', decision['orders'][1]['note'])
+        self.assertEqual(decision['sleeves']['40']['action'], 'exit')
+        self.assertEqual([item['sleeve'] for item in decision['protections']], [30])
+
+    def test_a_balance_the_sleeves_do_not_own_is_unknown(self):
+        with self.assertRaises(Unknown):
+            portfolio({30: _model((10, 10, 10, 12))}, {30: D(0)}, _snap(btc='1'),
+                      entries_enabled=True, capital_limit=None)
+
+    def test_the_capital_limit_caps_the_whole_pool(self):
+        decision = portfolio(
+            {30: _model((10, 10, 10, 12)), 40: _model((10, 10, 10, 12))}, {}, _snap('1000'),
+            entries_enabled=True, capital_limit=D('100'),
+        )
+        self.assertEqual(decision['orders'][0]['quoteOrderQty'], '100.00')
 
 
 if __name__ == '__main__':

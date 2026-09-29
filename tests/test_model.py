@@ -6,7 +6,7 @@ import unittest
 
 from spotquant.model import (
     ADVERSE, CAP_BOUNCE, CAP_DEPTH, CAP_DROP, CAP_HAND, CAP_WINDOW, CONFIRM, CRASH, DAY,
-    EXTEND, FRESH, ORIGIN, SMA_WINDOW, TRAIL, Model,
+    EXTEND, FRESH, ORIGIN, SLEEVES, SMA_WINDOW, TRAIL, Model,
 )
 from spotquant.types import Blocked
 
@@ -46,16 +46,17 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(restored.stop_price(D('100')), D('80'))
 
     def test_defaults_match_the_selected_spot_book(self):
+        self.assertEqual(SLEEVES, (30, 40, 50))
         self.assertEqual(SMA_WINDOW, 40)
         self.assertEqual(TRAIL, D('0.28'))
         self.assertEqual(CONFIRM, 2)
         self.assertEqual(CRASH, D('0.50'))
         self.assertIs(FRESH, True)
-        self.assertEqual(EXTEND, D('0.60'))
-        self.assertEqual(CAP_DROP, D('0.08'))
-        self.assertEqual(CAP_BOUNCE, D('0.06'))
+        self.assertEqual(EXTEND, D('0.61'))
+        self.assertEqual(CAP_DROP, D('0.11'))
+        self.assertEqual(CAP_BOUNCE, D('0.07'))
         self.assertEqual(CAP_DEPTH, D('0.50'))
-        self.assertEqual(CAP_HAND, D('0.20'))
+        self.assertEqual(CAP_HAND, D('0.11'))
         self.assertEqual(CAP_WINDOW, 400)
         self.assertEqual(ADVERSE, D('0.04'))
 
@@ -78,11 +79,11 @@ class ModelTests(unittest.TestCase):
         model.update(*bar(7, 14))
         self.assertTrue(model.enter)
 
-    def test_a_close_sixty_percent_above_the_average_is_a_blowoff(self):
+    def test_a_close_sixty_one_percent_above_the_average_is_a_blowoff(self):
         model = Model(sma_window=2, trail='0.20', crash='0', confirm=1, fresh=False, cap_drop='0')
         model.update(*bar(0, 10))
         model.update(*bar(1, 10))
-        model.update(*bar(2, 40))
+        model.update(*bar(2, 42))
         self.assertTrue(model.bull)
         self.assertTrue(model.extended)
         restored = Model.restore(model.checkpoint())

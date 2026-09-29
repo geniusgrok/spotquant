@@ -74,6 +74,8 @@ class SessionTests(unittest.TestCase):
             third = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(third['model_preview']['action'], 'enter')
         self.assertEqual(third['model_preview']['order']['side'], 'BUY')
+        self.assertEqual(third['model_preview']['order']['sleeves'], [30, 40, 50])
+        self.assertEqual(third['model_preview']['order']['quoteOrderQty'], '999.99')
         self.assertEqual(third['qualification'], 'NOT_QUALIFIED')
         self.assertEqual(venue.orders_sent, 0)
 
@@ -102,13 +104,13 @@ class SessionTests(unittest.TestCase):
             armed = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
             self.assertEqual(armed['model_preview']['action'], 'enter')
             venue.snapshot = lambda uid: {
-                'account_uid': uid, 'btc': D('0.05'), 'usdt_free': D('0'),
+                'account_uid': uid, 'btc': D('0.6'), 'usdt_free': D('0'),
                 'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
             }
             venue.trade_rows = [{
                 'time': ORIGIN + 254 * DAY + 60_000,
-                'qty': D('0.05'),
-                'quote': D('5.55'),
+                'qty': D('0.6'),
+                'quote': D('66.6'),
                 'buyer': True,
                 'commission': D('0'),
                 'commission_asset': 'BNB',
@@ -116,17 +118,71 @@ class SessionTests(unittest.TestCase):
             held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
             self.assertEqual(held['status'], 'read_only')
             self.assertTrue(held['followed_position'])
+            self.assertEqual(held['followed_sleeves'], [30, 40, 50])
             self.assertEqual(held['model_preview']['action'], 'hold')
-            # 111 * 0.72. The bullish-streak high is not the anchor.
-            self.assertEqual(held['model_preview']['protection']['stopPrice'], '79.92')
-            self.assertIn('since the fill', held['model_preview']['reason'])
+            # 111 * 0.72 for each sleeve. The bullish-streak high is not the anchor.
+            self.assertEqual(
+                [item['stopPrice'] for item in held['model_preview']['protections']], ['79.92'] * 3)
+            self.assertIn('since the fill', held['model_preview']['sleeves']['40']['reason'])
             venue.snapshot = lambda uid: (_ for _ in ()).throw(Unknown('feed broke'))
             failed = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(failed['status'], 'unknown')
         self.assertNotIn('model_bull', failed)
         self.assertNotIn('model_preview', failed)
+        self.assertNotIn('followed_position', failed)
+        self.assertNotIn('followed_sleeves', failed)
         self.assertFalse(failed['recorded_limits']['adverse_loss_capped'])
         self.assertFalse(failed['recorded_limits']['skip_stress_targets_met'])
+
+    def _held_venue(self, directory):
+        venue = Venue(bars(252, 100))
+        config = Config('10001', directory, session_seconds=2, poll_seconds=1)
+        run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        venue.bars.append((ORIGIN + 252 * DAY, D(110), D(100), D(110)))
+        run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        venue.bars.append((ORIGIN + 253 * DAY, D(111), D(100), D(111)))
+        run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        venue.snapshot = lambda uid: {
+            'account_uid': uid, 'btc': D('0.6'), 'usdt_free': D('0'),
+            'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
+        }
+        venue.trade_rows = [{
+            'time': ORIGIN + 254 * DAY + 60_000, 'qty': D('0.6'), 'quote': D('66.6'),
+            'buyer': True, 'commission': D('0'), 'commission_asset': 'BNB',
+        }]
+        held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        self.assertTrue(held['followed_position'])
+        return config, venue
+
+    def test_a_full_transfer_out_without_a_sell_is_unknown_and_drops_the_followed_flag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._held_venue(directory)
+            venue.snapshot = lambda uid: {
+                'account_uid': uid, 'btc': D(0), 'usdt_free': D(0),
+                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
+            }
+            report = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        self.assertEqual(report['status'], 'unknown')
+        self.assertIn('does not match the recorded', report['reason'])
+        self.assertNotIn('followed_position', report)
+        self.assertNotIn('model_preview', report)
+
+    def test_a_sell_on_the_account_closes_the_followed_sleeves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._held_venue(directory)
+            venue.bars.append((ORIGIN + 254 * DAY, D(111), D(50), D(50)))
+            venue.snapshot = lambda uid: {
+                'account_uid': uid, 'btc': D(0), 'usdt_free': D('66'),
+                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
+            }
+            venue.trade_rows.append({
+                'time': ORIGIN + 255 * DAY + 60_000, 'qty': D('0.6'), 'quote': D('30'),
+                'buyer': False, 'commission': D('0'), 'commission_asset': 'BNB',
+            })
+            report = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        self.assertEqual(report['status'], 'read_only')
+        self.assertFalse(report['followed_position'])
+        self.assertEqual(report['model_preview']['action'], 'flat')
 
 
 if __name__ == '__main__':

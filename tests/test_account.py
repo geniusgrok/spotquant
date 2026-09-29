@@ -2,7 +2,7 @@
 from decimal import Decimal as D
 import unittest
 
-from research.account import simulate
+from research.account import simulate, simulate_sleeves
 from spotquant.model import DAY, ORIGIN
 
 
@@ -95,6 +95,54 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(result['trades'], [])
         expected = D('10000') * D('0.999') * D('0.999')
         self.assertEqual(result['final_cny'].quantize(D('0.000001')), expected.quantize(D('0.000001')))
+
+    def test_one_sleeve_prints_the_single_account(self):
+        args = dict(
+            start_ms=START, end_ms=END, confirm=1, fresh=False, crash='0', trail='0.20',
+            fee=D('0.001'), entry_slip=D('0.0005'), exit_slip=D('0.0005'), stop_slip=D('0.001'),
+            conversion=D('0.001'),
+        )
+        single = simulate(bars(), fx, sma_window=3, **args)
+        sleeve = simulate_sleeves(
+            bars(), fx, start_ms=START, end_ms=END, windows=(3,), fee=args['fee'],
+            entry_slip=args['entry_slip'], exit_slip=args['exit_slip'], stop_slip=args['stop_slip'],
+            conversion=args['conversion'],
+            model_kwargs={'confirm': 1, 'fresh': False, 'crash': '0', 'trail': '0.20'},
+        )
+        self.assertEqual(sleeve['final_cny'], single['final_cny'])
+        self.assertEqual(sleeve['mdd'], single['mdd'])
+        self.assertEqual(
+            [(t['entry'], t['exit'], t['kind']) for t in sleeve['trades']],
+            [(t['entry'], t['exit'], t['kind']) for t in single['trades']])
+
+    def test_two_sleeves_split_the_pool_and_exit_on_their_own_coins(self):
+        rows = []
+        closes = [100] * 8 + [110, 120, 130, 140, 100, 100, 100]
+        for index, close in enumerate(closes):
+            rows.append((ORIGIN + index * DAY, D(close), D(close), D(close), D(close), D(1)))
+        result = simulate_sleeves(
+            rows, fx, start_ms=ORIGIN + 8 * DAY, end_ms=ORIGIN + 15 * DAY, windows=(2, 5),
+            model_kwargs={'confirm': 1, 'fresh': False, 'crash': '0', 'trail': '0.50', 'cap_drop': '0',
+                          'adverse_stop': '0', 'extend': '0'},
+            fee=D(0), entry_slip=D(0), exit_slip=D(0), stop_slip=D(0), conversion=D(0),
+        )
+        by_sleeve = {trade['sleeve']: trade for trade in result['trades']}
+        self.assertEqual(sorted(by_sleeve), [2, 5])
+        self.assertEqual(by_sleeve[2]['entry'], by_sleeve[5]['entry'])
+        self.assertLessEqual(D(by_sleeve[2]['exit_ms']), D(by_sleeve[5]['exit_ms']))
+        self.assertEqual(result['position_btc'], D(0))
+
+    def test_a_cold_start_waits_for_a_fresh_cross_and_the_first_open_never_buys(self):
+        rows = [(ORIGIN + index * DAY, D(100 + index), D(100 + index), D(100 + index), D(100 + index), D(1))
+                for index in range(12)]
+        result = simulate_sleeves(
+            rows, fx, start_ms=ORIGIN + 8 * DAY, end_ms=ORIGIN + 12 * DAY, windows=(3,),
+            model_kwargs={'confirm': 1, 'fresh': True, 'crash': '0', 'cap_drop': '0'},
+            fee=D(0), entry_slip=D(0), exit_slip=D(0), stop_slip=D(0), conversion=D(0),
+            cold_start=True,
+        )
+        self.assertEqual(result['trades'], [])
+        self.assertEqual(result['position_btc'], D(0))
 
 
 if __name__ == '__main__':
