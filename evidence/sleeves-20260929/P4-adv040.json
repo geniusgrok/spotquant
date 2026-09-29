@@ -44,6 +44,7 @@
     "50": "0.3079472320263376080329355755"
   },
   "skipped_entries": 0,
+  "pending_stop_exit": false,
   "confirm": 2,
   "crash": "0.50",
   "fresh": true,
@@ -1059,9 +1060,9 @@
     }
   ],
   "source": {
-    "git_head": "12fb7c742849c00b7cc2368507afe27f45ad9d66",
+    "git_head": "dd25cfa5d98de139356b0d91ec0c7d2132edfd5e",
     "dirty": false,
-    "python_sources_sha256": "e729fc0e4f99a9715b2a915358fa34b4110ddbf25e089a88d1416713df7c833c"
+    "python_sources_sha256": "7ac9b3ccdcf9a74337c389ba9af0d7c6050d488f856e1ce5c27435eeb40437e2"
   },
   "market_sha256": "6f545b14a31e596c709fd525b788a2e5e04c8ed31fbe50567e4c33819ea60833"
 }

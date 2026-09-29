@@ -48,10 +48,12 @@ def cycle(venue, state: State, config) -> dict:
         raise Blocked('exchange adapter and configuration differ in capital limit')
     models, enabled, fresh = _load_models(state, venue)
     snapshot = venue.snapshot(config.account_uid)
-    positions, follows, accounted, exit_through = _fold(state, venue, models, snapshot)
+    positions, follows, accounted, exit_through, _cursor = _fold(state, venue, models, snapshot)
     if fresh:
         for model in models.values():
             model.note_flat()
+        enabled = False
+    if _entries_blocked(models, exit_through):
         enabled = False
     views = {}
     owned = {}
@@ -153,6 +155,7 @@ def run(config, venue, *, monotonic=time.monotonic, wait=time.sleep, stopping=la
 
 def _load_models(state: State, venue):
     state._staged = None
+    state._seen_trades = []
     saved = state.get('models')
     anchor = state.get('entries_after')
     if saved is not None and set(saved) != {str(window) for window in SLEEVES}:
@@ -170,6 +173,16 @@ def _load_models(state: State, venue):
     last = models[SLEEVES[0]].last
     if saved is not None and any(model.last != last for model in models.values()):
         raise Blocked('sleeve checkpoints are not on the same daily bar')
+    if saved is not None and stored_rule != RULE and not held:
+        # A directory written before this rule has no position to protect.
+        # Flatten the restored entry so an already-bullish regime waits for a fresh cross.
+        for model in models.values():
+            model.note_flat()
+        exit_through = {
+            str(window): model.last for window, model in models.items() if model.last is not None
+        }
+        _stash(state, {window: None for window in SLEEVES}, {window: None for window in SLEEVES},
+               set(state.get('accounted_ids') or []), exit_through, state.get('trade_cursor_ms'))
     for open_ms, high, low, close in venue.completed_daily(None if saved is None else last):
         _consume_bar(state, venue, models, open_ms, high, low, close)
     if models[SLEEVES[0]].last is None:
@@ -178,10 +191,21 @@ def _load_models(state: State, venue):
     return models, enabled, saved is None
 
 
+def _entries_blocked(models: dict, exit_through: dict) -> bool:
+    """True when every sleeve is still inside the bar that consumed its last entry."""
+    if not exit_through:
+        return False
+    for window, model in models.items():
+        blocked = exit_through.get(str(window))
+        if blocked is None or model.last is None or model.last > int(blocked):
+            return False
+    return True
+
+
 def _consume_bar(state, venue, models, open_ms, high, low, close):
     """Fills of this day land on the model as it stood before the bar."""
-    positions, follows, accounted, exit_through = _stored(state)
-    trades = _trades_for(venue, positions, follows, accounted)
+    positions, follows, accounted, exit_through, cursor = _stored(state)
+    trades = _trades_for(state, venue, positions, follows, cursor)
     positions, follows, accounted, closed = apply_day(
         models, positions, follows, accounted, open_ms, trades, lambda: venue.completed_daily(None),
     )
@@ -201,7 +225,8 @@ def _consume_bar(state, venue, models, open_ms, high, low, close):
     for window, item in positions.items():
         if item is not None:
             positions[window] = advance(item, step_models[window], models[window])
-    _stash(state, positions, follows, accounted, exit_through)
+    cursor, accounted = _cursor_after(trades, accounted, cursor)
+    _stash(state, positions, follows, accounted, exit_through, cursor)
 
 
 def _fold(state, venue, models, snapshot):
@@ -211,8 +236,8 @@ def _fold(state, venue, models, snapshot):
     bars of one catch-up see the model in time order. The stash is memory on
     the state object until ``_commit``.
     """
-    positions, follows, accounted, exit_through = _stored(state)
-    trades = _trades_for(venue, positions, follows, accounted)
+    positions, follows, accounted, exit_through, cursor = _stored(state)
+    trades = _trades_for(state, venue, positions, follows, cursor)
     last = models[SLEEVES[0]].last
     later = sorted({
         day_open(trade['time']) for trade in trades
@@ -229,8 +254,9 @@ def _fold(state, venue, models, snapshot):
         unexplained(positions, D(snapshot['btc']), mark)
     elif mark is not None and D(snapshot['btc']) * mark >= MIN_NOTIONAL:
         raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
-    _stash(state, positions, follows, accounted, exit_through)
-    return positions, follows, accounted, exit_through
+    cursor, accounted = _cursor_after(trades, accounted, cursor)
+    _stash(state, positions, follows, accounted, exit_through, cursor)
+    return positions, follows, accounted, exit_through, cursor
 
 
 def _stored(state: State):
@@ -241,26 +267,56 @@ def _stored(state: State):
     follows = {window: (state.get('follows') or {}).get(str(window)) for window in SLEEVES}
     accounted = set(state.get('accounted_ids') or [])
     exit_through = dict(state.get('exit_through') or {})
-    return positions, follows, accounted, exit_through
+    return positions, follows, accounted, exit_through, state.get('trade_cursor_ms')
 
 
-def _stash(state, positions, follows, accounted, exit_through):
-    state._staged = (positions, follows, accounted, exit_through)
+def _stash(state, positions, follows, accounted, exit_through, cursor):
+    state._staged = (positions, follows, accounted, exit_through, cursor)
 
 
-def _trades_for(venue, positions, follows, accounted):
+def _trades_for(state, venue, positions, follows, cursor):
+    """Read fills from the cursor, not from the epoch.
+
+    A flat account that has already recorded trades keeps the cursor at the
+    latest accounted millisecond and reads that overlap again. Same-millisecond
+    trades are kept by id. The cursor does not move past a trade this cycle
+    has not accounted, so a buy that arrives before its follow is not dropped.
+    """
     starts = [int(item['first_ms']) for item in positions.values() if item is not None]
     starts += [
         int(item['signal_ms']) + DAY for item in follows.values()
         if item and item.get('signal_ms') is not None
     ]
-    if not starts and not accounted:
+    if cursor is not None:
+        starts.append(int(cursor))
+    if not starts:
         return []
-    since = min(starts) if starts else 0
-    return list(venue.trades(since))
+    trades = list(venue.trades(min(starts)))
+    seen = getattr(state, '_seen_trades', [])
+    state._seen_trades = seen + trades
+    return trades
+
+
+def _cursor_after(trades, accounted, cursor):
+    """Move the cursor to the newest accounted trade that is not past an open one."""
+    done = [trade for trade in trades if trade['id'] in accounted]
+    if not done:
+        return cursor, set(accounted)
+    pending = [trade['time'] for trade in trades if trade['id'] not in accounted]
+    if pending:
+        limit = min(pending)
+        done = [trade for trade in done if trade['time'] < limit]
+        if not done:
+            return cursor, set(accounted)
+    new_cursor = max(trade['time'] for trade in done)
+    if cursor is not None:
+        new_cursor = max(int(cursor), new_cursor)
+    keep = {trade['id'] for trade in trades if trade['id'] in accounted and trade['time'] >= new_cursor}
+    return new_cursor, keep
 
 
 def _commit(state, models, positions, follows, accounted, exit_through, fresh, last):
+    _positions, _follows, accounted, exit_through, cursor = _stored(state)
     values = {
         'rule': RULE,
         'models': {str(window): model.checkpoint() for window, model in models.items()},
@@ -268,6 +324,7 @@ def _commit(state, models, positions, follows, accounted, exit_through, fresh, l
         'follows': {str(window): item for window, item in follows.items()},
         'accounted_ids': sorted(accounted),
         'exit_through': {str(key): value for key, value in exit_through.items()},
+        'trade_cursor_ms': cursor,
     }
     if fresh:
         values['entries_after'] = last
@@ -323,5 +380,6 @@ def _public_snapshot(snapshot: dict) -> dict:
         'usdt_free': snapshot.get('usdt_free'),
         'usdt_locked': snapshot.get('usdt_locked'),
         'open_orders': snapshot.get('open_orders'),
+        'orders': list(snapshot.get('orders') or []),
         'environment': snapshot.get('environment'),
     }

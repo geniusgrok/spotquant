@@ -211,6 +211,7 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
     final_usdt = book.usdt if book.btc == 0 else book.equity_usdt(last[4])
     final_cny = book._cny(final_usdt, end_ms - 1)
     book.mark_cny(final_cny, end_ms - 1, adverse=True)
+    pending_stop = book.btc > 0 and book.exit_next is not None
     years = D(end_ms - start_ms) / YEAR_MS
     growth = final_cny / INITIAL_CNY
     cagr = (float(growth) ** (1 / float(years)) - 1) if growth > 0 else -1
@@ -223,6 +224,7 @@ def simulate(bars, fx, *, start_ms: int, end_ms: int, sma_window: int | None = N
         'fees': book.fees,
         'trades': book.trades,
         'position_btc': book.btc,
+        'pending_stop_exit': pending_stop,
         'skipped_entries': skipped,
         'daily_cny': daily,
         'sma_window': model.sma_window,
@@ -440,6 +442,7 @@ def simulate_sleeves(bars, fx, *, start_ms: int, end_ms: int, windows=SLEEVES, m
     final_usdt = equity(last[4])
     final_cny = meter.cny(final_usdt, end_ms - 1)
     meter.mark_cny(final_cny, end_ms - 1, adverse=True)
+    pending_stop = any(sleeve.btc > 0 and sleeve.exit_next for sleeve in sleeves)
     years = D(end_ms - start_ms) / YEAR_MS
     growth = final_cny / D(initial_cny)
     cagr = (float(growth) ** (1 / float(years)) - 1) if growth > 0 else -1
@@ -453,6 +456,7 @@ def simulate_sleeves(bars, fx, *, start_ms: int, end_ms: int, windows=SLEEVES, m
         'trades': sorted(trades, key=lambda item: (item['exit_ms'], item['sleeve'])),
         'position_btc': sum((s.btc for s in sleeves), D(0)),
         'positions': {s.window: s.btc for s in sleeves},
+        'pending_stop_exit': pending_stop,
         'skipped_entries': skipped,
         'daily_cny': daily,
         'windows': list(windows),

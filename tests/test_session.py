@@ -25,6 +25,7 @@ class Venue:
         self.capital_limit = None
         self.orders_sent = 0
         self.trade_rows = []
+        self.trade_since = []
 
     def clock(self):
         return 1_700_000_000.0
@@ -45,6 +46,7 @@ class Venue:
         return [bar for bar in self.bars if bar[0] > after]
 
     def trades(self, since):
+        self.trade_since.append(since)
         return [row for row in self.trade_rows if row['time'] >= since]
 
     def place_order(self, *args, **kwargs):
@@ -201,6 +203,55 @@ class SessionTests(unittest.TestCase):
         # The 150 high arrived while the preview failed and still lifts the stop: 150 * 0.72.
         self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '108.00')
         self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [30, 40, 50])
+
+    def test_a_flat_account_reads_later_trades_from_the_cursor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._held_venue(directory)
+            venue.bars.append((ORIGIN + 254 * DAY, D(111), D(50), D(50)))
+            venue.snapshot = lambda uid: {
+                'account_uid': uid, 'btc': D(0), 'usdt_free': D('66'),
+                'usdt_locked': D(0), 'open_orders': 0, 'orders': [], 'environment': 'live',
+            }
+            sold_at = ORIGIN + 255 * DAY + 60_000
+            venue.trade_rows.append({
+                'id': 2, 'time': sold_at, 'qty': D('0.6'), 'quote': D('30'),
+                'buyer': False, 'order_id': 2, 'commission': D('0'), 'commission_asset': 'BNB',
+            })
+            run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+            venue.trade_since.clear()
+            run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        self.assertTrue(venue.trade_since)
+        self.assertEqual(min(venue.trade_since), sold_at)
+
+    def test_open_order_details_stay_on_the_report(self):
+        orders = [{
+            'order_id': 9, 'side': 'SELL', 'type': 'STOP_LOSS', 'status': 'NEW',
+            'stop_price': '79.92',
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._held_venue(directory)
+            previous = venue.snapshot
+            venue.snapshot = lambda uid: dict(previous(uid), open_orders=1, orders=orders)
+            report = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        self.assertEqual(report['status'], 'read_only')
+        self.assertEqual(report['actual']['orders'], orders)
+        self.assertNotEqual(report['model_preview']['action'], 'enter')
+
+    def test_an_old_checkpoint_does_not_keep_an_already_bullish_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            venue = Venue(bars(252, 100))
+            config = Config('10001', directory, session_seconds=2, poll_seconds=1)
+            run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+            venue.bars.append((ORIGIN + 252 * DAY, D(200), D(180), D(200)))
+            run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+            venue.bars.append((ORIGIN + 253 * DAY, D(210), D(190), D(210)))
+            armed = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+            self.assertEqual(armed['model_preview']['action'], 'enter')
+            from spotquant.state import State
+            with State(config.state_dir, config.scope) as state:
+                state.set('rule', 'older')
+            held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        self.assertNotEqual(held['model_preview']['action'], 'enter')
 
 
 if __name__ == '__main__':

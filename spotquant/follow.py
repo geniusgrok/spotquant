@@ -207,7 +207,8 @@ def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open
     """Apply one UTC day's fills before that day's bar updates the model.
 
     A sell closes the matching sleeves and consumes their entry signal before any
-    later bar. The same day cannot open a new sleeve. Two orders, or two sleeve
+    later bar. The sleeve that sold does not buy again that day. Another flat
+    sleeve can. Two orders, or two sleeve
     groups of the same size, are unknown. Trade ids already accounted are ignored,
     including a second fill that shares the first fill's millisecond.
     """
