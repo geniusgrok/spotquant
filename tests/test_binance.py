@@ -57,12 +57,10 @@ class Script:
             body['symbols'][0]['filters'][3]['maxTrailingBelowDelta'] = self.trailing
             return 200, json.dumps(body).encode()
         if '/api/v3/account' in url:
-            return 200, json.dumps({'balances': [
+            return 200, json.dumps({'uid': self.uid, 'canTrade': True, 'balances': [
                 {'asset': 'BTC', 'free': '0.00000000', 'locked': '0.00000000'},
                 {'asset': 'USDT', 'free': '25.50', 'locked': '1.00'},
             ]}).encode()
-        if '/sapi/v1/account/uid' in url:
-            return 200, json.dumps({'uid': self.uid}).encode()
         if '/api/v3/openOrders' in url:
             return 200, b'[]'
         if '/api/v3/klines' in url:
@@ -94,6 +92,18 @@ class BinanceTests(unittest.TestCase):
         self.assertTrue(account.startswith('https://api.binance.com/'))
         script.uid = '999'
         with self.assertRaises(Blocked):
+            venue.snapshot('10001')
+
+    def test_a_missing_balance_list_is_not_an_empty_account(self):
+        script = Script()
+
+        def opener(method, url, headers):
+            if '/api/v3/account' in url:
+                return 200, json.dumps({'uid': '10001'}).encode()
+            return script(method, url, headers)
+
+        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener, clock=lambda: 1_700_000_000)
+        with self.assertRaises(Unknown):
             venue.snapshot('10001')
 
     def test_demo_host_and_no_order_method(self):

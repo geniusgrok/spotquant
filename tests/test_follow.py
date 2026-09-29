@@ -2,14 +2,20 @@
 from decimal import Decimal as D
 import unittest
 
-from spotquant.follow import reconcile, replay
+from spotquant.follow import apply_day, day_open, replay, unexplained
 from spotquant.model import DAY, ORIGIN
 from spotquant.types import Unknown
 
 
-def _trade(index, time, qty, quote, *, buyer=True, commission='0', asset='BNB'):
+class _Model:
+    def note_flat(self):
+        self.flat = True
+
+
+def _trade(index, time, qty, quote, *, buyer=True, commission='0', asset='BNB', order_id=None):
     return {
-        'id': index, 'time': time, 'qty': D(qty), 'quote': D(quote), 'price': D(quote) / D(qty),
+        'id': index, 'order_id': index if order_id is None else order_id, 'time': time,
+        'qty': D(qty), 'quote': D(quote), 'price': D(quote) / D(qty),
         'buyer': buyer, 'commission': D(commission), 'commission_asset': asset,
     }
 
@@ -36,9 +42,10 @@ class FollowTests(unittest.TestCase):
     def test_btc_commission_is_part_of_the_balance_and_not_the_fill_price(self):
         signal = ORIGIN + 10 * DAY
         trades = [_trade(1, signal + DAY + 5, '1', '100', commission='0.001', asset='BTC')]
-        positions, follows, ledger, closed = reconcile(
-            {30: None}, {30: {'signal_ms': signal, 'repair': False}}, trades, D('0.999'), D('100'),
-            None, set(), lambda: [(ORIGIN + index * DAY, D(100), D(100), D(100)) for index in range(12)],
+        positions, follows, _accounted, closed = apply_day(
+            {30: _Model()}, {30: None}, {30: {'signal_ms': signal, 'repair': False}}, set(),
+            signal + DAY, trades,
+            lambda: [(ORIGIN + index * DAY, D(100), D(100), D(100)) for index in range(12)],
         )
         self.assertEqual(D(positions[30]['entry_fill']), D('100'))
         self.assertEqual(D(positions[30]['qty']), D('0.999'))
@@ -49,8 +56,9 @@ class FollowTests(unittest.TestCase):
         signal = ORIGIN + 10 * DAY
         trades = [_trade(1, signal + DAY + 5, '0.3', '30')]
         follows = {window: {'signal_ms': signal, 'repair': False} for window in (30, 40, 50)}
-        positions, follows, _ledger, _closed = reconcile(
-            {30: None, 40: None, 50: None}, follows, trades, D('0.3'), D('100'), None, set(),
+        positions, follows, _accounted, _closed = apply_day(
+            {window: _Model() for window in (30, 40, 50)}, {30: None, 40: None, 50: None}, follows,
+            set(), signal + DAY, trades,
             lambda: [(ORIGIN + index * DAY, D(100), D(100), D(100)) for index in range(12)],
         )
         self.assertEqual(
@@ -61,29 +69,30 @@ class FollowTests(unittest.TestCase):
     def test_a_balance_that_is_not_the_buy_is_unknown(self):
         signal = ORIGIN + 10 * DAY
         trades = [_trade(1, signal + DAY + 5, '1', '100')]
+        positions, follows, _ids, _closed = apply_day(
+            {30: _Model()}, {30: None}, {30: {'signal_ms': signal, 'repair': False}}, set(),
+            signal + DAY, trades, lambda: [],
+        )
         with self.assertRaises(Unknown):
-            reconcile(
-                {30: None}, {30: {'signal_ms': signal, 'repair': False}}, trades, D('1.2'), D('100'),
-                None, set(), lambda: [],
-            )
+            unexplained(positions, D('1.2'), D('100'))
 
     def test_a_sell_that_leaves_one_sleeve_closes_only_that_sleeve(self):
         first = ORIGIN + 5 * DAY + 60
         held = {30: _position('0.1', first), 40: _position('0.2', first), 50: None}
         trades = [_trade(1, first, '0.3', '30'), _trade(2, first + 2 * DAY, '0.1', '11', buyer=False)]
-        positions, _follows, ledger, closed = reconcile(
-            held, {30: None, 40: None, 50: None}, trades, D('0.2'), D('110'), None, {30}, lambda: [])
+        positions, _follows, accounted, closed = apply_day(
+            {30: _Model(), 40: _Model(), 50: _Model()}, held, {30: None, 40: None, 50: None},
+            set(), day_open(first + 2 * DAY), trades, lambda: [])
         self.assertEqual(closed, [30])
         self.assertIsNone(positions[30])
         self.assertEqual(positions[40]['qty'], '0.2')
-        self.assertEqual(ledger, first + 2 * DAY)
+        self.assertIn(2, accounted)
 
     def test_a_full_transfer_out_with_no_sell_is_unknown(self):
         first = ORIGIN + 5 * DAY
         held = {30: _position('0.1', first)}
         with self.assertRaises(Unknown):
-            reconcile(held, {30: None}, [_trade(1, first, '0.1', '10')], D('0'), D('100'),
-                      None, {30}, lambda: [])
+            unexplained(held, D('0'), D('100'))
 
     def test_a_sell_already_accounted_for_is_not_counted_twice(self):
         first = ORIGIN + 5 * DAY
@@ -93,22 +102,30 @@ class FollowTests(unittest.TestCase):
             _trade(1, first, '0.1', '10'), _trade(2, sold_at, '0.1', '11', buyer=False),
             _trade(3, first + 2 * DAY, '0.2', '20'),
         ]
-        positions, _f, ledger, closed = reconcile(
-            held, {40: None}, trades, D('0.2'), D('100'), sold_at, set(), lambda: [])
+        positions, _f, _ids, closed = apply_day(
+            {40: _Model()}, held, {40: None}, {2}, day_open(sold_at), trades, lambda: [])
         self.assertEqual(closed, [])
         self.assertEqual(positions[40]['qty'], '0.2')
-        self.assertEqual(ledger, sold_at)
 
-    def test_an_unflagged_tie_between_equal_sleeves_is_unknown(self):
+    def test_equal_sleeves_are_unknown_even_when_both_want_to_exit(self):
         first = ORIGIN + 5 * DAY
         held = {30: _position('0.1', first), 40: _position('0.1', first)}
         trades = [_trade(1, first, '0.2', '20'), _trade(2, first + DAY, '0.1', '11', buyer=False)]
         with self.assertRaises(Unknown):
-            reconcile(held, {30: None, 40: None}, trades, D('0.1'), D('110'), None, set(), lambda: [])
-        positions, _f, _l, closed = reconcile(
-            held, {30: None, 40: None}, trades, D('0.1'), D('110'), None, {40}, lambda: [])
-        self.assertEqual(closed, [40])
-        self.assertIsNotNone(positions[30])
+            apply_day(
+                {30: _Model(), 40: _Model()}, held, {30: None, 40: None}, set(),
+                day_open(first + DAY), trades, lambda: [])
+
+    def test_two_order_ids_are_not_merged_into_one_fill(self):
+        signal = ORIGIN + 10 * DAY
+        trades = [
+            _trade(1, signal + DAY + 5, '0.1', '10', order_id=7),
+            _trade(2, signal + DAY + 6, '0.2', '20', order_id=8),
+        ]
+        with self.assertRaises(Unknown):
+            apply_day(
+                {30: _Model()}, {30: None}, {30: {'signal_ms': signal, 'repair': False}}, set(),
+                signal + DAY, trades, lambda: [])
 
     def test_a_sell_of_one_sleeve_does_not_erase_the_buy_of_another_at_the_same_open(self):
         first = ORIGIN + 5 * DAY
@@ -117,19 +134,20 @@ class FollowTests(unittest.TestCase):
         history = lambda: [(ORIGIN + index * DAY, D(100), D(100), D(100)) for index in range(25)]
         trades = [
             _trade(1, first, '0.6', '60'),
-            _trade(2, signal + DAY + 10, '0.3', '30'),
-            _trade(3, signal + DAY + 20, '0.6', '60', buyer=False),
+            _trade(2, signal + DAY + 10, '0.3', '30', order_id=9),
+            _trade(3, signal + DAY + 20, '0.6', '60', buyer=False, order_id=10),
         ]
-        positions, follows, ledger, closed = reconcile(
+        positions, follows, accounted, closed = apply_day(
+            {30: _Model(), 50: _Model()},
             {30: held[30], 50: None}, {30: None, 50: {'signal_ms': signal, 'repair': False}},
-            trades, D('0.3'), D('100'), None, {30}, history)
+            set(), signal + DAY, trades, history)
         self.assertEqual(closed, [30])
         self.assertEqual(positions[50]['qty'], '0.3')
         self.assertIsNone(positions[30])
         self.assertIsNone(follows[50])
-        self.assertEqual(ledger, signal + DAY + 20)
-        again, _f, _l, none_closed = reconcile(
-            positions, follows, trades, D('0.3'), D('100'), ledger, set(), history)
+        self.assertIn(3, accounted)
+        again, _f, _ids, none_closed = apply_day(
+            {50: _Model()}, positions, follows, accounted, signal + DAY, trades, history)
         self.assertEqual(none_closed, [])
         self.assertEqual(again[50]['qty'], '0.3')
 

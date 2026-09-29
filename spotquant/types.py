@@ -17,12 +17,12 @@ class Unknown(RuntimeError):
     """An observation is incomplete. Do not treat it as success or as an empty account."""
 
 
-def number(value: Any, name: str = 'number', *, positive: bool = False) -> D:
+def number(value: Any, name: str = 'number', *, positive: bool = False, nonnegative: bool = False) -> D:
     try:
         result = D(str(value))
     except (InvalidOperation, ValueError, TypeError) as exc:
         raise Blocked(f'invalid {name}') from exc
-    if not result.is_finite() or (positive and result <= 0):
+    if not result.is_finite() or (positive and result <= 0) or (nonnegative and result < 0):
         raise Blocked(f'invalid {name}')
     return result
 
