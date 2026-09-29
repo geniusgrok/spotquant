@@ -40,6 +40,13 @@ def cycle(venue, state: State, config) -> dict:
     if getattr(venue, 'capital_limit', None) != config.capital_limit:
         raise Blocked('exchange adapter and configuration differ in capital limit')
     positions, follows, ledger = _positions(state, venue, models, snapshot, steps)
+    # The model checkpoint already moved to the new bar. Keep the positions in step with it
+    # even when the preview below fails.
+    state.set_many({
+        'positions': {str(window): item for window, item in positions.items()},
+        'follows': {str(window): item for window, item in follows.items()},
+        'ledger_ms': ledger,
+    })
     views = {}
     owned = {}
     for window, model in models.items():

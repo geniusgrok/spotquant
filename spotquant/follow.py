@@ -202,6 +202,9 @@ def reconcile(positions: dict, follows: dict, trades, balance: D, mark: D, ledge
                 follows[window] = None
                 held.pop(window)
             ledger_ms = max(trade['time'] for trade in sells)
+    if ledger_ms is not None:
+        # Sells up to the ledger already belong to closed sleeves, not to a later buy.
+        trades = [trade for trade in trades if trade['buyer'] or trade['time'] > int(ledger_ms)]
     active = {
         window: item for window, item in follows.items()
         if positions.get(window) is None and item and item.get('signal_ms') is not None

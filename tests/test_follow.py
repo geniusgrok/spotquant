@@ -110,6 +110,29 @@ class FollowTests(unittest.TestCase):
         self.assertEqual(closed, [40])
         self.assertIsNotNone(positions[30])
 
+    def test_a_sell_of_one_sleeve_does_not_erase_the_buy_of_another_at_the_same_open(self):
+        first = ORIGIN + 5 * DAY
+        signal = ORIGIN + 20 * DAY
+        held = {30: _position('0.6', first)}
+        history = lambda: [(ORIGIN + index * DAY, D(100), D(100), D(100)) for index in range(25)]
+        trades = [
+            _trade(1, first, '0.6', '60'),
+            _trade(2, signal + DAY + 10, '0.3', '30'),
+            _trade(3, signal + DAY + 20, '0.6', '60', buyer=False),
+        ]
+        positions, follows, ledger, closed = reconcile(
+            {30: held[30], 50: None}, {30: None, 50: {'signal_ms': signal, 'repair': False}},
+            trades, D('0.3'), D('100'), None, {30}, history)
+        self.assertEqual(closed, [30])
+        self.assertEqual(positions[50]['qty'], '0.3')
+        self.assertIsNone(positions[30])
+        self.assertIsNone(follows[50])
+        self.assertEqual(ledger, signal + DAY + 20)
+        again, _f, _l, none_closed = reconcile(
+            positions, follows, trades, D('0.3'), D('100'), ledger, set(), history)
+        self.assertEqual(none_closed, [])
+        self.assertEqual(again[50]['qty'], '0.3')
+
 
 if __name__ == '__main__':
     unittest.main()

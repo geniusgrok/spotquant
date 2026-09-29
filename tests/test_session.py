@@ -184,6 +184,22 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(report['followed_position'])
         self.assertEqual(report['model_preview']['action'], 'flat')
 
+    def test_a_failed_preview_still_keeps_the_positions_in_step_with_the_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._held_venue(directory)
+            healthy = venue.snapshot
+            venue.snapshot = lambda uid: dict(healthy(uid), open_orders=1)
+            venue.bars.append((ORIGIN + 254 * DAY, D(111), D(111), D(111)))
+            venue.bars.append((ORIGIN + 255 * DAY, D(150), D(111), D(150)))
+            failed = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+            self.assertEqual(failed['status'], 'unknown')
+            venue.snapshot = healthy
+            held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+        self.assertEqual(held['status'], 'read_only')
+        # The 150 high arrived while the preview failed and still lifts the stop: 150 * 0.72.
+        self.assertEqual(
+            [item['stopPrice'] for item in held['model_preview']['protections']], ['108.00'] * 3)
+
 
 if __name__ == '__main__':
     unittest.main()
