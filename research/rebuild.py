@@ -5,7 +5,8 @@ using the ``spotquant.model`` constants. ``--book single --sma 40`` runs the
 earlier single-sleeve P3 book under the same constants; on this window it prints
 the P3 trades and the P3 account. ``--suite`` writes the whole P4 evidence set
 (base, stresses, the 4% inclusion check, the volatility-scaling test, the P3
-reproduction, the ETHUSDT check with frozen rules, and the plateau scan).
+reproduction, single-sleeve neighbors of SMA 40, the ETHUSDT check with frozen
+rules, and the plateau scan).
 ``--grid`` sweeps SMA window and trail for one sleeve and writes
 ``hold-grid.json``. Nothing here replaces ``rebuild-20260928/frontier.json`` or
 its P1, P2, and P3 files; writing into that directory is refused. Partial runs
@@ -357,6 +358,15 @@ def run_suite(bars, eth_bars, fx, out_dir: Path, identity: dict, hashes: dict, s
     for label, book in (('ETH-P4', SLEEVES), ('ETH-P3', (40,))):
         public = save(run_sleeves(eth_bars, fx, label, symbol='ETHUSDT', windows=book, series=False), label)
         summary[label] = line(public)
+    neighbors = {}
+    for window in (30, 35, 40, 45, 50):
+        public = run_sleeves(bars, fx, f'single-{window}', windows=(window,), series=False)
+        neighbors[str(window)] = line(public)
+    (out_dir / 'neighbors.json').write_text(json.dumps({
+        'rule': 'one sleeve at a time under the P4 constants: how much the P3 result depends on SMA 40',
+        'source': identity,
+        'results': neighbors,
+    }, indent=2) + '\n', encoding='utf-8')
     plateau = plateau_scan(bars, fx)
     plateau['source'] = identity
     (out_dir / 'plateau.json').write_text(json.dumps(plateau, indent=2) + '\n', encoding='utf-8')
