@@ -1,0 +1,57 @@
+{
+  "rule": "single SMA 40 book, one constant at a time in steps of 0.005 outward from its P3 value while the trades stay identical; adopted = midpoint rounded to 0.01 if that value prints the identical trades, else the P3 value",
+  "constants": {
+    "extend": {
+      "p3_value": "0.60",
+      "plateau_low": "0.575",
+      "plateau_high": "0.650",
+      "scan_low": "0.40",
+      "scan_high": "0.90",
+      "midpoint_rounded": "0.61",
+      "adopted": "0.61"
+    },
+    "cap_drop": {
+      "p3_value": "0.08",
+      "plateau_low": "0.075",
+      "plateau_high": "0.140",
+      "scan_low": "0.005",
+      "scan_high": "0.40",
+      "midpoint_rounded": "0.11",
+      "adopted": "0.11"
+    },
+    "cap_bounce": {
+      "p3_value": "0.06",
+      "plateau_low": "0.035",
+      "plateau_high": "0.105",
+      "scan_low": "0.005",
+      "scan_high": "0.30",
+      "midpoint_rounded": "0.07",
+      "adopted": "0.07"
+    },
+    "cap_depth": {
+      "p3_value": "0.50",
+      "plateau_low": "0.435",
+      "plateau_high": "0.570",
+      "scan_low": "0.30",
+      "scan_high": "0.90",
+      "midpoint_rounded": "0.50",
+      "adopted": "0.50"
+    },
+    "cap_hand": {
+      "p3_value": "0.20",
+      "plateau_low": "0.005",
+      "plateau_high": "0.220",
+      "scan_low": "0.005",
+      "scan_high": "0.50",
+      "midpoint_rounded": "0.11",
+      "adopted": "0.11"
+    }
+  },
+  "joint_prints_p3_trades": true,
+  "model_constants_match": true,
+  "source": {
+    "git_head": "e9308d8b45ef0fe8cc807c2c2ecb42051ed020cd",
+    "dirty": false,
+    "python_sources_sha256": "13b8554170e858907a2657328e2a8443b2091ca28a8de137e1d77d3da19c8974"
+  }
+}

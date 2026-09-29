@@ -1,0 +1,86 @@
+{
+  "start": "2026-09-20T00:00:00Z",
+  "through": "2026-09-27",
+  "initial_usdt": "10000",
+  "days": [
+    [
+      "2026-09-20",
+      "10000.00000000"
+    ],
+    [
+      "2026-09-21",
+      "10000.00000000"
+    ],
+    [
+      "2026-09-22",
+      "10000.00000000"
+    ],
+    [
+      "2026-09-23",
+      "10000.00000000"
+    ],
+    [
+      "2026-09-24",
+      "10000.00000000"
+    ],
+    [
+      "2026-09-25",
+      "10000.00000000"
+    ],
+    [
+      "2026-09-26",
+      "10000.00000000"
+    ],
+    [
+      "2026-09-27",
+      "10000.00000000"
+    ]
+  ],
+  "final_usdt": "10000.00000000",
+  "return": 0.0,
+  "continuous_mdd": "0",
+  "fees_usdt": "0",
+  "trades": [],
+  "position_by_sleeve": {
+    "30": "0",
+    "40": "0",
+    "50": "0"
+  },
+  "trial": "P4-forward",
+  "symbol": "BTCUSDT",
+  "market": "spot",
+  "rules": {
+    "sleeves": [
+      30,
+      40,
+      50
+    ],
+    "confirm": 2,
+    "fresh": true,
+    "crash": "0.50",
+    "high_window": 252,
+    "trail": "0.28",
+    "extend": "0.61",
+    "cap_drop": "0.11",
+    "cap_bounce": "0.07",
+    "cap_depth": "0.50",
+    "cap_hand": "0.11",
+    "cap_window": 400,
+    "adverse_stop": "0.04",
+    "fee": "0.001",
+    "entry_slip": "0.0005",
+    "exit_slip": "0.0005",
+    "stop_slip": "0.001",
+    "vol_scaling": null
+  },
+  "rules_sha256": "11de2e154fc5fd872311b0e804ecf0b342b558c498f939a313204c939022a968",
+  "cold_start": "all cash; a regime already bullish at the start waits for a fresh cross",
+  "qualification": "NOT_QUALIFIED",
+  "note": "A ledger of a few days is not evidence of an edge. It is a record that starts before the result is known.",
+  "source": {
+    "git_head": "e9308d8b45ef0fe8cc807c2c2ecb42051ed020cd",
+    "dirty": false,
+    "python_sources_sha256": "13b8554170e858907a2657328e2a8443b2091ca28a8de137e1d77d3da19c8974"
+  },
+  "market_sha256": "6ed9e53cd3907a65359933adaf944b6b0560d2f045741c25f97f06fd3dd9253a"
+}
