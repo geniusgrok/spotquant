@@ -153,7 +153,8 @@ class State:
                                        (since_ms,)):
             row = json.loads(payload)
             for key in ('qty', 'quote', 'price', 'commission'):
-                row[key] = D(row[key])
+                if key in row:
+                    row[key] = D(row[key])
             rows.append(row)
         return rows
 

@@ -28,7 +28,8 @@ class Venue:
         self.trade_since = []
 
     def clock(self):
-        return 1_700_000_000.0
+        # The observation clock and completed candles share one historical date.
+        return (self.bars[-1][0] + DAY + 60_000) / 1000
 
     def snapshot(self, uid):
         return {
@@ -221,7 +222,9 @@ class SessionTests(unittest.TestCase):
             venue.trade_since.clear()
             run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertTrue(venue.trade_since)
-        self.assertEqual(min(venue.trade_since), sold_at)
+        self.assertEqual(min(venue.trade_since), sold_at - DAY)
+        # The durable ledger serves the committed cursor; venue reads overlap
+        # one day so a late fill at the same millisecond cannot disappear.
 
     def test_open_order_details_stay_on_the_report(self):
         orders = [{
