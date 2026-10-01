@@ -107,3 +107,26 @@ Original 100%/30% qualification is reported separately. First reproduce the
 registered P4 final CNY and MDD on restored official inputs. Failed reproduction
 or incomplete runs block selection. Deliver a reproducible candidate, a
 mechanical decision, and either a shared-model change or explicit rejection.
+# P6: BTC simple baselines and offline execution — 2026-10-01
+
+Before measuring: compare frozen P4 with USDT cash, first-day buy-and-hold,
+and 12 equal monthly allocations of the initial USDT (January–December 2020,
+first UTC daily open). No deposits, leverage, signal tuning or forced terminal
+sale. Idle cash remains in equity. Use the P4 window, BTC inputs, FX, conversion,
+fees and slippage. Also run fee x1.5 and entry/exit slippage x2. Preserve all
+daily accounts. A simpler baseline dominates P4 only if net CAGR is no lower
+and continuous MDD is no higher (1e-9 tolerance), with one strict improvement,
+in every matched scenario. Dominance pauses further P4 rule expansion; it
+does not automatically promote an executor. The 100%/30% targets stay fixed.
+
+Use existing Book valuation and the same daily high-before-low mark envelope;
+report longest daily-close underwater duration separately, never as continuous
+duration. Twelve allocations spend 1/12 of initial USDT, or remaining cash on
+the last scheduled buy, including fees. No interest on cash.
+
+Build a network-free spot order lifecycle using durable IDs and SQLite,
+including partial fills, lost acknowledgements, protection and restart. It
+must reject non-offline adapters. Native execution remains blocked. Real-time
+observation records must distinguish on-time observation from backfill and
+must not manufacture a 30-day record. Combined reporting requires current,
+distinct-account snapshots with matching valuation timestamps.
