@@ -1,12 +1,12 @@
 {
   "source": {
-    "git_head": "84dc23fca0f20c419553d922e8f8a16d079cdcee",
+    "git_head": "9f61c681436909fa6ba4ed9e5b22ffcfa4a60b3d",
     "dirty": false,
-    "python_sources_sha256": "e759d39d3dcb2a85a6e9240c9c053f0bd1dad78b28e086e162412e69c88eb2a6"
+    "python_sources_sha256": "18ec1fe7fb216647a7dda57c4d08da6000a390e265489cac170ae0b65c1d45c8"
   },
   "offline_passed": true,
-  "tests_run": 14,
-  "test_log": "test_lost_ack_restart_and_partial_fill_protection (tests.test_offline.OfflineTests.test_lost_ack_restart_and_partial_fill_protection) ... ok\ntest_network_adapter_and_native_state_are_rejected (tests.test_offline.OfflineTests.test_network_adapter_and_native_state_are_rejected) ... ok\ntest_query_outage_after_fill_never_resubmits_on_restart (tests.test_offline.OfflineTests.test_query_outage_after_fill_never_resubmits_on_restart) ... ok\ntest_sell_proceeds_are_reconciled_before_a_new_buy (tests.test_offline.OfflineTests.test_sell_proceeds_are_reconciled_before_a_new_buy) ... ok\ntest_stop_failure_does_not_report_protection (tests.test_offline.OfflineTests.test_stop_failure_does_not_report_protection) ... ok\ntest_strategy_exit_cancels_confirmed_protection_before_selling (tests.test_offline.OfflineTests.test_strategy_exit_cancels_confirmed_protection_before_selling) ... ok\ntest_terminal_partial_exit_protects_the_remaining_coins (tests.test_offline.OfflineTests.test_terminal_partial_exit_protects_the_remaining_coins) ... ok\ntest_unconfirmed_send_and_external_funds_freeze (tests.test_offline.OfflineTests.test_unconfirmed_send_and_external_funds_freeze) ... ok\ntest_unsupported_replacement_keeps_the_prior_stop (tests.test_offline.OfflineTests.test_unsupported_replacement_keeps_the_prior_stop) ... ok\ntest_crash_after_cancel_resumes_sale_and_protects_partial_remainder (tests.test_p4_execution.P4ExecutionTests.test_crash_after_cancel_resumes_sale_and_protects_partial_remainder) ... ok\ntest_equal_size_groups_have_distinct_order_identity_and_sell_attribution (tests.test_p4_execution.P4ExecutionTests.test_equal_size_groups_have_distinct_order_identity_and_sell_attribution) ... ok\ntest_external_cash_is_unknown_and_does_not_send (tests.test_p4_execution.P4ExecutionTests.test_external_cash_is_unknown_and_does_not_send) ... ok\ntest_query_outage_after_send_recovers_with_original_identity (tests.test_p4_execution.P4ExecutionTests.test_query_outage_after_send_recovers_with_original_identity) ... ok\ntest_real_session_partial_entry_restart_stop_amend_and_offline_trigger (tests.test_p4_execution.P4ExecutionTests.test_real_session_partial_entry_restart_stop_amend_and_offline_trigger) ... ok\n\n----------------------------------------------------------------------\nRan 14 tests in 0.209s\n\nOK\n",
+  "tests_run": 17,
+  "test_log": "test_lost_ack_restart_and_partial_fill_protection (tests.test_offline.OfflineTests.test_lost_ack_restart_and_partial_fill_protection) ... ok\ntest_network_adapter_and_native_state_are_rejected (tests.test_offline.OfflineTests.test_network_adapter_and_native_state_are_rejected) ... ok\ntest_query_outage_after_fill_never_resubmits_on_restart (tests.test_offline.OfflineTests.test_query_outage_after_fill_never_resubmits_on_restart) ... ok\ntest_sell_proceeds_are_reconciled_before_a_new_buy (tests.test_offline.OfflineTests.test_sell_proceeds_are_reconciled_before_a_new_buy) ... ok\ntest_stop_failure_does_not_report_protection (tests.test_offline.OfflineTests.test_stop_failure_does_not_report_protection) ... ok\ntest_strategy_exit_cancels_confirmed_protection_before_selling (tests.test_offline.OfflineTests.test_strategy_exit_cancels_confirmed_protection_before_selling) ... ok\ntest_terminal_partial_exit_protects_the_remaining_coins (tests.test_offline.OfflineTests.test_terminal_partial_exit_protects_the_remaining_coins) ... ok\ntest_unconfirmed_send_and_external_funds_freeze (tests.test_offline.OfflineTests.test_unconfirmed_send_and_external_funds_freeze) ... ok\ntest_unsupported_replacement_keeps_the_prior_stop (tests.test_offline.OfflineTests.test_unsupported_replacement_keeps_the_prior_stop) ... ok\ntest_crash_after_cancel_resumes_sale_and_protects_partial_remainder (tests.test_p4_execution.P4ExecutionTests.test_crash_after_cancel_resumes_sale_and_protects_partial_remainder) ... ok\ntest_equal_size_groups_have_distinct_order_identity_and_sell_attribution (tests.test_p4_execution.P4ExecutionTests.test_equal_size_groups_have_distinct_order_identity_and_sell_attribution) ... ok\ntest_external_cash_is_unknown_and_does_not_send (tests.test_p4_execution.P4ExecutionTests.test_external_cash_is_unknown_and_does_not_send) ... ok\ntest_prepared_sale_recovers_after_a_new_daily_bar (tests.test_p4_execution.P4ExecutionTests.test_prepared_sale_recovers_after_a_new_daily_bar) ... ok\ntest_prepared_stop_replacement_recovers_after_a_new_daily_bar (tests.test_p4_execution.P4ExecutionTests.test_prepared_stop_replacement_recovers_after_a_new_daily_bar) ... ok\ntest_query_outage_after_send_recovers_with_original_identity (tests.test_p4_execution.P4ExecutionTests.test_query_outage_after_send_recovers_with_original_identity) ... ok\ntest_real_session_partial_entry_restart_stop_amend_and_offline_trigger (tests.test_p4_execution.P4ExecutionTests.test_real_session_partial_entry_restart_stop_amend_and_offline_trigger) ... ok\ntest_unconfirmed_protection_stays_unknown_on_subsequent_sessions (tests.test_p4_execution.P4ExecutionTests.test_unconfirmed_protection_stays_unknown_on_subsequent_sessions) ... ok\n\n----------------------------------------------------------------------\nRan 17 tests in 0.483s\n\nOK\n",
   "replay": {
     "synthetic": true,
     "entrypoint": "spotquant.session.run/cycle \u2192 spotquant.execution.Lifecycle",
@@ -14,7 +14,7 @@
       {
         "status": "offline_execution",
         "cycles": 1,
-        "write_attempted": true,
+        "write_attempted": false,
         "errors": [],
         "qualification": "NOT_QUALIFIED",
         "exchange": "Binance",
@@ -35,7 +35,7 @@
           "adverse_exit": "next_open",
           "adverse_loss_capped": false,
           "path_convention": "stop_from_prior_peak",
-          "execution": "not_implemented",
+          "execution": "shared_session_lifecycle; native Demo unverified; live blocked",
           "selection": "full_sample",
           "sleeves": [
             30,
@@ -92,12 +92,17 @@
         "followed_position": false,
         "followed_sleeves": [],
         "pending_intents": 0,
-        "elapsed_seconds": 1.0
+        "elapsed_seconds": 1.0,
+        "execution_code_sha256": "3f8543c32f0e377022fa727564caaa08d10d526e66a705f1ae52b86be0f4dc26",
+        "account_uid": "1",
+        "capital_limit_usdt": "1000",
+        "execution_enabled": true,
+        "native_execution_verified": false
       },
       {
         "status": "offline_execution",
         "cycles": 1,
-        "write_attempted": true,
+        "write_attempted": false,
         "errors": [],
         "qualification": "NOT_QUALIFIED",
         "exchange": "Binance",
@@ -118,7 +123,7 @@
           "adverse_exit": "next_open",
           "adverse_loss_capped": false,
           "path_convention": "stop_from_prior_peak",
-          "execution": "not_implemented",
+          "execution": "shared_session_lifecycle; native Demo unverified; live blocked",
           "selection": "full_sample",
           "sleeves": [
             30,
@@ -175,7 +180,12 @@
         "followed_position": false,
         "followed_sleeves": [],
         "pending_intents": 0,
-        "elapsed_seconds": 1.0
+        "elapsed_seconds": 1.0,
+        "execution_code_sha256": "3f8543c32f0e377022fa727564caaa08d10d526e66a705f1ae52b86be0f4dc26",
+        "account_uid": "1",
+        "capital_limit_usdt": "1000",
+        "execution_enabled": true,
+        "native_execution_verified": false
       },
       {
         "status": "offline_execution",
@@ -201,7 +211,7 @@
           "adverse_exit": "next_open",
           "adverse_loss_capped": false,
           "path_convention": "stop_from_prior_peak",
-          "execution": "not_implemented",
+          "execution": "shared_session_lifecycle; native Demo unverified; live blocked",
           "selection": "full_sample",
           "sleeves": [
             30,
@@ -287,7 +297,7 @@
           "btc": "4.897009852941176470588235294",
           "usdt_free": "500.005",
           "usdt_locked": "0",
-          "open_orders": 0,
+          "open_orders": 1,
           "orders": [
             {
               "order_id": 2,
@@ -316,7 +326,12 @@
           50
         ],
         "pending_intents": 0,
-        "elapsed_seconds": 1.0
+        "elapsed_seconds": 1.0,
+        "execution_code_sha256": "3f8543c32f0e377022fa727564caaa08d10d526e66a705f1ae52b86be0f4dc26",
+        "account_uid": "1",
+        "capital_limit_usdt": "1000",
+        "execution_enabled": true,
+        "native_execution_verified": false
       },
       {
         "status": "offline_execution",
@@ -342,7 +357,7 @@
           "adverse_exit": "next_open",
           "adverse_loss_capped": false,
           "path_convention": "stop_from_prior_peak",
-          "execution": "not_implemented",
+          "execution": "shared_session_lifecycle; native Demo unverified; live blocked",
           "selection": "full_sample",
           "sleeves": [
             30,
@@ -428,7 +443,7 @@
           "btc": "4.897009852941176470588235294",
           "usdt_free": "500.005",
           "usdt_locked": "0",
-          "open_orders": 0,
+          "open_orders": 1,
           "orders": [
             {
               "order_id": 3,
@@ -457,12 +472,17 @@
           50
         ],
         "pending_intents": 0,
-        "elapsed_seconds": 1.0
+        "elapsed_seconds": 1.0,
+        "execution_code_sha256": "3f8543c32f0e377022fa727564caaa08d10d526e66a705f1ae52b86be0f4dc26",
+        "account_uid": "1",
+        "capital_limit_usdt": "1000",
+        "execution_enabled": true,
+        "native_execution_verified": false
       },
       {
         "status": "offline_execution",
         "cycles": 1,
-        "write_attempted": true,
+        "write_attempted": false,
         "errors": [],
         "qualification": "NOT_QUALIFIED",
         "exchange": "Binance",
@@ -483,7 +503,7 @@
           "adverse_exit": "next_open",
           "adverse_loss_capped": false,
           "path_convention": "stop_from_prior_peak",
-          "execution": "not_implemented",
+          "execution": "shared_session_lifecycle; native Demo unverified; live blocked",
           "selection": "full_sample",
           "sleeves": [
             30,
@@ -540,7 +560,12 @@
         "followed_position": false,
         "followed_sleeves": [],
         "pending_intents": 0,
-        "elapsed_seconds": 1.0
+        "elapsed_seconds": 1.0,
+        "execution_code_sha256": "3f8543c32f0e377022fa727564caaa08d10d526e66a705f1ae52b86be0f4dc26",
+        "account_uid": "1",
+        "capital_limit_usdt": "1000",
+        "execution_enabled": true,
+        "native_execution_verified": false
       }
     ],
     "durable_allocations": [
@@ -563,6 +588,7 @@
             "40": "1",
             "50": "1"
           },
+          "signal_ms": 1581033600000,
           "repair": {
             "30": false,
             "40": false,
@@ -579,7 +605,8 @@
           "status": "EXPIRED",
           "executedQty": "4.897009852941176470588235294",
           "quote": "499.995",
-          "orderId": 1
+          "orderId": 1,
+          "clientOrderId": "sq-9c62d5a3b6db68566f64b20f66b750"
         }
       ],
       [
@@ -602,6 +629,7 @@
             "40": "1.632336617647058823529411765",
             "50": "1.632336617647058823529411764"
           },
+          "signal_ms": 1581033600000,
           "repair": {
             "30": false,
             "40": false,
@@ -619,7 +647,8 @@
           "status": "CANCELED",
           "executedQty": "0",
           "quote": "0",
-          "orderId": 2
+          "orderId": 2,
+          "clientOrderId": "sq-6aeeb067be50f6844dc3104146e7ca"
         }
       ],
       [
@@ -642,6 +671,7 @@
             "40": "1.632336617647058823529411765",
             "50": "1.632336617647058823529411764"
           },
+          "signal_ms": 1581120000000,
           "repair": {
             "30": false,
             "40": false,
@@ -659,7 +689,8 @@
           "status": "FILLED",
           "executedQty": "4.89699",
           "quote": "342.44651070",
-          "orderId": 3
+          "orderId": 3,
+          "clientOrderId": "sq-98a7fb248c8dbbc930096c9fe84064"
         }
       ]
     ],

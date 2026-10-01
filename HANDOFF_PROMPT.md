@@ -1,16 +1,21 @@
 # Handoff
 
-Second-round entry: `evidence/baselines-20261001/RESULT.md` and
-`evidence/second-round-20261001/RESULT.md`. P4 beats the fixed passive BTC
-books historically; economic target still NOT_MET. `spotquant.offline` is
-strictly an in-memory lifecycle, not a native executor. Manual archive
-observation has one real recorded day; no account or 30-day execution proof.
+Third-round entry: `evidence/third-round-20261001/RESULT.md`. P4 owner Demo
+and synthetic replay now share session.run/cycle and execution.Lifecycle.
+Durable allocations resolve multiple/equal groups; unknown sent identities
+never resubmit; prepared reductions and stop replacements recover across days.
+105 offline tests and the 17-case replay pass. Native exports and concurrent
+account collection are implemented; actual account observations remain zero.
+No native Demo/Live closure or 30-day proof. Public run --execute stays blocked.
+P4 daily economic replay is unchanged: 78.49%/31.40%, NOT_MET; it is not a
+historical replay of the new execution lifecycle. Older second-round prototype
+results remain in history and must not be described as native execution.
 
 Read `evidence/simplify-20261001/RESULT.md` for P5: all registered rule
 deletions rejected; P4 remains the default. Long-term destination is one BTC
 spot and one BTC perpetual project. Research may retain multiple candidates.
 
-Spotquant is the spot peer of coinquant: Binance BTCUSDT, long or cash, manual bounded session, execute blocked.
+Spotquant is the spot peer of coinquant: Binance BTCUSDT, long or cash, manual bounded session, default read-only, owner Demo validation, live execution blocked.
 
 The acceptance targets are cost-net CAGR >= 100% and continuous MDD <= 30% from 2020-01-01 to 2026-09-20 exclusive, starting at CNY 10,000. They were not lowered. The default book P4 (SMA sleeves 30, 40, and 50 on one USDT pool) measures 78.49% CAGR and 31.40% MDD (final CNY 490,442, 123 trades, drawdown on 2024-10-13), so its economic qualification is `NOT_MET`. P3, the single SMA 40 book, measured 101.67% and 29.15% (final CNY 1,113,885, drawdown on 2020-03-16) and is kept unchanged as the in-sample upper bound: SMA 35, 45, 30, and 50 alone print 59.08%, 94.83%, 58.93%, and 70.37%, and the top three trades carry about 48% of the positive log return. P2 measured 75.19% and 33.10%. P1, the SMA 40 / 20% trail book, measured 58.06% and 52.77%. The owner chose P4 to trade in-sample return for less dependence on one parameter. Say so, and say `NOT_MET`, when quoting P4.
 
