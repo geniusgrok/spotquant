@@ -1,6 +1,7 @@
 """All registered spot improvement candidates through actual finite sessions."""
 import argparse
 import bisect
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from decimal import Decimal as D
 import hashlib
@@ -197,6 +198,8 @@ def main(argv=None):
     parser.add_argument('--crowding', type=Path, default=Path('/tmp/btc-complete-inputs/crowding-complete.json'))
     parser.add_argument('--candidate', choices=CANDIDATES)
     parser.add_argument('--scenario', choices=SCENARIOS)
+    parser.add_argument('--workers', type=int, choices=(1, 2), default=1,
+                        help='isolated research processes; each account retains its own finite sessions')
     args = parser.parse_args(argv)
     source = source_identity()
     if source['dirty'] or args.out.exists() or (args.limit and not str(args.out.resolve()).startswith('/tmp/')):
@@ -208,13 +211,27 @@ def main(argv=None):
     fx_path = Path('../starquant/data/usdcny_frankfurter.json').resolve()
     features = json.loads(args.crowding.read_text())
     results = {}
-    for candidate in ([args.candidate] if args.candidate else CANDIDATES):
-        for scenario in ([args.scenario] if args.scenario else SCENARIOS):
-            key = candidate + '-' + scenario
-            results[key] = measure(candidate, scenario, bars, starts, PriorFX(fx_path), features, limit=args.limit)
-            progress = args.out.with_suffix('.progress.json')
-            progress.parent.mkdir(parents=True, exist_ok=True)
-            progress.write_text(json.dumps({'complete': False, 'completed': list(results)}, indent=2) + '\n')
+    jobs = [(candidate, scenario)
+            for candidate in ([args.candidate] if args.candidate else CANDIDATES)
+            for scenario in ([args.scenario] if args.scenario else SCENARIOS)]
+    def record(candidate, scenario, result):
+        results[candidate + '-' + scenario] = result
+        progress = args.out.with_suffix('.progress.json')
+        progress.parent.mkdir(parents=True, exist_ok=True)
+        progress.write_text(json.dumps({'complete': False, 'source': source,
+            'completed': list(results), 'results': results}, separators=(',', ':')) + '\n')
+    if args.workers == 1:
+        for candidate, scenario in jobs:
+            record(candidate, scenario, measure(candidate, scenario, bars, starts, PriorFX(fx_path), features, limit=args.limit))
+    else:
+        # Separate processes isolate Policy's existing process-local hooks. This
+        # changes wall-clock scheduling only; never run accounts in shared threads.
+        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+            pending = {pool.submit(measure, c, s, bars, starts, PriorFX(fx_path), features, limit=args.limit): (c, s)
+                       for c, s in jobs}
+            for future in as_completed(pending):
+                record(*pending[future], future.result())
+    results = {c + '-' + s: results[c + '-' + s] for c, s in jobs}
     report = {'source': source, 'market_sha256': file_digest(market_root),
               'schedule_sha256': hashlib.sha256(schedule_path.read_bytes()).hexdigest(),
               'fx_sha256': hashlib.sha256(fx_path.read_bytes()).hexdigest(),

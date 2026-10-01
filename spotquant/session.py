@@ -275,7 +275,7 @@ def _consume_bar(state, venue, models, open_ms, high, low, close):
             'cap_high': model._view_cap_high(),
         }
     for window, item in positions.items():
-        if item is not None:
+        if item is not None and not item.get('dust'):
             positions[window] = advance(item, step_models[window], models[window])
     cursor, accounted = _cursor_after(trades, accounted, cursor)
     _stash(state, positions, follows, accounted, exit_through, cursor)
@@ -398,7 +398,7 @@ def _follow_after(decision: dict, models: dict, positions: dict, follows: dict, 
         sleeve = decision['sleeves'].get(str(window), {})
         follow = follows.get(window)
         blocked = exit_through.get(str(window))
-        if positions[window] is not None:
+        if positions[window] is not None and not positions[window].get('dust'):
             out[window] = None
         elif blocked is not None and model.last is not None and model.last <= int(blocked):
             out[window] = None
@@ -417,6 +417,10 @@ def _follow_after(decision: dict, models: dict, positions: dict, follows: dict, 
 def _view(model: Model, position):
     if position is None:
         return model, D(0)
+    if position.get('dust'):
+        # These coins remain owned but cannot form a native quantity step.
+        # The closed strategy uses its fresh-cross model, not its old stop peak.
+        return model, D(position['qty'])
     view = Model.restore(model.checkpoint())
     view.entry = D(position['entry_fill'])
     view.position_peak = D(position['peak'])

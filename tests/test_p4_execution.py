@@ -27,6 +27,39 @@ def add_day(venue, close, high=None):
 
 
 class P4ExecutionTests(TestCase):
+    def test_floored_exit_retains_fractional_ownership_and_reentry_resets_peak(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self.entered(directory)
+            venue.trigger('70')
+            report = run_day(config, venue)
+            self.assertEqual(report['errors'], [])
+            with State(directory, config.scope) as state:
+                dust = state.get('positions')
+                quantity = sum((D(p['qty']) for p in dust.values() if p), D(0))
+                self.assertEqual(quantity, venue.btc)
+                self.assertGreater(quantity, 0)
+                self.assertTrue(all(p['dust'] for p in dust.values() if p))
+                first_times = {w: p['first_ms'] for w, p in dust.items() if p}
+            # The persisted dust remains owned after another session; a deposit
+            # cannot be folded into it to bypass the complete fill reconciliation.
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            for close in ('98', '105', '106'):
+                add_day(venue, close)
+                report = run_day(config, venue)
+                self.assertEqual(report['errors'], [])
+            with State(directory, config.scope) as state:
+                positions = state.get('positions')
+                self.assertEqual(sum((D(p['qty']) for p in positions.values() if p), D(0)), venue.btc)
+                for window, p in positions.items():
+                    self.assertFalse(p.get('dust'))
+                    self.assertGreater(p['first_ms'], first_times[window])
+                    self.assertEqual(D(p['peak']), D(106))
+            submitted = list(venue.sent)
+            venue.btc += D('.1')
+            rejected = run_day(config, venue)
+            self.assertEqual(rejected['status'], 'unknown')
+            self.assertEqual(venue.sent, submitted)
+
     def test_stop_fill_between_decision_and_write_requires_reconciliation(self):
         with tempfile.TemporaryDirectory() as directory:
             config, venue = self.entered(directory)

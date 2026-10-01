@@ -289,10 +289,14 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
             given += qty
             prior = positions.get(window)
             if trade['buyer']:
-                if prior is None:
+                if prior is None or prior.get('dust'):
                     built = replay(history(), entry_fill=trade['price'], first_ms=trade['time'],
                                    repair=bool(owner.get('repair', {}).get(str(window))), window=window)
-                    built['qty'] = format(qty, 'f')
+                    old_qty = D(prior['qty']) if prior else D(0)
+                    if old_qty:
+                        built['entry_fill'] = format((D(prior['entry_fill']) * old_qty + trade['price'] * qty)
+                                                    / (old_qty + qty), 'f')
+                    built['qty'] = format(old_qty + qty, 'f')
                     positions[window] = built
                 else:
                     old_qty = D(prior['qty'])
@@ -306,8 +310,12 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
                 if prior is None or qty > D(prior['qty']) + BASE_STEP:
                     raise Unknown('allocated sell exceeds its recorded sleeve')
                 remaining = max(D(0), D(prior['qty']) - qty)
-                if remaining <= BASE_STEP:
-                    positions[window] = None
+                if remaining < BASE_STEP:
+                    # A floored native sell does not remove fractional coins.
+                    # Retain their proven sleeve ownership across restarts and
+                    # reuse it at the next genuine entry; never infer a deposit.
+                    positions[window] = (dict(prior, qty=format(remaining, 'f'), dust=True,
+                                              protection='unplaceable_dust') if remaining else None)
                     follows[window] = None
                     models[window].note_flat()
                     closed.append(window)
