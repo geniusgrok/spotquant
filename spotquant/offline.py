@@ -10,6 +10,7 @@ from decimal import Decimal as D
 from time import time
 
 from .state import State, client_id
+from .preview import MIN_NOTIONAL
 from .types import Blocked, Unknown, number, serial
 
 
@@ -165,6 +166,11 @@ class Lifecycle:
             raise Unknown('unknown account change blocks new order')
         if any(row['type'] == 'STOP_LOSS' and row['status'] == 'NEW' for row in self.venue.orders.values()):
             raise Blocked('resting protection blocks unsupported replacement or additional order')
+        if side == 'BUY' and self.venue.btc * self.venue.price >= MIN_NOTIONAL:
+            raise Blocked('unprotected holdings block additional offline exposure')
+        if ((side == 'BUY' and D(payload['quoteOrderQty']) > self.venue.cash)
+                or (side == 'SELL' and D(payload['quantity']) > self.venue.btc)):
+            raise Blocked('order exceeds reconciled available funds')
         before = serial(self.venue.balances())
         self._save(identity, payload, 'unknown', {'before': before})
         try:

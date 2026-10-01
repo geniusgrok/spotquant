@@ -68,7 +68,7 @@ class OfflineTests(TestCase):
                 Lifecycle(state, venue).submit(BUY, 1)
                 self.assertEqual(len(venue.sent), 1)
 
-    def test_stop_failure_and_replacement_do_not_report_protection(self):
+    def test_stop_failure_does_not_report_protection(self):
         with tempfile.TemporaryDirectory() as directory:
             venue = OfflineVenue()
             with State(directory, 'offline:BTCUSDT:spot:1') as state:
@@ -80,3 +80,31 @@ class OfflineTests(TestCase):
                 with self.assertRaises(Unknown):
                     lifecycle.submit(stop, 1)
                 self.assertEqual(len(state.pending()), 1)
+
+    def test_sell_proceeds_are_reconciled_before_a_new_buy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            venue = OfflineVenue()
+            with State(directory, 'offline:BTCUSDT:spot:1') as state:
+                lifecycle = Lifecycle(state, venue)
+                lifecycle.submit(BUY, 1)
+                lifecycle.submit({'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET',
+                                  'quantity': str(venue.btc)}, 2)
+                with self.assertRaises(Blocked):
+                    lifecycle.submit(dict(BUY, quoteOrderQty='1000'), 2)
+                self.assertEqual(len(venue.sent), 2)
+                lifecycle.submit(dict(BUY, quoteOrderQty=str(venue.cash)), 2)
+                self.assertEqual(len(venue.sent), 3)
+
+    def test_unsupported_replacement_keeps_the_prior_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            venue = OfflineVenue()
+            with State(directory, 'offline:BTCUSDT:spot:1') as state:
+                lifecycle = Lifecycle(state, venue)
+                lifecycle.submit(BUY, 1)
+                stop = {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
+                        'quantity': str(venue.btc), 'stopPrice': '72'}
+                original = lifecycle.submit(stop, 1)
+                with self.assertRaises(Blocked):
+                    lifecycle.submit(dict(stop, stopPrice='75'), 2)
+                self.assertEqual(venue.orders[original['id']]['status'], 'NEW')
+                self.assertEqual(len(venue.sent), 2)
