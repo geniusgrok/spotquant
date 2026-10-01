@@ -159,6 +159,9 @@ def measure(candidate, scenario, bars, starts, fx, features, *, limit=None, init
                             'ended_ms': venue.now_ms,
                             'archive_verified': bool(archive_proof and archive_proof['integrity_verified']),
                             'archive_backup_sha256': archive_proof['backup_sha256'] if archive_proof else None})
+            reports[-1]['execution_unresolved'] = bool(report['pending_intents']) or (
+                report['status'] not in ('offline_execution', 'demo_execution')
+                and not (report['errors'] and all('session deadline' in e['reason'] for e in report['errors'])))
             if i % 100 == 0:
                 print(json.dumps({'candidate': candidate, 'scenario': scenario, 'session': i}), flush=True)
         end = starts[-1] + 420000 if limit else END_MS
@@ -170,7 +173,7 @@ def measure(candidate, scenario, bars, starts, fx, features, *, limit=None, init
             allocations = list(state.db.execute('SELECT id,payload,status,result FROM intents ORDER BY updated'))
     money = audit(venue)
     value = (venue.cash + venue.btc * venue.price) * fx(end) * D('.999')
-    unresolved = sum(r['status'] not in ('offline_execution', 'demo_execution') for r in reports)
+    unresolved = sum(r['execution_unresolved'] for r in reports)
     complete = (limit is None and money['passed'] and not pending and not policy_pending and not unresolved
                 and all(r['archive_verified'] for r in reports))
     return serial({'candidate': candidate, 'scenario': scenario, 'complete': complete,
@@ -180,6 +183,7 @@ def measure(candidate, scenario, bars, starts, fx, features, *, limit=None, init
                            if limit is None else None,
                    'mdd': venue.mdd, 'audit': money, 'cash_usdt': venue.cash, 'btc': venue.btc,
                    'fills': venue.fills, 'daily': venue.daily, 'sessions': reports,
+                   'client_events': venue.client_events,
                    'session_error_count': sum(bool(r['errors']) for r in reports),
                    'execution_unresolved_sessions': unresolved, 'policy_pending': policy_pending,
                    'filters': policy.filters, 'positions': positions, 'allocations': allocations,

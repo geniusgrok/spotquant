@@ -15,6 +15,18 @@ def bars():
 
 
 class SessionAccountTests(unittest.TestCase):
+    def test_deadline_is_installed_and_prevents_late_client_dispatch(self):
+        venue = HistoricalVenue(bars(), ORIGIN + 401 * DAY, D(1000), lambda t: D(7))
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = Config('1', directory, 1, 1, 'demo', '5000000')
+            for day in (401, 402, 403):
+                venue.advance(ORIGIN + day * DAY)
+                started = venue.now_ms
+                run(cfg, venue, execute=True, monotonic=venue.monotonic, wait=venue.wait)
+                for event in venue.client_events:
+                    if event['sent_ms'] >= started:
+                        self.assertLess(event['sent_ms'], started + 1000)
+            self.assertEqual(venue.fills, [])
     def test_candles_are_completed_and_quotes_interpolate_without_future_candles(self):
         venue = HistoricalVenue(bars(), ORIGIN + 401 * DAY, D(1000), lambda t: D(7))
         rows = venue.completed_daily(None)

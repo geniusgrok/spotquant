@@ -76,3 +76,14 @@ class DurableFillTests(unittest.TestCase):
                 stream.write(b'x')
             with self.assertRaises(ValueError):
                 check(saved['report'])
+
+    def test_manifest_source_tampering_is_bound_to_backup(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory, State(directory, 'test') as state:
+            saved = state.archive({'execution_code_sha256': 'a' * 64})
+            path = Path(saved['report'])
+            manifest = json.loads(path.read_text())
+            manifest['execution_code_sha256'] = 'b' * 64
+            path.write_text(json.dumps(manifest))
+            with self.assertRaises(ValueError):
+                check(path)

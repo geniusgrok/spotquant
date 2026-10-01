@@ -22,6 +22,8 @@ class HistoricalVenue(P4Venue):
         self.curve, self.peak, self.mdd = [], cash * fx(start) / D('.999'), D(0)
         self.daily = {}
         self.read_latency_ms, self.write_latency_ms = 200, 1000
+        self._stop = lambda: False
+        self.client_events = []
         self._mark()
 
     def price_at(self, stamp):
@@ -106,7 +108,11 @@ class HistoricalVenue(P4Venue):
     def submit(self, identity, payload):
         if hasattr(self, '_stop') and self._stop():
             raise NotSent('session deadline reached before dispatch')
+        sent_ms = self.now_ms
         self.advance(self.now_ms + self.write_latency_ms)
+        self.client_events.append({'method': 'POST', 'client_id': identity,
+                                   'sent_ms': sent_ms, 'received_ms': self.now_ms,
+                                   'order': dict(payload)})
         market = self.price
         if payload['type'] == 'MARKET':
             self.price *= 1 + self.slip if payload['side'] == 'BUY' else 1 - self.slip
@@ -119,7 +125,10 @@ class HistoricalVenue(P4Venue):
     def cancel(self, identity):
         if hasattr(self, '_stop') and self._stop():
             raise NotSent('session deadline reached before dispatch')
+        sent_ms = self.now_ms
         self.advance(self.now_ms + self.write_latency_ms)
+        self.client_events.append({'method': 'DELETE', 'client_id': identity,
+                                   'sent_ms': sent_ms, 'received_ms': self.now_ms})
         return super().cancel(identity)
 
 
