@@ -24,11 +24,11 @@
 - 每次账户采集保留实际日期和原件哈希。重复同日不增加天数；失败记录
   保留，30 日统计只数同一账户组合的真实采集日，不能用行情回填补天数。
 
-107 项完整离线测试和 compileall 通过。共享会话回放 18 项通过，见
+108 项完整离线测试和 compileall 通过。共享会话回放 18 项通过，见
 [execution-final.json](execution-final.json)。它包括部分入场、ACK 丢失、
 恢复、止损改价和进程停止后的模拟触发，使用合成行情，没有收益结论。
-回放源码 `0ea87297907b19ff15efa26a8bd9fc2c267695b6`，Python 摘要
-`ffb6bb5294962ec967bd529e9ab4da1ecd17373b6e422f36bcddc8238a6dde7e`。
+回放源码 `9488cef82fa4298aac4ebf9ae4b9449b877f8396`，Python 摘要
+`2719456a9b76cd8562f9109f3c216e64ac24c4ad20d8d0d7bb359a933b90d483`。
 较早两份本轮回放只保留在 Git 历史 `9f61c68`。
 
 经济复现 [P4-third-round.json](P4-third-round.json) 的全部共有经济字段、
