@@ -1,0 +1,534 @@
+{
+  "synthetic": true,
+  "source": {
+    "git_head": "a7c738da01a586a380ef21035cde63a5b79781d2",
+    "dirty": false,
+    "python_sources_sha256": "682d3ae4964e43227cc5ee2684584d791ebb66010e48ba97316b20df93bc6616"
+  },
+  "backup": {
+    "integrity_verified": true,
+    "state_identity": "binance:BTCUSDT:spot:demo:1",
+    "backup_sha256": "36dad0abeff0241189f36f426036a22a77160952bbcc5196b324ac901f1552ce",
+    "durable_fills": 1,
+    "pending_intents": 0,
+    "execution_anchor_preserved": true,
+    "account_reconciled": false,
+    "new_risk_authorized": false,
+    "next_action": "restore to an isolated directory, then owner read-only account reconciliation"
+  },
+  "retained_manifest": "1581120000000-28df9f9e4bee4eddb377069bab579da6.json",
+  "retained_backup": "1581120000000-28df9f9e4bee4eddb377069bab579da6.sqlite",
+  "retained_backup_sha256": "36dad0abeff0241189f36f426036a22a77160952bbcc5196b324ac901f1552ce",
+  "balance_and_submission_ids_unchanged": true,
+  "restored_readonly_status": "read_only",
+  "external_btc_status": "unknown",
+  "external_btc_reason": "BTC balance has no recorded spotquant fill; refusing new risk",
+  "before": {
+    "cash": "0.01",
+    "btc": "9.794019705882352941176470588",
+    "submitted_ids": [
+      "sq-9c62d5a3b6db68566f64b20f66b750",
+      "sq-b00bbcf43eac87be3e078196844245"
+    ]
+  },
+  "after": {
+    "cash": "0.01",
+    "btc": "9.794019705882352941176470588",
+    "submitted_ids": [
+      "sq-9c62d5a3b6db68566f64b20f66b750",
+      "sq-b00bbcf43eac87be3e078196844245"
+    ]
+  },
+  "initial_sessions": [
+    {
+      "status": "offline_execution",
+      "cycles": 1,
+      "write_attempted": false,
+      "errors": [],
+      "qualification": "NOT_QUALIFIED",
+      "exchange": "Binance",
+      "environment": "demo",
+      "symbol": "BTCUSDT",
+      "market": "spot",
+      "leverage": "0",
+      "sleeves": [
+        30,
+        40,
+        50
+      ],
+      "stop_reason": "deadline",
+      "session_started_at_ms": 1580947200000,
+      "session_ended": true,
+      "stops_while_down": "this process does not amend a stop while it is stopped",
+      "recorded_limits": {
+        "adverse_exit": "next_open",
+        "adverse_loss_capped": false,
+        "path_convention": "stop_from_prior_peak",
+        "execution": "shared_session_lifecycle; native Demo unverified; live blocked",
+        "selection": "full_sample",
+        "sleeves": [
+          30,
+          40,
+          50
+        ],
+        "economic_targets_met": false,
+        "skip_stress_targets_met": false
+      },
+      "observation_current": false,
+      "model_preview": {
+        "action": "flat",
+        "reason": "no sleeve holds coins or is armed to enter",
+        "order": null,
+        "orders": [],
+        "protections": [],
+        "sleeves": {
+          "30": {
+            "action": "flat",
+            "reason": "completed daily close is not above its SMA",
+            "order": null,
+            "protection": null
+          },
+          "40": {
+            "action": "flat",
+            "reason": "completed daily close is not above its SMA",
+            "order": null,
+            "protection": null
+          },
+          "50": {
+            "action": "flat",
+            "reason": "completed daily close is not above its SMA",
+            "order": null,
+            "protection": null
+          }
+        }
+      },
+      "actual": {
+        "account_uid": "1",
+        "btc": "0",
+        "usdt_free": "1000",
+        "usdt_locked": "0",
+        "open_orders": 0,
+        "orders": [],
+        "environment": "demo"
+      },
+      "market_through": 1580860800000,
+      "model_bull": {
+        "30": false,
+        "40": false,
+        "50": false
+      },
+      "entries_enabled": false,
+      "followed_position": false,
+      "followed_sleeves": [],
+      "pending_intents": 0,
+      "elapsed_seconds": 1.0,
+      "execution_code_sha256": "5faaad480dc9d971e3979adbc92ba461fb101346fc66f1499ce0b9c3409ef49e",
+      "account_uid": "1",
+      "capital_limit_usdt": "1000",
+      "execution_enabled": true,
+      "native_execution_verified": false,
+      "session_archive": {
+        "report": "/tmp/spot-recovery-drill-4ov93cyk/original/sessions/1580947200000-077efe9caee94ee2823077618ddaec5d.json",
+        "backup": "/tmp/spot-recovery-drill-4ov93cyk/original/sessions/1580947200000-077efe9caee94ee2823077618ddaec5d.sqlite",
+        "backup_sha256": "447fbec989e721d029ddc0eb757b422e902f9e8f36ec8f7eb046e4aafbf3652c"
+      }
+    },
+    {
+      "status": "offline_execution",
+      "cycles": 1,
+      "write_attempted": false,
+      "errors": [],
+      "qualification": "NOT_QUALIFIED",
+      "exchange": "Binance",
+      "environment": "demo",
+      "symbol": "BTCUSDT",
+      "market": "spot",
+      "leverage": "0",
+      "sleeves": [
+        30,
+        40,
+        50
+      ],
+      "stop_reason": "deadline",
+      "session_started_at_ms": 1581033600000,
+      "session_ended": true,
+      "stops_while_down": "this process does not amend a stop while it is stopped",
+      "recorded_limits": {
+        "adverse_exit": "next_open",
+        "adverse_loss_capped": false,
+        "path_convention": "stop_from_prior_peak",
+        "execution": "shared_session_lifecycle; native Demo unverified; live blocked",
+        "selection": "full_sample",
+        "sleeves": [
+          30,
+          40,
+          50
+        ],
+        "economic_targets_met": false,
+        "skip_stress_targets_met": false
+      },
+      "observation_current": false,
+      "model_preview": {
+        "action": "flat",
+        "reason": "no sleeve holds coins or is armed to enter",
+        "order": null,
+        "orders": [],
+        "protections": [],
+        "sleeves": {
+          "30": {
+            "action": "flat",
+            "reason": "entry is not armed: confirmation, fresh cross, crash filter, or crash reversal",
+            "order": null,
+            "protection": null
+          },
+          "40": {
+            "action": "flat",
+            "reason": "entry is not armed: confirmation, fresh cross, crash filter, or crash reversal",
+            "order": null,
+            "protection": null
+          },
+          "50": {
+            "action": "flat",
+            "reason": "entry is not armed: confirmation, fresh cross, crash filter, or crash reversal",
+            "order": null,
+            "protection": null
+          }
+        }
+      },
+      "actual": {
+        "account_uid": "1",
+        "btc": "0",
+        "usdt_free": "1000",
+        "usdt_locked": "0",
+        "open_orders": 0,
+        "orders": [],
+        "environment": "demo"
+      },
+      "market_through": 1580947200000,
+      "model_bull": {
+        "30": true,
+        "40": true,
+        "50": true
+      },
+      "entries_enabled": true,
+      "followed_position": false,
+      "followed_sleeves": [],
+      "pending_intents": 0,
+      "elapsed_seconds": 1.0,
+      "execution_code_sha256": "5faaad480dc9d971e3979adbc92ba461fb101346fc66f1499ce0b9c3409ef49e",
+      "account_uid": "1",
+      "capital_limit_usdt": "1000",
+      "execution_enabled": true,
+      "native_execution_verified": false,
+      "session_archive": {
+        "report": "/tmp/spot-recovery-drill-4ov93cyk/original/sessions/1581033600000-07aefc538a1a41d88c5bf8aca7d14b1e.json",
+        "backup": "/tmp/spot-recovery-drill-4ov93cyk/original/sessions/1581033600000-07aefc538a1a41d88c5bf8aca7d14b1e.sqlite",
+        "backup_sha256": "1332aaae7cfd1d26ad49a7cc15ecc6e9fded1cae1372c877c49550cdd3c8f4da"
+      }
+    },
+    {
+      "status": "offline_execution",
+      "cycles": 1,
+      "write_attempted": true,
+      "errors": [],
+      "qualification": "NOT_QUALIFIED",
+      "exchange": "Binance",
+      "environment": "demo",
+      "symbol": "BTCUSDT",
+      "market": "spot",
+      "leverage": "0",
+      "sleeves": [
+        30,
+        40,
+        50
+      ],
+      "stop_reason": "deadline",
+      "session_started_at_ms": 1581120000000,
+      "session_ended": true,
+      "stops_while_down": "this process does not amend a stop while it is stopped",
+      "recorded_limits": {
+        "adverse_exit": "next_open",
+        "adverse_loss_capped": false,
+        "path_convention": "stop_from_prior_peak",
+        "execution": "shared_session_lifecycle; native Demo unverified; live blocked",
+        "selection": "full_sample",
+        "sleeves": [
+          30,
+          40,
+          50
+        ],
+        "economic_targets_met": false,
+        "skip_stress_targets_met": false
+      },
+      "observation_current": false,
+      "model_preview": {
+        "action": "hold",
+        "reason": "hold: sleeves 30, 40, 50",
+        "order": null,
+        "orders": [],
+        "protections": [
+          {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "stopPrice": "73.44",
+            "note": "amended STOP_LOSS; 28% under the high since the fill",
+            "quantity": "9.79401",
+            "limit_placeable": null,
+            "placeable": true,
+            "sleeves": [
+              30,
+              40,
+              50
+            ]
+          }
+        ],
+        "sleeves": {
+          "30": {
+            "action": "hold",
+            "reason": "still above the SMA; protection is a stop 28% under the high since the fill",
+            "order": null,
+            "protection": {
+              "symbol": "BTCUSDT",
+              "side": "SELL",
+              "type": "STOP_LOSS",
+              "stopPrice": "73.44",
+              "note": "amended STOP_LOSS; 28% under the high since the fill",
+              "quantity": "3.26467",
+              "limit_placeable": null,
+              "placeable": true
+            }
+          },
+          "40": {
+            "action": "hold",
+            "reason": "still above the SMA; protection is a stop 28% under the high since the fill",
+            "order": null,
+            "protection": {
+              "symbol": "BTCUSDT",
+              "side": "SELL",
+              "type": "STOP_LOSS",
+              "stopPrice": "73.44",
+              "note": "amended STOP_LOSS; 28% under the high since the fill",
+              "quantity": "3.26467",
+              "limit_placeable": null,
+              "placeable": true
+            }
+          },
+          "50": {
+            "action": "hold",
+            "reason": "still above the SMA; protection is a stop 28% under the high since the fill",
+            "order": null,
+            "protection": {
+              "symbol": "BTCUSDT",
+              "side": "SELL",
+              "type": "STOP_LOSS",
+              "stopPrice": "73.44",
+              "note": "amended STOP_LOSS; 28% under the high since the fill",
+              "quantity": "3.26467",
+              "limit_placeable": null,
+              "placeable": true
+            }
+          }
+        }
+      },
+      "actual": {
+        "account_uid": "1",
+        "btc": "9.794019705882352941176470588",
+        "usdt_free": "0.01",
+        "usdt_locked": "0",
+        "open_orders": 1,
+        "orders": [
+          {
+            "order_id": 2,
+            "client_id": "sq-b00bbcf43eac87be3e078196844245",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "status": "NEW",
+            "orig_qty": "9.79401",
+            "executed_qty": "0",
+            "stop_price": "73.44"
+          }
+        ],
+        "environment": "demo"
+      },
+      "market_through": 1581033600000,
+      "model_bull": {
+        "30": true,
+        "40": true,
+        "50": true
+      },
+      "entries_enabled": true,
+      "followed_position": true,
+      "followed_sleeves": [
+        30,
+        40,
+        50
+      ],
+      "pending_intents": 0,
+      "elapsed_seconds": 1.0,
+      "execution_code_sha256": "5faaad480dc9d971e3979adbc92ba461fb101346fc66f1499ce0b9c3409ef49e",
+      "account_uid": "1",
+      "capital_limit_usdt": "1000",
+      "execution_enabled": true,
+      "native_execution_verified": false,
+      "session_archive": {
+        "report": "/tmp/spot-recovery-drill-4ov93cyk/original/sessions/1581120000000-28df9f9e4bee4eddb377069bab579da6.json",
+        "backup": "/tmp/spot-recovery-drill-4ov93cyk/original/sessions/1581120000000-28df9f9e4bee4eddb377069bab579da6.sqlite",
+        "backup_sha256": "36dad0abeff0241189f36f426036a22a77160952bbcc5196b324ac901f1552ce"
+      }
+    }
+  ],
+  "restored_report": {
+    "status": "read_only",
+    "cycles": 1,
+    "write_attempted": false,
+    "errors": [],
+    "qualification": "NOT_QUALIFIED",
+    "exchange": "Binance",
+    "environment": "demo",
+    "symbol": "BTCUSDT",
+    "market": "spot",
+    "leverage": "0",
+    "sleeves": [
+      30,
+      40,
+      50
+    ],
+    "stop_reason": "deadline",
+    "session_started_at_ms": 1581120001000,
+    "session_ended": true,
+    "stops_while_down": "this process does not amend a stop while it is stopped",
+    "recorded_limits": {
+      "adverse_exit": "next_open",
+      "adverse_loss_capped": false,
+      "path_convention": "stop_from_prior_peak",
+      "execution": "shared_session_lifecycle; native Demo unverified; live blocked",
+      "selection": "full_sample",
+      "sleeves": [
+        30,
+        40,
+        50
+      ],
+      "economic_targets_met": false,
+      "skip_stress_targets_met": false
+    },
+    "observation_current": false,
+    "model_preview": {
+      "action": "hold",
+      "reason": "hold: sleeves 30, 40, 50; open order blocks a new buy",
+      "order": null,
+      "orders": [],
+      "protections": [
+        {
+          "symbol": "BTCUSDT",
+          "side": "SELL",
+          "type": "STOP_LOSS",
+          "stopPrice": "73.44",
+          "note": "amended STOP_LOSS; 28% under the high since the fill",
+          "quantity": "9.79401",
+          "limit_placeable": null,
+          "placeable": true,
+          "sleeves": [
+            30,
+            40,
+            50
+          ]
+        }
+      ],
+      "sleeves": {
+        "30": {
+          "action": "hold",
+          "reason": "still above the SMA; protection is a stop 28% under the high since the fill",
+          "order": null,
+          "protection": {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "stopPrice": "73.44",
+            "note": "amended STOP_LOSS; 28% under the high since the fill",
+            "quantity": "3.26467",
+            "limit_placeable": null,
+            "placeable": true
+          }
+        },
+        "40": {
+          "action": "hold",
+          "reason": "still above the SMA; protection is a stop 28% under the high since the fill",
+          "order": null,
+          "protection": {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "stopPrice": "73.44",
+            "note": "amended STOP_LOSS; 28% under the high since the fill",
+            "quantity": "3.26467",
+            "limit_placeable": null,
+            "placeable": true
+          }
+        },
+        "50": {
+          "action": "hold",
+          "reason": "still above the SMA; protection is a stop 28% under the high since the fill",
+          "order": null,
+          "protection": {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "stopPrice": "73.44",
+            "note": "amended STOP_LOSS; 28% under the high since the fill",
+            "quantity": "3.26467",
+            "limit_placeable": null,
+            "placeable": true
+          }
+        }
+      }
+    },
+    "actual": {
+      "account_uid": "1",
+      "btc": "9.794019705882352941176470588",
+      "usdt_free": "0.01",
+      "usdt_locked": "0",
+      "open_orders": 1,
+      "orders": [
+        {
+          "order_id": 2,
+          "client_id": "sq-b00bbcf43eac87be3e078196844245",
+          "side": "SELL",
+          "type": "STOP_LOSS",
+          "status": "NEW",
+          "orig_qty": "9.79401",
+          "executed_qty": "0",
+          "stop_price": "73.44"
+        }
+      ],
+      "environment": "demo"
+    },
+    "market_through": 1581033600000,
+    "model_bull": {
+      "30": true,
+      "40": true,
+      "50": true
+    },
+    "entries_enabled": true,
+    "followed_position": true,
+    "followed_sleeves": [
+      30,
+      40,
+      50
+    ],
+    "pending_intents": 0,
+    "elapsed_seconds": 1.0,
+    "execution_code_sha256": "5faaad480dc9d971e3979adbc92ba461fb101346fc66f1499ce0b9c3409ef49e",
+    "account_uid": "1",
+    "capital_limit_usdt": "1000",
+    "execution_enabled": false,
+    "native_execution_verified": false,
+    "session_archive": {
+      "report": "/tmp/spot-recovery-drill-4ov93cyk/restored/sessions/1581120001000-ffc03251f1be43ba91c0e1a71a18b3dc.json",
+      "backup": "/tmp/spot-recovery-drill-4ov93cyk/restored/sessions/1581120001000-ffc03251f1be43ba91c0e1a71a18b3dc.sqlite",
+      "backup_sha256": "6fba5443510e58a9ed09c3dcfa133aa0df9e85dd47fd219d350114aa8e507a28"
+    }
+  },
+  "new_risk_authorized": false,
+  "native_execution_verified": false
+}

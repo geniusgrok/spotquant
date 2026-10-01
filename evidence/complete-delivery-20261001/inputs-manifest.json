@@ -1,0 +1,16 @@
+{
+  "artifacts": {
+    "crowding-complete.json": {
+      "bytes": 387544,
+      "sha256": "1d87be0b4c8cd8a7eacd4970a1a194e5f1ed0b2f3aa3710a43417aa9ab066ef2"
+    },
+    "futures.json": {
+      "bytes": 328159,
+      "sha256": "52a8fa8f71edc2b2e86ff63b2b495d0941d63c6cd8c8b25665ffe53273f06430"
+    }
+  },
+  "feature_reproduction_sha256": "1d87be0b4c8cd8a7eacd4970a1a194e5f1ed0b2f3aa3710a43417aa9ab066ef2",
+  "funding_settled_points": 7488,
+  "basis_completed_days": 2485,
+  "funding_uncovered_frozen_window": 0
+}
