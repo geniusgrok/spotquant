@@ -242,7 +242,9 @@ def main(argv=None):
                               'first protection and cancel-replace are non-atomic',
                               'all previously studied history; no prospective alpha proof']}
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(report, separators=(',', ':'), allow_nan=False) + '\n')
+    with args.out.open('x') as stream:
+        json.dump(report, stream, separators=(',', ':'), allow_nan=False)
+        stream.write('\n')
     print(json.dumps({'complete_accounts': sum(r['complete'] for r in results.values()), 'accounts': len(results)}))
 
 

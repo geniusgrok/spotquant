@@ -10,8 +10,9 @@
 
 ```sh
 python -m research.prepare_inputs --futures-input evidence/complete-delivery-20261001/futures.json --out /tmp/crowding-NEW.json
-python -m research.complete_spot --crowding /tmp/crowding-NEW.json --workers 2 --out /tmp/spot-accounts-NEW.json
-python -m research.portfolio_spot --crowding /tmp/crowding-NEW.json --out /tmp/spot-budgets-NEW.json
+mkdir -p /workspace/scratch/spotquant-complete-tmp
+TMPDIR=/workspace/scratch/spotquant-complete-tmp python -m research.complete_spot --crowding /tmp/crowding-NEW.json --workers 2 --out /tmp/spot-accounts-NEW.json
+TMPDIR=/workspace/scratch/spotquant-complete-tmp python -m research.portfolio_spot --crowding /tmp/crowding-NEW.json --out /tmp/spot-budgets-NEW.json
 ```
 
 在Coin目录使用同一特征：
@@ -24,6 +25,9 @@ python -m research.complete_perp --crowding /tmp/crowding-NEW.json --restore-pri
 low(16h)→close(24h)代理，Coin逐笔只给成交量上界并用分钟路径/缺口包络。
 实际有限session/Lifecycle不等于真实盘口或原生证明。全部场景完整、资金
 审计和执行门通过后才按PROTOCOL机械选择；中断的complete=false不可晋升。
+每个回放会话验证临时SQLite备份，单个账户临时目录约需5GB；两个研究
+worker加一个预算进程应预留至少20GB。TMPDIR只改变研究临时路径，
+不删除真实state_dir的归档，也不改变资金、会话或成交。
 
 ## 收益与联合资金
 
