@@ -203,7 +203,7 @@ def _closed(held: dict, sells: list, sold: D, tolerance: D):
 
 
 def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open_ms: int,
-              trades, history) -> tuple[dict, dict, set, list]:
+              trades, history, owners=None) -> tuple[dict, dict, set, list]:
     """Apply one UTC day's fills before that day's bar updates the model.
 
     A sell closes the matching sleeves and consumes their entry signal before any
@@ -220,6 +220,8 @@ def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open
         if trade['id'] not in accounted and day_open(trade['time']) == open_ms
     ]
     day.sort(key=lambda trade: (trade['time'], trade['id']))
+    if owners is not None:
+        return _owned_fills(models, positions, follows, accounted, day, owners, history)
     held = {window: item for window, item in positions.items() if item is not None}
     tolerance = BASE_STEP * (len(positions) + 1)
     closed = []
@@ -265,6 +267,53 @@ def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open
         positions[window] = built
         follows[window] = None
     accounted.update(found['ids'])
+    return positions, follows, accounted, closed
+
+
+def _owned_fills(models, positions, follows, accounted, trades, owners, history):
+    """Attribute fills by the order's durable allocation, including partial fills."""
+    closed = []
+    for trade in trades:
+        owner = owners.get(str(trade['order_id']))
+        if owner is None:
+            raise Unknown('account trade has no durable order allocation')
+        group = owner['sleeves']
+        weights = {int(k): D(v) for k, v in owner['weights'].items()}
+        total = sum(weights.values(), D(0))
+        if total <= 0 or set(weights) != set(group):
+            raise Unknown('invalid durable sleeve allocation')
+        delta = abs(_base_delta(trade))
+        given = D(0)
+        for index, window in enumerate(group):
+            qty = delta - given if index == len(group) - 1 else delta * weights[window] / total
+            given += qty
+            prior = positions.get(window)
+            if trade['buyer']:
+                if prior is None:
+                    built = replay(history(), entry_fill=trade['price'], first_ms=trade['time'],
+                                   repair=bool(owner.get('repair', {}).get(str(window))), window=window)
+                    built['qty'] = format(qty, 'f')
+                    positions[window] = built
+                else:
+                    old_qty = D(prior['qty'])
+                    built = dict(prior)
+                    built['entry_fill'] = format((D(prior['entry_fill']) * old_qty + trade['price'] * qty)
+                                                / (old_qty + qty), 'f')
+                    built['qty'] = format(old_qty + qty, 'f')
+                    positions[window] = built
+                follows[window] = None
+            else:
+                if prior is None or qty > D(prior['qty']) + BASE_STEP:
+                    raise Unknown('allocated sell exceeds its recorded sleeve')
+                remaining = max(D(0), D(prior['qty']) - qty)
+                if remaining <= BASE_STEP:
+                    positions[window] = None
+                    follows[window] = None
+                    models[window].note_flat()
+                    closed.append(window)
+                else:
+                    positions[window] = dict(prior, qty=format(remaining, 'f'))
+            accounted.add(trade['id'])
     return positions, follows, accounted, closed
 
 

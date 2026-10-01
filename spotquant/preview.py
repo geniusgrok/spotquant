@@ -237,7 +237,7 @@ def _qty_ok(quantity, snapshot: dict) -> bool:
 
 
 def _step(value: D, step: D) -> str:
-    return format(value.quantize(step), 'f')
+    return format(floor_step(value, step).quantize(step), 'f')
 
 
 def _flat(reason: str) -> dict:

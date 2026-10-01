@@ -75,16 +75,54 @@ def main(argv=None):
     if args.out.exists() or source['dirty']:
         parser.error('commit source and choose a new evidence file')
     output = io.StringIO()
-    tests = unittest.defaultTestLoader.loadTestsFromName('tests.test_offline')
+    tests = unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromName(name)
+                               for name in ('tests.test_offline', 'tests.test_p4_execution'))
     result = unittest.TextTestRunner(stream=output, verbosity=2).run(tests)
     report = {'source': source, 'offline_passed': result.wasSuccessful() and not result.skipped,
-              'tests_run': result.testsRun, 'test_log': output.getvalue(), 'replay': replay(),
+              'tests_run': result.testsRun, 'test_log': output.getvalue(), 'replay': session_replay(),
               'native_execution_verified': False}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
     print(json.dumps({'offline_passed': report['offline_passed'], 'tests_run': result.testsRun,
                       'submissions': len(report['replay']['submissions'])}))
     return 0 if report['offline_passed'] else 2
+
+
+def session_replay():
+    from spotquant.config import Config
+    from spotquant.offline import P4Venue
+    from spotquant.session import run
+    prices = [D(100)] * 400 + [D(98)]
+    venue = P4Venue([(ORIGIN + i * DAY, p, p, p) for i, p in enumerate(prices)])
+    reports = []
+    with tempfile.TemporaryDirectory() as directory:
+        config = Config('1', directory, 1, 1, 'demo', '1000')
+        def invoke():
+            reports.append(run(config, venue, execute=True, monotonic=venue.monotonic, wait=venue.wait))
+            if reports[-1]['errors']:
+                raise ValueError('P4 session replay did not complete')
+        invoke()
+        for close, high in (('101', '101'), ('102', '102'), ('103', '110')):
+            price = D(close)
+            venue.bars.append((venue.bars[-1][0] + DAY, D(high), price, price))
+            venue.now_ms = venue.bars[-1][0] + DAY
+            venue.price = price
+            if close == '102':
+                venue.fraction, venue.lose_ack = D('.5'), True
+            invoke()
+        venue.now_ms += 2000
+        venue.trigger('70')
+        invoke()
+        with State(directory, config.scope) as state:
+            from spotquant.execution import Lifecycle
+            orders = Lifecycle(state, venue, config).rows()
+            positions = state.get('positions')
+    return serial({'synthetic': True, 'entrypoint': 'spotquant.session.run/cycle → spotquant.execution.Lifecycle',
+                   'sessions': reports, 'durable_allocations': orders, 'fills': venue.fills,
+                   'positions': positions, 'cash': venue.cash, 'btc': venue.btc,
+                   'limitations': ['terminal partial market fill and lock semantics are offline assumptions',
+                                   'cancel/replacement gaps still require native Demo measurement'],
+                   'native_execution_verified': False})
 
 
 if __name__ == '__main__':

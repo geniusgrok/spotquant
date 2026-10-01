@@ -33,8 +33,6 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _default_opener(method: str, url: str, headers: dict):
-    if method != 'GET':
-        raise Blocked('spot adapter issues GET requests only')
     request = urllib.request.Request(url, headers=headers, method='GET')
     opener = urllib.request.build_opener(_NoRedirect)
     try:
@@ -50,7 +48,7 @@ def _default_opener(method: str, url: str, headers: dict):
 
 class Binance:
     def __init__(self, *, key: str, secret: str, environment: str, capital_limit=None,
-                 opener=None, clock=None):
+                 opener=None, clock=None, demo_execution_uid=None):
         if environment not in HOSTS:
             raise Blocked('environment must be live or demo')
         if not key or not secret:
@@ -59,6 +57,12 @@ class Binance:
         self.secret = secret
         self.environment = environment
         self.capital_limit = capital_limit
+        if demo_execution_uid is not None and (environment != 'demo' or capital_limit is None
+                or number(capital_limit, positive=True) <= 0
+                or not isinstance(demo_execution_uid, str) or not demo_execution_uid.isdigit()):
+            raise Blocked('Demo execution needs explicit UID and capital ceiling')
+        self.demo_execution_uid = demo_execution_uid
+        self.execution_authorized = demo_execution_uid is not None
         self.base = HOSTS[environment]
         self._opener = opener or _default_opener
         self._clock = clock or time.time
@@ -82,6 +86,38 @@ class Binance:
 
     def place_order(self, *args, **kwargs):
         raise Blocked('spot execution is not qualified; no order request is sent')
+
+    def query(self, identity):
+        row = self._get('/api/v3/order', {'symbol': 'BTCUSDT', 'origClientOrderId': identity}, signed=True)
+        return self._execution_order(row)
+
+    def submit(self, identity, payload):
+        if not self.execution_authorized:
+            raise Blocked('Demo execution is not explicitly enabled')
+        if self.snapshot(self.demo_execution_uid)['can_trade'] is not True:
+            raise Blocked('Demo account cannot trade')
+        params = dict(payload, newClientOrderId=identity, newOrderRespType='FULL')
+        if set(payload) - {'symbol', 'side', 'type', 'quantity', 'quoteOrderQty', 'stopPrice'}:
+            raise Blocked('unsupported Demo order fields')
+        if payload.get('symbol') != 'BTCUSDT' or payload.get('type') not in ('MARKET', 'STOP_LOSS'):
+            raise Blocked('unsupported Demo market or order type')
+        return self._execution_order(self._get('/api/v3/order', params, signed=True, method='POST'))
+
+    def cancel(self, identity):
+        return self._execution_order(self._get('/api/v3/order',
+            {'symbol': 'BTCUSDT', 'origClientOrderId': identity}, signed=True, method='DELETE'))
+
+    @staticmethod
+    def _execution_order(row):
+        if not isinstance(row, dict):
+            raise Unknown('native order response incomplete')
+        # origQuoteOrderQty is required for quote-sized market buys; no inference from fills.
+        out = dict(row)
+        if 'origQty' in row:
+            out['quantity'] = row['origQty']
+        if 'origQuoteOrderQty' in row:
+            out['quoteOrderQty'] = row['origQuoteOrderQty']
+        return out
 
     def snapshot(self, expected_uid: str) -> dict:
         """Balances, open orders, and the UID from the account response. No order is sent."""
@@ -289,7 +325,10 @@ class Binance:
             self._offset_ms = server - int(self._clock() * 1000)
         return int(self._clock() * 1000) + self._offset_ms
 
-    def _get(self, path: str, params: dict | None = None, *, signed: bool):
+    def _get(self, path: str, params: dict | None = None, *, signed: bool, method='GET'):
+        if method != 'GET' and (not self.execution_authorized or self.environment != 'demo'
+                or path != '/api/v3/order' or method not in ('POST', 'DELETE') or not signed):
+            raise Blocked('only explicitly enabled Demo order writes are supported')
         if not path.startswith('/'):
             raise Blocked('refusing a request outside the configured Binance host')
         pairs = [(key, str(value)) for key, value in (params or {}).items()]
@@ -307,7 +346,7 @@ class Binance:
         if not url.startswith(self.base + '/'):
             raise Blocked('refusing a request outside the configured Binance host')
         self._check_deadline()
-        opened = self._opener('GET', url, headers)
+        opened = self._opener(method, url, headers)
         if not isinstance(opened, tuple) or len(opened) not in (2, 3):
             raise Unknown('Binance response is incomplete')
         status, body = opened[0], opened[1]
@@ -321,7 +360,7 @@ class Binance:
             raise Unknown(f'Binance rate limit HTTP {status}; retry after {retry or "unknown"}')
         if status != 200:
             code = payload.get('code') if isinstance(payload, dict) else None
-            if signed and code == -1021 and not self._clock_retried:
+            if method == 'GET' and signed and code == -1021 and not self._clock_retried:
                 self._clock_retried = True
                 self._offset_ms = None
                 try:

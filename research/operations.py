@@ -18,7 +18,17 @@ from spotquant.state import State
 from spotquant.types import Blocked, number
 
 
-def combined(snapshots, now_ms):
+def combined(snapshots, now_ms, valuation_price=None):
+    if valuation_price is not None:
+        price = number(valuation_price, positive=True)
+        snapshots = [dict(row) for row in snapshots]
+        for row in snapshots:
+            qty = number(row['btc_position'])
+            if row['market'] == 'spot':
+                equity = number(row['cash_usdt'], nonnegative=True) + qty * price
+            else:
+                equity = number(row['wallet_usdt']) + qty * (price - number(row['entry_price_usdt'], nonnegative=True))
+            row.update(btc_price_usdt=str(price), equity_usdt=str(equity))
     if len(snapshots) != 2 or {row.get('market') for row in snapshots} != {'spot', 'perpetual'}:
         raise ValueError('provide exactly one spot and one perpetual account snapshot')
     identities, stamps, prices, equities, quantities = [], [], [], [], []
@@ -113,6 +123,7 @@ def main(argv=None):
     observed.add_argument('--state', type=Path, default=Path.home() / '.local/state/spotquant/observations')
     summary = sub.add_parser('combine')
     summary.add_argument('snapshots', type=Path, nargs=2)
+    summary.add_argument('--valuation-price', help='Revalue both fresh exports at one explicit BTC price')
     args = parser.parse_args(argv)
     try:
         if args.command == 'observe':
@@ -125,7 +136,7 @@ def main(argv=None):
             report = observe(args.market, args.state, args.extra)
         else:
             blobs = [path.read_bytes() for path in args.snapshots]
-            report = combined([json.loads(blob) for blob in blobs], int(time.time() * 1000))
+            report = combined([json.loads(blob) for blob in blobs], int(time.time() * 1000), args.valuation_price)
             report['input_sha256'] = [hashlib.sha256(blob).hexdigest() for blob in blobs]
     except (OSError, ValueError, KeyError, TypeError, Blocked) as exc:
         report = {'status': 'unknown', 'reason': str(exc), 'write_attempted': False,
