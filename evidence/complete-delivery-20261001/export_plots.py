@@ -3,13 +3,14 @@ import argparse
 import csv
 import json
 from pathlib import Path
+from validate_exports import validated
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
 def export(spot_path, perp_path, assessment_path, output):
-    spot, perp, assessment = [json.loads(Path(p).read_text()) for p in (spot_path, perp_path, assessment_path)]
+    spot, perp, assessment = validated(spot_path, perp_path, assessment_path)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     destinations = [output / name for name in ('candidate-risk-return.svg', 'fixed-capital-equity.svg', 'candidate-summary.csv', 'descriptive-alpha-beta.svg', 'candidate-risk-return.png', 'fixed-capital-equity.png', 'descriptive-alpha-beta.png')]
