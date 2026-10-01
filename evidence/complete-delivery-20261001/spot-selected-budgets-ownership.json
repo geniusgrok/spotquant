@@ -1,0 +1,144 @@
+{
+  "verifier_version": "isolated-grouped-dust-cumulative-v4-readback-guard",
+  "verifier_sha256": "078c09d10041c7e0b9facc6997d11601a41a1d45418a7aafb982eefac8fe93ca",
+  "predicate": "Additional shape: STEP<=remaining<STEP*group, value<5, full rounded-group SELL, abs(cumulative gross applied-intended)<=1e-24. FILLED+native executed=intended classifies dust; otherwise pending-readback Unknown guard.",
+  "input_bundles": [
+    {
+      "path": "/workspace/spotquant/evidence/complete-delivery-20261001/portfolio-spot-consensus.json",
+      "sha256": "b7fe8020df2c58e2910c57ef856a61b5905702a69bca30874cddc9c578755b0d",
+      "source": {
+        "git_head": "7b4b44e2ea7ba764ccf84e4bf6601b75fa6e646d",
+        "dirty": false,
+        "python_sources_sha256": "d863ef763b84192e23aea53b5ca01fcdbf05ffaaf3d30233856c842c154540ee"
+      },
+      "accounts": [
+        {
+          "account": "2500",
+          "account_result_sha256": "6a502709779bc8b833d55ce98131c03fda7e72d6bba4d65a0504e893d17dd647",
+          "fills_checked": 141,
+          "sell_fills_checked": 72,
+          "native_owners_checked": 400,
+          "sessions": 795,
+          "original_complete_audit_execution_gates": true,
+          "extended_branch_hit_count": 1,
+          "hits": [
+            {
+              "fill_id": 82,
+              "time_ms": 1713434408200,
+              "order_id": 248,
+              "sleeve": 40,
+              "group": [
+                30,
+                40,
+                50
+              ],
+              "remaining_btc": "0.00001403317106207532245482739",
+              "remaining_value_usdt": "0.8876832180302547543420203187",
+              "order_type": "MARKET",
+              "intended_quantity": "0.08324",
+              "sum_floor_weights": "0.08324",
+              "cumulative_applied_gross": "0.08324000000000000000000000000",
+              "native_status": "FILLED",
+              "native_executed_quantity": "0.08324"
+            }
+          ],
+          "pending_readback_guard_count": 0,
+          "pending_readback_guards": [],
+          "additional_shape_count": 1,
+          "counter_initialization_failure_count": 0,
+          "counter_initialization_failures": [],
+          "final_owned_btc": "0.05193099340094588121867869909",
+          "final_ownership_minus_venue_btc": "0E-29",
+          "zero_hit_reuse_candidate": false,
+          "caveat": "Final implemented predicate and all other source changes need separate equivalence review."
+        },
+        {
+          "account": "5000",
+          "account_result_sha256": "28422256d0f1de0e60cb1cd844744f425d13ff11a0e2ae99d2fd8d8664342cc4",
+          "fills_checked": 141,
+          "sell_fills_checked": 72,
+          "native_owners_checked": 400,
+          "sessions": 795,
+          "original_complete_audit_execution_gates": true,
+          "extended_branch_hit_count": 2,
+          "hits": [
+            {
+              "fill_id": 82,
+              "time_ms": 1713434408200,
+              "order_id": 248,
+              "sleeve": 40,
+              "group": [
+                30,
+                40,
+                50
+              ],
+              "remaining_btc": "0.00001039854229861160068877883",
+              "remaining_value_usdt": "0.6577708950902064515696990806",
+              "order_type": "MARKET",
+              "intended_quantity": "0.16653",
+              "sum_floor_weights": "0.16653",
+              "cumulative_applied_gross": "0.1665300000000000000000000000",
+              "native_status": "FILLED",
+              "native_executed_quantity": "0.16653"
+            },
+            {
+              "fill_id": 136,
+              "time_ms": 1785628806600,
+              "order_id": 387,
+              "sleeve": 40,
+              "group": [
+                30,
+                40,
+                50
+              ],
+              "remaining_btc": "0.0000104215098810497915173324",
+              "remaining_value_usdt": "0.6543922524478313826482647055",
+              "order_type": "MARKET",
+              "intended_quantity": "0.18035",
+              "sum_floor_weights": "0.18035",
+              "cumulative_applied_gross": "0.1803500000000000000000000000",
+              "native_status": "FILLED",
+              "native_executed_quantity": "0.18035"
+            }
+          ],
+          "pending_readback_guard_count": 0,
+          "pending_readback_guards": [],
+          "additional_shape_count": 2,
+          "counter_initialization_failure_count": 0,
+          "counter_initialization_failures": [],
+          "final_owned_btc": "0.1038855761187188095196563408",
+          "final_ownership_minus_venue_btc": "0E-28",
+          "zero_hit_reuse_candidate": false,
+          "caveat": "Final implemented predicate and all other source changes need separate equivalence review."
+        },
+        {
+          "account": "7500",
+          "account_result_sha256": "d53380f0699789f8f7093b07002518f4c61f94bfee996d52faa42cbcbe34a1a3",
+          "fills_checked": 141,
+          "sell_fills_checked": 72,
+          "native_owners_checked": 400,
+          "sessions": 795,
+          "original_complete_audit_execution_gates": true,
+          "extended_branch_hit_count": 0,
+          "hits": [],
+          "pending_readback_guard_count": 0,
+          "pending_readback_guards": [],
+          "additional_shape_count": 0,
+          "counter_initialization_failure_count": 0,
+          "counter_initialization_failures": [],
+          "final_owned_btc": "0.1558242615499409768876777922",
+          "final_ownership_minus_venue_btc": "4E-28",
+          "zero_hit_reuse_candidate": true,
+          "caveat": "Final implemented predicate and all other source changes need separate equivalence review."
+        }
+      ]
+    }
+  ],
+  "implementation_reference": {
+    "spotquant/execution.py": "14fe31c35f5822072f07708bdec8f6cf1e0f15bedc12c7c19d30f7702f64af8f",
+    "spotquant/session.py": "c003b9b14a42558ac8ea351a5df12a2dc65c9a745f51e3978a91759b8aab12e2",
+    "spotquant/preview.py": "a1e0226b331c6d0fcf77af50ce7c097a010439e1db1949e831e3e2b65cc97996",
+    "spotquant/follow.py": "535c87e0ac3386492a64bd30c1ab07596667bc267603879da0457c1557037c54",
+    "research/complete_spot.py": "a4864b43388c3e86426a9b455bb65aabdf008ffd16aebaab9184d93639c0eeb6"
+  }
+}

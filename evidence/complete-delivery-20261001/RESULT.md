@@ -67,3 +67,11 @@ consensus基础年化51.8503%，比等份基线47.7781%提高4.0721个百分点�
 完整命令、历史快照与当前默认区分、原生六案例和恢复步骤见[交付指南](../../research/complete-delivery-GUIDE.md)。老`research.rebuild`的78.49%/31.40%是另一日线账本，不能用来衡量当前默认。所有历史都已研究，归因回归截距/HAC7区间仅为描述，不证明未来alpha，也不能与beta项相加解释几何CAGR。
 
 当前共识运行源的零案例模板/验收输出为spot-native-template-consensus.json、spot-native-acceptance-consensus.json。recovery-drill-consensus留存纯合成会话、不可覆盖报告与SQLite备份：只读恢复余额/提交ID不变，外部0.1BTC偏差为Unknown；它不是原生案例。早期*-final模板/演练对应旧源，只保留历史。
+
+## 完整归因与集成
+
+[统一alpha/beta报告](ALPHA_BETA.md)包含全部48账户、七个固定经济对照，以及原等份和选中共识各五种固定总额10k真实账户组合。资金规模改变成交与后续路径，不能缩放合约结果、把小本金CAGR用于原10k目标，或认定历史最好的配比是未来最优。实际预算及组合仅测基础场景，组合连续MDD及四种压力未验证。
+
+当前完整离线检查150项通过；原生六案例0、实际观察0自然日，仍NOT_QUALIFIED。独立审查与公共文件SHA见本目录的审查记录和manifest.json。
+
+终审：[完整来源、预算、归因与输出审查](btc-complete-spot-analysis-review.md)、[残币修复及零影响审查](btc-spot-grouped-residual-review.md)、[116组双币回归及十条真实组合独立核验](btc-final-assessment-independent-review.json)。连续审查记录保留早期问题和修复过程，以末尾FINAL ACCEPT为当前结论；无未决实质缺陷。合约工程已正常合并[PR56](https://github.com/geniusgrok/coinquant/pull/56)，现货最终集成见[PR8](https://github.com/geniusgrok/spotquant/pull/8)。

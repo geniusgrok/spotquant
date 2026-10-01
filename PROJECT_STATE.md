@@ -1,22 +1,17 @@
 # Project state
 
-本轮完整工程交付进行中，所有登记方向均已实施：BTC-only、Coin合约+Spot现货，Star仅研究。
-Spot最终20账户完整/audit/known通过，16项保留clean2d1e5fe原源，consensus4在clean1fca802完整修复重跑。
-原始20的4项失败仍保留排除；新增全卖取整残币、晚终态回滚与只读同归属修复143项检查通过。
-最终混合源集合SHA439edad38e7a2af382597d204f35cd0a6372ca9da98cdcf4c964852329568e92，原件/逐row/Git源绑定已独审。
-consensus唯一通过全部冻结场景，基础51.8503% CAGR/41.2073%连续代理MDD，原等份47.7781%/41.4842%。
-默认13deeb4已采用共识分配，研究default显式等份；2592组执行等价性和146项离线检查通过。
-原等份与共识各2500/5000/7500实际账户均795次并通过独审，不可缩放或混合策略端点。
-共识预算SHA b7fe8020df2c58e2910c57ef856a61b5905702a69bca30874cddc9c578755b0d，source7b4b44e/d863ef7。
-正常795会话、固定outage实际789；2454共同日终曲线，OHLC历史代理，不能称真实盘口。
-Coin28项已完整通过，incumbent119.2284%/44.1051%，全部替代拒绝，原995及exclusive派生3213均独审通过。
-48项归因已算，七对照已完成；Coin3213实际三个795预算仍运行，log/tmp/perp-portfolio-full.log/session93244。
-预算完成后使用complete_assessment+render_report+export_plots输出完整48项、基线和已选固定总10k组合。
-源码0ded8ee补齐Coin市场/协议/会话身份绑定和所有budget/派生源；来源与工程默认不能和原生晋升混同。
-当前运行包零原生模板/验收为spot-*-consensus、perp-*-current，六案例0、实际观察0自然日，NOT_QUALIFIED。
-recovery-drill-consensus留存synthetic SQLite65536B、源13deeb4、只读恢复余额ID不变、external BTC Unknown；非原生证明。
-Spot源码0ded8ee CI36937502319通过，Coin3213 CI36937083778和ed9dd0f evidenceCI36937538473通过；最终证据head尚待。
-剩余：Coin3预算核验、统一报告/图表/manifest、两仓既有状态与指南完成、终审/最终exactheadCI/正常PR8和56集成。
-用户已授权全部工程及正常PR集成，无需再确认；未授权交易所凭据、真实账户订单/转账/设置，本轮均未执行。
-旧78.49/31.40是另一等份日线账本，不衡量当前默认；无干净样本外/未来alpha证明。原经济目标仍NOT_MET。
-只使用既有PROJECT_STATE.md/HANDOFF_PROMPT.md，完整输入和复现见research/complete-delivery-GUIDE.md及evidence/complete-delivery-20261001。
+BTC-only完整工程及历史研究已完成，长期入口为Coinquant合约与Spotquant现货，Starquant只留研究参考。工程默认采用P4共识；原100% CAGR/连续MDD<=30%目标仍NOT_MET，真实原生案例0、实际观察0自然日，NOT_QUALIFIED。
+
+全部20现货与28合约候选/压力账户完整且资金/执行审计通过，七个固定经济对照、九个实际预算账户及两套各五配比固定总10k组合已完成，无追加、转账或再平衡。正常795会话、Spot固定outage789；日终共同曲线2454天。预算及组合仅测base，联合连续MDD及四场景压力未验证。
+
+现货consensus唯一通过冻结全部采用门槛，基础51.8503% CAGR/41.2073%连续代理MDD，原等份47.7781%/41.4842%。共识改造保持真实信号，仅将已有新BUY在至少两个实际看多分仓时提高到至少90%可用现金，受原资金上限约束。研究default显式冻结等份。默认源13deeb4的2592组执行等价性通过；当前150项离线检查通过，核心标准库依赖不变。
+
+现货原件clean2d1e5fe保留16有效行及4失败共识行，失败排除。全卖残币/晚终态事务回滚/同归属修复源1fca802只需重跑原4项，修复4项全部完整通过。组装清楚保留16旧源+4新源，不重标测量源；最终集合SHA439edad38e7a2af382597d204f35cd0a6372ca9da98cdcf4c964852329568e92。原等份与共识各2500/5000/7500真实预算均独立795会话；共识预算源7b4b44e/d863ef7。
+
+Coin原995全28保留，exclusive派生3213仅去除slow-trend4项恰在END的负资金费，原24项资金/成交/MDD不变。所有替代未通过冻结压力约束，incumbent保留119.2284%/44.1051%。3213实际2500/5000/7500预算全部完成；资金规模改变成交和权益反馈路径，不能缩放、用小本金CAGR替代10k目标或认定某配比未来最优。
+
+assessment.json明确绑定48项来源、五个实际输入文件SHA、Coin市场/协议/会话身份及终点派生。联合beta从实际合计USDT/CNY日收益回归，不平均策略beta；算术残差/HAC7区间仅描述全样本历史，没有策略选择调整或未来alpha证明。年度2026仅到9月19日；非零余额天数含残币，另列>=5USDT名义日数。Spot OHLC路径/Coin分钟与量上界皆历史代理，不是盘口或原生执行。
+
+当前原生零模板为spot-*-consensus和perp-*-current。recovery-drill-consensus保留纯合成SQLite及会话报告，只读恢复余额/IDs不变、external BTC Unknown；它不计原生案例或实际30自然日。六原生案例、账户核对、保护空窗及实际30日仍须由所有者真实事件完成；本轮没有读取交易所凭据、访问真实账户、发订单/转账/设置。
+
+交付证据、完整指标CSV与图表见evidence/complete-delivery-20261001/ALPHA_BETA.md、RESULT.md、manifest.json；复现及所有者步骤见research/complete-delivery-GUIDE.md。源/资金/默认改造的独立审查记录随证据保留。最终CI与正常集成记录以Spot PR8、Coin PR56及Star PR12的公开状态为准，不再有运行中研究进程。本次用户已经授权全部工程与正常PR集成，无需重复确认；不得据此启动真实账户写入。

@@ -1,0 +1,242 @@
+{
+  "verifier_version": "isolated-grouped-dust-cumulative-v4-readback-guard",
+  "verifier_sha256": "078c09d10041c7e0b9facc6997d11601a41a1d45418a7aafb982eefac8fe93ca",
+  "predicate": "Additional shape: STEP<=remaining<STEP*group, value<5, full rounded-group SELL, abs(cumulative gross applied-intended)<=1e-24. FILLED+native executed=intended classifies dust; otherwise pending-readback Unknown guard.",
+  "input_bundles": [
+    {
+      "path": "/workspace/spotquant/evidence/complete-delivery-20261001/spot-consensus-corrected.json",
+      "sha256": "cf075b86ba5df590e078a7c626c53cb20937be955cfb6ad8d41eae19b78645e8",
+      "source": {
+        "git_head": "1fca802ec89445e1b89dcc3d600dbfed721b8e34",
+        "dirty": false,
+        "python_sources_sha256": "d863ef763b84192e23aea53b5ca01fcdbf05ffaaf3d30233856c842c154540ee"
+      },
+      "accounts": [
+        {
+          "account": "consensus-base",
+          "account_result_sha256": "0139ba2ba00342a1bfbdb91368e7f6ef7ea29f03adf58987c7e9550bafffb42b",
+          "fills_checked": 141,
+          "sell_fills_checked": 72,
+          "native_owners_checked": 400,
+          "sessions": 795,
+          "original_complete_audit_execution_gates": true,
+          "extended_branch_hit_count": 1,
+          "hits": [
+            {
+              "fill_id": 115,
+              "time_ms": 1755676804800,
+              "order_id": 336,
+              "sleeve": 40,
+              "group": [
+                30,
+                40,
+                50
+              ],
+              "remaining_btc": "0.0000164048646786482917626508",
+              "remaining_value_usdt": "1.879303565297213895113722509",
+              "order_type": "MARKET",
+              "intended_quantity": "0.24615",
+              "sum_floor_weights": "0.24615",
+              "cumulative_applied_gross": "0.2461500000000000000000000000",
+              "native_status": "FILLED",
+              "native_executed_quantity": "0.24615"
+            }
+          ],
+          "pending_readback_guard_count": 0,
+          "pending_readback_guards": [],
+          "additional_shape_count": 1,
+          "counter_initialization_failure_count": 0,
+          "counter_initialization_failures": [],
+          "final_owned_btc": "0.2077706518175060293405336125",
+          "final_ownership_minus_venue_btc": "1E-28",
+          "zero_hit_reuse_candidate": false,
+          "caveat": "Final implemented predicate and all other source changes need separate equivalence review."
+        },
+        {
+          "account": "consensus-fee150",
+          "account_result_sha256": "4ddca66ac51ce2cf028a1183d372454cf72c14f7d623a6fbe73083cde157d7ab",
+          "fills_checked": 141,
+          "sell_fills_checked": 72,
+          "native_owners_checked": 400,
+          "sessions": 795,
+          "original_complete_audit_execution_gates": true,
+          "extended_branch_hit_count": 2,
+          "hits": [
+            {
+              "fill_id": 82,
+              "time_ms": 1713434408200,
+              "order_id": 248,
+              "sleeve": 40,
+              "group": [
+                30,
+                40,
+                50
+              ],
+              "remaining_btc": "0.0000133269681878778519237237",
+              "remaining_value_usdt": "0.8430116012462206407024609597",
+              "order_type": "MARKET",
+              "intended_quantity": "0.32551",
+              "sum_floor_weights": "0.32551",
+              "cumulative_applied_gross": "0.3255100000000000000000000000",
+              "native_status": "FILLED",
+              "native_executed_quantity": "0.32551"
+            },
+            {
+              "fill_id": 115,
+              "time_ms": 1755676804800,
+              "order_id": 336,
+              "sleeve": 40,
+              "group": [
+                30,
+                40,
+                50
+              ],
+              "remaining_btc": "0.0000106097257624133358964795",
+              "remaining_value_usdt": "1.215425780261418414382044757",
+              "order_type": "MARKET",
+              "intended_quantity": "0.23813",
+              "sum_floor_weights": "0.23813",
+              "cumulative_applied_gross": "0.2381300000000000000000000000",
+              "native_status": "FILLED",
+              "native_executed_quantity": "0.23813"
+            }
+          ],
+          "pending_readback_guard_count": 0,
+          "pending_readback_guards": [],
+          "additional_shape_count": 2,
+          "counter_initialization_failure_count": 0,
+          "counter_initialization_failures": [],
+          "final_owned_btc": "0.1991326550006435152577790208",
+          "final_ownership_minus_venue_btc": "1E-28",
+          "zero_hit_reuse_candidate": false,
+          "caveat": "Final implemented predicate and all other source changes need separate equivalence review."
+        },
+        {
+          "account": "consensus-slip2",
+          "account_result_sha256": "c2fc849559ea5386a369c4edad6ed275eb956ad48d42b019a5efc452721e7817",
+          "fills_checked": 141,
+          "sell_fills_checked": 72,
+          "native_owners_checked": 400,
+          "sessions": 795,
+          "original_complete_audit_execution_gates": true,
+          "extended_branch_hit_count": 3,
+          "hits": [
+            {
+              "fill_id": 82,
+              "time_ms": 1713434408200,
+              "order_id": 248,
+              "sleeve": 40,
+              "group": [
+                30,
+                40,
+                50
+              ],
+              "remaining_btc": "0.0000115815471768764000159413",
+              "remaining_value_usdt": "0.7322366468903682914282437235",
+              "order_type": "MARKET",
+              "intended_quantity": "0.32547",
+              "sum_floor_weights": "0.32547",
+              "cumulative_applied_gross": "0.3254700000000000000000000000",
+              "native_status": "FILLED",
+              "native_executed_quantity": "0.32547"
+            },
+            {
+              "fill_id": 115,
+              "time_ms": 1755676804800,
+              "order_id": 336,
+              "sleeve": 40,
+              "group": [
+                30,
+                40,
+                50
+              ],
+              "remaining_btc": "0.0000105180220223076071742693",
+              "remaining_value_usdt": "1.204317649133504358670941391",
+              "order_type": "MARKET",
+              "intended_quantity": "0.23798",
+              "sum_floor_weights": "0.23798",
+              "cumulative_applied_gross": "0.2379800000000000000000000000",
+              "native_status": "FILLED",
+              "native_executed_quantity": "0.23798"
+            },
+            {
+              "fill_id": 136,
+              "time_ms": 1785628806600,
+              "order_id": 387,
+              "sleeve": 40,
+              "group": [
+                30,
+                40,
+                50
+              ],
+              "remaining_btc": "0.0000120453466403069026759647",
+              "remaining_value_usdt": "0.7559785911109100453831571968",
+              "order_type": "MARKET",
+              "intended_quantity": "0.34622",
+              "sum_floor_weights": "0.34622",
+              "cumulative_applied_gross": "0.3462200000000000000000000000",
+              "native_status": "FILLED",
+              "native_executed_quantity": "0.34622"
+            }
+          ],
+          "pending_readback_guard_count": 0,
+          "pending_readback_guards": [],
+          "additional_shape_count": 3,
+          "counter_initialization_failure_count": 0,
+          "counter_initialization_failures": [],
+          "final_owned_btc": "0.1990090232179536139784126955",
+          "final_ownership_minus_venue_btc": "0E-28",
+          "zero_hit_reuse_candidate": false,
+          "caveat": "Final implemented predicate and all other source changes need separate equivalence review."
+        },
+        {
+          "account": "consensus-outage",
+          "account_result_sha256": "97bd617a917d471f202a7f957abd1bf327a8bc02b422bead35c2c60a7ffbfb53",
+          "fills_checked": 141,
+          "sell_fills_checked": 72,
+          "native_owners_checked": 400,
+          "sessions": 789,
+          "original_complete_audit_execution_gates": true,
+          "extended_branch_hit_count": 1,
+          "hits": [
+            {
+              "fill_id": 115,
+              "time_ms": 1755676804800,
+              "order_id": 336,
+              "sleeve": 40,
+              "group": [
+                30,
+                40,
+                50
+              ],
+              "remaining_btc": "0.0000164048646786482917626508",
+              "remaining_value_usdt": "1.879303565297213895113722509",
+              "order_type": "MARKET",
+              "intended_quantity": "0.24615",
+              "sum_floor_weights": "0.24615",
+              "cumulative_applied_gross": "0.2461500000000000000000000000",
+              "native_status": "FILLED",
+              "native_executed_quantity": "0.24615"
+            }
+          ],
+          "pending_readback_guard_count": 0,
+          "pending_readback_guards": [],
+          "additional_shape_count": 1,
+          "counter_initialization_failure_count": 0,
+          "counter_initialization_failures": [],
+          "final_owned_btc": "0.2077706518175060293405336125",
+          "final_ownership_minus_venue_btc": "1E-28",
+          "zero_hit_reuse_candidate": false,
+          "caveat": "Final implemented predicate and all other source changes need separate equivalence review."
+        }
+      ]
+    }
+  ],
+  "implementation_reference": {
+    "spotquant/execution.py": "14fe31c35f5822072f07708bdec8f6cf1e0f15bedc12c7c19d30f7702f64af8f",
+    "spotquant/session.py": "c003b9b14a42558ac8ea351a5df12a2dc65c9a745f51e3978a91759b8aab12e2",
+    "spotquant/preview.py": "ae8bd6c3021d5de383bef88250dbd687c919459562a8ca8e9be257d7a0f1bdff",
+    "spotquant/follow.py": "535c87e0ac3386492a64bd30c1ab07596667bc267603879da0457c1557037c54",
+    "research/complete_spot.py": "7e8f194d541718fb1fe8c40c6803624daadb8a72735ed102105cb53a1788c19f"
+  }
+}

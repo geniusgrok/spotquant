@@ -135,3 +135,28 @@ python evidence/complete-delivery-20261001/export_plots.py --spot evidence/compl
 预算的完整市场/协议/会话身份与full28一致，并显式保留budget测量源和
 exclusive终点派生源，不能只凭相同FX来拼不同市场输入。报告脚本只渲染
 已通过资金审计的冻结结果，不调参或改变采用决策。
+
+实际预算与联合配比只测基础场景，没有四种组合压力或连续联合MDD证明。
+合约不同本金产生不同成交和权益反馈路径，不可按比例缩放、用小本金CAGR
+替代10000元原目标，或把历史最高配比称为最优。公共交付的manifest.json
+逐文件绑定字节数和SHA256，排除自身、进度文件和__pycache__；核对清单
+后再复算。合成SQLite仅用于恢复检查，不是原生账户证明。
+
+从Spot仓库根目录验证整个公共交付清单：
+
+```sh
+python - <<'PYVERIFY'
+from pathlib import Path
+import json, hashlib
+manifest = json.loads(Path('evidence/complete-delivery-20261001/manifest.json').read_text())
+for name, item in manifest['files'].items():
+    data = Path(name).read_bytes()
+    assert len(data) == item['bytes'], name
+    assert hashlib.sha256(data).hexdigest() == item['sha256'], name
+print('All public delivery file hashes verified')
+PYVERIFY
+```
+
+独立审查脚本和结果同样归档。review_final_btc_assessment.py保留审查时的
+/workspace和/tmp公共输入路径；在相同布局和恢复输入下运行，可重新核对
+48账户及10组合共116组双币回归，不能据此认证真实交易所回包。
