@@ -12,7 +12,7 @@ def export(spot_path, perp_path, assessment_path, output):
     spot, perp, assessment = [json.loads(Path(p).read_text()) for p in (spot_path, perp_path, assessment_path)]
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    destinations = [output / name for name in ('candidate-risk-return.svg', 'fixed-capital-equity.svg', 'candidate-summary.csv', 'descriptive-alpha-beta.svg')]
+    destinations = [output / name for name in ('candidate-risk-return.svg', 'fixed-capital-equity.svg', 'candidate-summary.csv', 'descriptive-alpha-beta.svg', 'candidate-risk-return.png', 'fixed-capital-equity.png', 'descriptive-alpha-beta.png')]
     if any(p.exists() for p in destinations):
         raise ValueError('choose a fresh export directory; never overwrite evidence')
     summaries = []
@@ -31,18 +31,12 @@ def export(spot_path, perp_path, assessment_path, output):
             if not passed or row['cagr'] is None:
                 continue
             x, y = float(row['mdd']) * 100, row['cagr'] * 100
-            ax.scatter(x, y, s=50)
-            offset = {('Spot', 'default-base'): (14, 14), ('Spot', 'basis-base'): (14, -13),
-                      ('Spot', 'downside-base'): (20, 0), ('Spot', 'funding-base'): (8, -16),
-                      ('Perpetual', 'incumbent'): (-88, 8), ('Perpetual', 'basis-filter'): (-85, -14),
-                      ('Perpetual', 'tail-sizing'): (-75, 22), ('Perpetual', 'no-macro'): (6, 12)}.get((project, name), (5, 5))
-            ax.annotate(name.replace('-base', ''), (x, y), xytext=offset, textcoords='offset points', fontsize=8,
-                        arrowprops={'arrowstyle': '-', 'color': '#999999', 'linewidth': .6})
+            ax.scatter(x, y, s=50, label=name.replace('-base', ''))
         ax.axhline(target, linestyle='--', color='#777777', label='Original CAGR target')
         ax.axvline(limit, linestyle=':', color='#777777', label='Original MDD boundary')
         ax.set(xlabel='Continuous proxy MDD (%)', ylabel='Cost-net CAGR (%)', title=project + ': registered base scenarios')
         ax.grid(alpha=.2)
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=8, loc='lower left')
     fig.suptitle('BTC historical account diagnostics — proxy execution; no prospective alpha or native proof', fontsize=11)
     fig.savefig(destinations[0])
     fig.savefig(output / 'candidate-risk-return.png', dpi=160)
