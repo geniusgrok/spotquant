@@ -117,7 +117,7 @@ def canonical(row, market, fx, initial, kind):
     return curve
 
 
-def attribution(row, curve, market_returns, initial, fx):
+def attribution(row, curve, market_returns, cny_market_returns, initial, fx):
     metrics, returns = daily_metrics([r['equity_cny'] for r in curve], initial)
     initial_usdt = float(D(str(initial)) / fx(START_MS) * D('.999'))
     _, usd_returns = daily_metrics([r['equity_usdt'] for r in curve], initial_usdt)
@@ -127,13 +127,14 @@ def attribution(row, curve, market_returns, initial, fx):
         years[year] = (years.get(year, 1) * (1 + value))
     down = [i for i, r in enumerate(market_returns) if r < 0]
     return {'metrics': metrics, 'usdt_btc_regression': regression(usd_returns, market_returns),
-            'cny_btc_regression': regression(returns, market_returns),
+            'cny_btc_regression': regression(returns, cny_market_returns),
             'down_market_beta': regression([usd_returns[i] for i in down], [market_returns[i] for i in down])['beta_btc'],
             'calendar_returns': {str(y): v - 1 for y, v in years.items()},
             'mean_closing_gross_exposure_over_equity': statistics.mean(r['gross_exposure_over_equity'] for r in curve),
             'days_with_closing_btc_position': sum(bool(r['net_btc']) for r in curve),
             'fees_usdt': row.get('fees', row.get('audit', {}).get('fees_usdt')),
             'funding_paid_usdt': row.get('funding', '0'),
+            'fill_count': len(row.get('fills', [])),
             'continuous_mdd_from_account': float(row['mdd']), 'native_execution_verified': False}
 
 
@@ -142,23 +143,45 @@ def passive_controls(bars, fx):
     active = [b for b in bars if START_MS <= b[0] < END_MS]
     initial_cash = D(10000) / fx(START_MS) * D('.999')
     report = {}
-    for method in ('cash', 'buy_hold', 'twelve_month_dca'):
+    for method in ('cash', 'buy_hold', 'btc25_cash75', 'btc50_cash50', 'btc75_cash25',
+                   'twelve_month_dca', 'volatility_control40'):
         cash, btc, curve, purchases = initial_cash, D(0), [], 0
+        history = [b[4] for b in bars if b[0] < START_MS]
         for day, open_, high, low, close, volume in active:
             date = datetime.fromtimestamp(day / 1000, timezone.utc)
-            buy = (method == 'buy_hold' and day == START_MS) or (
+            fraction = {'buy_hold': D(1), 'btc25_cash75': D('.25'),
+                        'btc50_cash50': D('.5'), 'btc75_cash25': D('.75')}.get(method)
+            buy = (fraction is not None and day == START_MS) or (
                 method == 'twelve_month_dca' and date.year == 2020 and date.day == 1)
             if buy:
-                spent = cash if method == 'buy_hold' else min(cash, initial_cash / 12)
+                spent = initial_cash * fraction if fraction is not None else min(cash, initial_cash / 12)
                 # Same spot fee, entry slippage and final mark convention.
                 btc += spent * D('.999') / (open_ * D('1.0005'))
                 cash -= spent
                 purchases += 1
+            if method == 'volatility_control40':
+                if len(history) < 21:
+                    raise ValueError('volatility benchmark requires prior completed warmup')
+                returns = [history[i] / history[i - 1] - 1 for i in range(len(history) - 20, len(history))]
+                rms = (sum(r * r for r in returns) / 20).sqrt()
+                weight = min(D(1), D('.4') / (rms * D('365.25').sqrt())) if rms else D(1)
+                target = (cash + btc * open_) * weight
+                difference = target - btc * open_
+                if difference > 0:
+                    spent = min(cash, difference)
+                    btc += spent * D('.999') / (open_ * D('1.0005'))
+                    cash -= spent
+                    purchases += 1
+                elif difference < 0:
+                    sold = min(btc, -difference / open_)
+                    btc -= sold
+                    cash += sold * open_ * D('.9995') * D('.999')
             curve.append(float((cash + btc * close) * fx(day + DAY) * D('.999')))
+            history.append(close)
         metrics, _ = daily_metrics(curve, 10000)
         report[method] = {'metrics': metrics, 'purchases': purchases, 'initial_cny': 10000,
                           'additional_capital_cny': 0, 'market': 'spot',
-                          'method': 'Fixed daily-open benchmark with fractional BTC, not finite-session/Lifecycle fills.',
+                          'method': 'Daily-open economic benchmark with fractional BTC, not finite-session/Lifecycle fills.',
                           'fees_each_buy': '.001', 'entry_slippage': '.0005',
                           'terminal_valuation': 'mark-to-market, no assumed terminal sale',
                           'continuous_mdd_verified': False, 'native_execution_verified': False}
@@ -189,9 +212,13 @@ def main(argv=None):
     fx = PriorFX(fx_path)
     active = [b for b in bars if START_MS <= b[0] < END_MS]
     previous_price = active[0][1]
-    btc_returns = []
+    btc_returns, cny_btc_returns = [], []
+    previous_cny_price = previous_price * fx(START_MS)
     for row in active:
         btc_returns.append(float(row[4] / previous_price - 1))
+        cny_price = row[4] * fx(row[0] + DAY)
+        cny_btc_returns.append(float(cny_price / previous_cny_price - 1))
+        previous_cny_price = cny_price
         previous_price = row[4]
     report = {'analysis_source': source_identity(), 'inputs': {n: hashlib.sha256(getattr(args, n).read_bytes()).hexdigest() for n in inputs},
               'input_sources': {'spot': inputs['spot']['source'], 'perp': inputs['perp']['inputs']['source']},
@@ -207,7 +234,17 @@ def main(argv=None):
         if not row.get('complete') or not row['audit']['passed']:
             raise ValueError('complete audited baseline required')
         curve = canonical(row, bars, fx, 10000, name)
-        report['attribution'][name] = attribution(row, curve, btc_returns, 10000, fx)
+        report['attribution'][name] = attribution(row, curve, btc_returns, cny_btc_returns, 10000, fx)
+    report['candidate_attribution'] = {}
+    for key, row in inputs['spot']['results'].items():
+        if row.get('complete') and row['audit']['passed']:
+            curve = canonical(row, bars, fx, 10000, 'spot')
+            report['candidate_attribution']['spot/' + key] = attribution(row, curve, btc_returns, cny_btc_returns, 10000, fx)
+    for candidate, scenarios in inputs['perp']['results'].items():
+        for scenario, row in scenarios.items():
+            if row.get('complete') and row['audit']['passed']:
+                curve = canonical(row, bars, fx, 10000, 'perp')
+                report['candidate_attribution']['perp/' + candidate + '/' + scenario] = attribution(row, curve, btc_returns, cny_btc_returns, 10000, fx)
     spot_curve, perp_curve = canonical(spot, bars, fx, 10000, 'spot'), canonical(perp, bars, fx, 10000, 'perp')
     _, spot_returns = daily_metrics([r['equity_cny'] for r in spot_curve], 10000)
     _, perp_returns = daily_metrics([r['equity_cny'] for r in perp_curve], 10000)

@@ -1,7 +1,10 @@
 from copy import deepcopy
+from decimal import Decimal as D
 import unittest
 
-from research.complete_assessment import daily_metrics, regression, select_spot
+from research.complete_assessment import attribution, daily_metrics, regression, select_spot
+from research.rebuild import START_MS
+from spotquant.model import DAY
 from research.complete_spot import CANDIDATES, SCENARIOS
 
 
@@ -38,3 +41,18 @@ class CompleteAssessmentTests(unittest.TestCase):
         result, _ = daily_metrics([75, 80, 100, 90], 100)
         self.assertEqual(result['daily_mdd'], .25)
         self.assertEqual(result['longest_daily_underwater_days'], 2)
+
+    def test_currency_regressions_use_their_own_btc_returns(self):
+        usd_returns = [-.04, -.01, -.02, .02, .03]
+        cny_returns = [.01, -.03, .04, -.02, .01]
+        usd, cny, curve = 9990., 10000., []
+        for i, (a, b) in enumerate(zip(usd_returns, cny_returns)):
+            usd, cny = usd * (1 + a), cny * (1 + b)
+            curve.append({'day_ms': START_MS + i * DAY, 'equity_usdt': usd,
+                          'equity_cny': cny, 'net_btc': 1,
+                          'gross_exposure_over_equity': 1})
+        result = attribution({'mdd': '.1'}, curve, usd_returns, cny_returns,
+                             10000, lambda stamp: D(1))
+        self.assertAlmostEqual(result['usdt_btc_regression']['beta_btc'], 1)
+        self.assertAlmostEqual(result['cny_btc_regression']['beta_btc'], 1)
+        self.assertAlmostEqual(result['cny_btc_regression']['intercept_daily'], 0)

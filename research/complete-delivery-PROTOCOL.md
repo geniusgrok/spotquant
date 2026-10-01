@@ -41,3 +41,12 @@ session archives and online backups, read-only backup validation/restore drill,
 source-bound native evidence audit, alpha/beta attribution, fixed-capital joint
 accounts, operator guide, independent review, CI and normal PR integration.
 True Demo events/30 natural days cannot be replaced with synthetic/history data.
+
+Descriptive control supplement, fixed before completed account results: add
+initial BTC/cash fractions25/50/75%, held without rebalance, and one daily-open
+unlevered volatility control. The latter targets40% annual volatility using
+RMS of the prior20 completed close-to-close returns, capped at100% BTC, with
+the same spot fee/slippage and warmup history. These are economic proxy
+benchmarks, not executable finite-session candidates or promotion searches.
+Report all candidate/scenario attribution, USDT returns against USDT BTC and
+CNY returns against CNY BTC. No benchmark result changes eligibility rules.
