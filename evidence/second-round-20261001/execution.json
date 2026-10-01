@@ -1,12 +1,12 @@
 {
   "source": {
-    "git_head": "5cc26889b0f1f6936aeb489a5e0ee9be94ec55dd",
+    "git_head": "f6649c1e82f7592639d05d6ed1da22573eddfef4",
     "dirty": false,
-    "python_sources_sha256": "e203b6e8fd6cdfbf3daf8c90e37c0598738ab890bfc7423a4322c5c306175f88"
+    "python_sources_sha256": "dcaa119e3cfd1a8b31098f6d63367e78c77d65b2b10b43790a420c0bcef8b55d"
   },
   "offline_passed": true,
-  "tests_run": 5,
-  "test_log": "test_lost_ack_restart_and_partial_fill_protection (tests.test_offline.OfflineTests.test_lost_ack_restart_and_partial_fill_protection) ... ok\ntest_network_adapter_and_native_state_are_rejected (tests.test_offline.OfflineTests.test_network_adapter_and_native_state_are_rejected) ... ok\ntest_query_outage_after_fill_never_resubmits_on_restart (tests.test_offline.OfflineTests.test_query_outage_after_fill_never_resubmits_on_restart) ... ok\ntest_stop_failure_and_replacement_do_not_report_protection (tests.test_offline.OfflineTests.test_stop_failure_and_replacement_do_not_report_protection) ... ok\ntest_unconfirmed_send_and_external_funds_freeze (tests.test_offline.OfflineTests.test_unconfirmed_send_and_external_funds_freeze) ... ok\n\n----------------------------------------------------------------------\nRan 5 tests in 0.005s\n\nOK\n",
+  "tests_run": 9,
+  "test_log": "test_lost_ack_restart_and_partial_fill_protection (tests.test_offline.OfflineTests.test_lost_ack_restart_and_partial_fill_protection) ... ok\ntest_network_adapter_and_native_state_are_rejected (tests.test_offline.OfflineTests.test_network_adapter_and_native_state_are_rejected) ... ok\ntest_query_outage_after_fill_never_resubmits_on_restart (tests.test_offline.OfflineTests.test_query_outage_after_fill_never_resubmits_on_restart) ... ok\ntest_sell_proceeds_are_reconciled_before_a_new_buy (tests.test_offline.OfflineTests.test_sell_proceeds_are_reconciled_before_a_new_buy) ... ok\ntest_stop_failure_does_not_report_protection (tests.test_offline.OfflineTests.test_stop_failure_does_not_report_protection) ... ok\ntest_strategy_exit_cancels_confirmed_protection_before_selling (tests.test_offline.OfflineTests.test_strategy_exit_cancels_confirmed_protection_before_selling) ... ok\ntest_terminal_partial_exit_protects_the_remaining_coins (tests.test_offline.OfflineTests.test_terminal_partial_exit_protects_the_remaining_coins) ... ok\ntest_unconfirmed_send_and_external_funds_freeze (tests.test_offline.OfflineTests.test_unconfirmed_send_and_external_funds_freeze) ... ok\ntest_unsupported_replacement_keeps_the_prior_stop (tests.test_offline.OfflineTests.test_unsupported_replacement_keeps_the_prior_stop) ... ok\n\n----------------------------------------------------------------------\nRan 9 tests in 0.011s\n\nOK\n",
   "replay": {
     "synthetic": true,
     "entry_preview": {

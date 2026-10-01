@@ -1,13 +1,14 @@
 # BTC offline lifecycle and personal workflow — 2026-10-01
 
-`execution-latest.json` is the current offline evidence. It runs nine money
+`execution.json` is the current offline evidence. It runs nine money
 and recovery cases, then uses the actual P4 Model and portfolio preview,
 existing `follow.apply_day` sleeve attribution, durable SQLite order IDs and
 an in-memory venue. Lost ACK/restart does not duplicate entry; terminal partial
 fills protect actual coins; exits release confirmed protection, settle proceeds
 and re-protect remaining coins after a terminal partial sale. Unexplained
 balances and unsupported stop replacement block rather than claim success.
-Older execution files retain their own earlier source identities.
+Earlier execution files and their source identities remain in Git history
+at `6411a9b`; the working tree retains the current result.
 
 This is a minimum offline executor, not a Binance writer. Only the concrete
 in-memory adapter and separate offline state are accepted. Stop locking,
