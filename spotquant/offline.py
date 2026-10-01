@@ -81,6 +81,18 @@ class OfflineVenue:
                 row.update(status='FILLED', executedQty=str(qty), quote=str(quote))
                 self.events.append({'event': 'stop_triggered', 'order': dict(row), 'balances': serial(self.balances())})
 
+    def cancel(self, identity):
+        row = self.query(identity)
+        if row is None:
+            raise Unknown('offline cancel has no confirmed original order')
+        if row['status'] == 'NEW':
+            row['status'] = 'CANCELED'
+            self.events.append({'event': 'canceled', 'order': dict(row)})
+        if self.lose_ack:
+            self.lose_ack = False
+            raise Unknown('offline cancel acknowledgement lost')
+        return row
+
 
 class Lifecycle:
     def __init__(self, state: State, venue: OfflineVenue):
@@ -118,7 +130,7 @@ class Lifecycle:
             expected['cash'] -= sign * quote
         if serial(expected) != serial(self.venue.balances()):
             raise Unknown('offline fills cannot explain balances')
-        if row['status'] not in ('NEW', 'FILLED', 'EXPIRED') or (row['type'] == 'MARKET' and row['status'] == 'NEW'):
+        if row['status'] not in ('NEW', 'FILLED', 'EXPIRED', 'CANCELED') or (row['type'] == 'MARKET' and row['status'] == 'NEW'):
             raise Unknown('offline entry remainder is unresolved')
         status = 'resting' if row['type'] == 'STOP_LOSS' and row['status'] == 'NEW' else 'settled'
         with self.state.db:
@@ -133,6 +145,20 @@ class Lifecycle:
             "SELECT id,payload,status,result FROM intents WHERE status IN ('unknown','resting') ORDER BY updated"))
         for identity, payload, _status, result in rows:
             self._resolve(identity, json.loads(payload), json.loads(result))
+
+    def cancel_stop(self, identity):
+        saved = self.state.db.execute('SELECT payload,result FROM intents WHERE id=?', (identity,)).fetchone()
+        if saved is None:
+            raise Unknown('offline cancel cannot adopt an external protection')
+        payload, prior = json.loads(saved[0]), json.loads(saved[1])
+        if payload['type'] != 'STOP_LOSS':
+            raise Blocked('only confirmed offline protection can be canceled')
+        self._save(identity, payload, 'unknown', prior)
+        try:
+            self.venue.cancel(identity)
+        except Unknown:
+            pass
+        return self._resolve(identity, payload, prior)
 
     def submit(self, payload, bar):
         if type(bar) is not int or bar < 0:
@@ -164,7 +190,13 @@ class Lifecycle:
         self.recover()
         if serial(self.venue.balances()) != self.state.get('offline_balances'):
             raise Unknown('unknown account change blocks new order')
-        if any(row['type'] == 'STOP_LOSS' and row['status'] == 'NEW' for row in self.venue.orders.values()):
+        protections = [row['id'] for row in self.venue.orders.values()
+                       if row['type'] == 'STOP_LOSS' and row['status'] == 'NEW']
+        if protections and side == 'SELL' and kind == 'MARKET':
+            # Spot sales need released coins. Cancellation and sale are not atomic.
+            for stop_id in protections:
+                self.cancel_stop(stop_id)
+        elif protections:
             raise Blocked('resting protection blocks unsupported replacement or additional order')
         if side == 'BUY' and self.venue.btc * self.venue.price >= MIN_NOTIONAL:
             raise Blocked('unprotected holdings block additional offline exposure')

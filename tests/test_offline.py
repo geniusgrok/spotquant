@@ -108,3 +108,18 @@ class OfflineTests(TestCase):
                     lifecycle.submit(dict(stop, stopPrice='75'), 2)
                 self.assertEqual(venue.orders[original['id']]['status'], 'NEW')
                 self.assertEqual(len(venue.sent), 2)
+
+    def test_strategy_exit_cancels_confirmed_protection_before_selling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            venue = OfflineVenue()
+            with State(directory, 'offline:BTCUSDT:spot:1') as state:
+                lifecycle = Lifecycle(state, venue)
+                lifecycle.submit(BUY, 1)
+                stop = lifecycle.submit({'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
+                                         'quantity': str(venue.btc), 'stopPrice': '72'}, 1)
+                venue.lose_ack = True
+                lifecycle.submit({'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET',
+                                  'quantity': str(venue.btc)}, 2)
+                self.assertEqual(venue.orders[stop['id']]['status'], 'CANCELED')
+                self.assertEqual(venue.btc, 0)
+                self.assertEqual(len(venue.sent), 3)
