@@ -1,19 +1,19 @@
 # Handoff
 
 本轮全部登记方向持续实施，见 research/complete-delivery-PROTOCOL.md。
-已修复已归属SELL后的分数BTC遗失，保留真实残币并正确重建新入场；
-200会话资金/恢复审计及四情景串并行逐字段验证通过。实际20候选账户与
-3预算账户从干净源2d1e5fe运行，资金代码为独立审查通过的53df29c。
-旧43521a2中断矩阵、a288297残币失败预算及/tmp容量失败运行均排除，
-不据部分年化晋升。TMPDIR已移至/workspace/scratch/spotquant-complete-tmp，
-保留真实运行归档规则；完整输出spot-accounts-final.json及
-portfolio-spot-accounts-final.json完成后再审计。131项离线检查通过。
-当前归因helper a7c738d增加固定BTC/现金及滞后波动基准、全部候选币种
-匹配回归。新的recovery-drill-final合成入场/备份/隔离重启保持余额与
-submissionIDs，物质外部BTC仍Unknown。原生工具只查文件结构，真实
-native案例0、实际观察0日，NOT_QUALIFIED。旧78.49%/31.40%来自不同日线
-账本，不能充当实际会话结果。剩余完整账户、归因/选择、独立审查及
-CI/PR集成继续；不另建进度账本。
+原始20账户已完整结束，干净源2d1e5fe、原件SHA65cc08a7341eb2ef7d7b30641b783341edd7dc7781e8dfa10ae801b5b8c86022。
+其中16账户通过；consensus4因合并卖出比例分配残币超过步长但金额不足保护门而失败，原件保留且不参与采用。
+三个实际2500/5000/7500预算账户完成且通过资金/执行/795档案核验，原件SHA8e15ca5fd83c8c89c3c65545f81f079186964efce3abd6566554fa5cce5c79d6。
+修复1fca802保留真实残币、逐订单累计实际SELL、晚到终态回包时不提交fold、只读/执行同元数据、战略视图平仓且未来可交易残余仍Unknown。
+143离线检查通过；独立23账户/3085fills证明仅consensus4触发新增分支，其余16+3可保留原源与原结果。
+正常场景795会话，固定outage跳过6为789，不能称每个outage也实际运行795次。
+四组修复后完整重跑正在执行：spot-consensus-corrected.json，clean1fca802，日志/tmp/spot-consensus-corrected.log。
+原spot-accounts-final.json虽完成20项运行，只有16项complete；完整可用于决策的混合源集合须待替换4项结束并通过assemble_spot校验。
+预算不能缩放或混合策略；若候选通过，须实跑选中策略三个预算并独立列出同策略10000端点的联合资金结果。
+旧435/a288残币失败及容量中断均排除。研究TMPDIR=/workspace/scratch/spotquant-complete-tmp，真实state归档规则不变。
+原生实际案例0、观察0日，NOT_QUALIFIED；旧78.49%/31.40%为不同日线账本，不能充当实际session结果。
+旧native模板/recovery-drill-final对应5faa旧runtime，最终默认决定后须生成当前源新零案例模板与合成恢复演练。
+剩余Coin28+真实预算、Spot修复4/可能选中预算、全部归因和决策、独立终审及CI/PR集成继续，不另建进度账本。
 
 Third-round entry: `evidence/third-round-20261001/RESULT.md`. P4 owner Demo
 and synthetic replay now share session.run/cycle and execution.Lifecycle.
