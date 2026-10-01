@@ -1,5 +1,17 @@
 # Project state
 
+本次完整交付已开始实施全部登记方向，见 research/complete-delivery-PROTOCOL.md。
+完整20组账户正在实际 session.run/Lifecycle 上运行，记录源43521a2；3种实际
+资金预算账户源a288297，不能按10k曲线缩放。完成前不引用部分年化或晋升。
+127项离线检查已通过；执行行情是明确的日OHLC高→低线性代理，不是原生盘口。
+持久增量fills、不可覆盖会话报告、在线backup、restore-check已实现；原件恢复
+演练保留在 evidence/complete-delivery-20261001/recovery-drill，未知物质外部BTC
+不接管。原生验收工具只核验提供的文件结构，不能认证Binance或放开权限；
+真实native证据和实际观察日数仍为0，NOT_QUALIFIED。旧78.49%/31.40%仅为
+不同日线账本的历史记录，不能冒称新的会话账户结果。剩余归因、采用决策、
+完整审查和CI/PR集成随全账户审计完成，不另建进度账本。
+
+
 2026-10-01 第三轮已接通 P4 的共享 session/Lifecycle，所有者显式 Demo
 入口、持久订单分仓权重、跨日恢复、只读原生导出与两账户并发报告已实现。
 108 项离线测试通过；共享会话回放 18 项通过，原件和命令见
