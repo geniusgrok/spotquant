@@ -227,7 +227,7 @@ class Lifecycle:
         # is measured explicitly; native Demo qualification must verify its behavior.
         active = {row[0] for row in resting}
         if active != set(wanted):
-            for identity in active - set(wanted):
+            for identity in sorted(active - set(wanted)):
                 self.cancel(identity)
             changed = False
             for identity in wanted:
