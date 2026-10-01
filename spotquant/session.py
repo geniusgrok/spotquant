@@ -196,6 +196,11 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
             report['observation_current'] = False
             report['stops_while_down'] = 'this process does not amend a stop while it is stopped'
             state.report(report)
+            try:
+                report['session_archive'] = state.archive(report)
+            except Unknown as exc:
+                report['archive_error'] = str(exc)
+            state.report(report)
     return report
 
 
@@ -339,7 +344,7 @@ def _trades_for(state, venue, positions, follows, cursor):
         starts.append(int(cursor))
     if not starts:
         return []
-    trades = list(venue.trades(min(starts)))
+    trades = state.trades(venue, min(starts))
     seen = getattr(state, '_seen_trades', [])
     state._seen_trades = seen + trades
     return trades

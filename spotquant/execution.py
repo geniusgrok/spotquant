@@ -76,7 +76,7 @@ class Lifecycle:
             self.state.set('execution_anchor', anchor)
         cash, btc = D(anchor['cash']), D(anchor['btc'])
         owners = self.owners()
-        for trade in self.venue.trades(anchor['at_ms']):
+        for trade in self.state.trades(self.venue, anchor['at_ms']):
             if str(trade['order_id']) not in owners:
                 raise Unknown('external trade blocks execution')
             commission, asset = trade['commission'], trade['commission_asset']

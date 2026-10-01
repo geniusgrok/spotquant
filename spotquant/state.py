@@ -11,9 +11,11 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import uuid
+from decimal import Decimal as D
 from time import time
 
-from .types import Blocked, serial
+from .types import Blocked, Unknown, serial
 
 
 def client_id(account: str, bar: int, operation: str) -> str:
@@ -57,6 +59,10 @@ class State:
             self.db.execute(
                 'CREATE TABLE IF NOT EXISTS observations ('
                 'sequence INTEGER PRIMARY KEY, recorded_at REAL NOT NULL, payload TEXT NOT NULL)')
+            self.db.execute('CREATE TABLE IF NOT EXISTS fills ('
+                            'id INTEGER PRIMARY KEY, time_ms INTEGER NOT NULL, '
+                            'order_id INTEGER NOT NULL, payload TEXT NOT NULL)')
+            self.db.execute('CREATE INDEX IF NOT EXISTS fills_time ON fills(time_ms,id)')
             saved = self.get('identity')
             if saved is not None and saved != self.identity:
                 raise Blocked('state directory belongs to another account or environment')
@@ -102,6 +108,78 @@ class State:
                 "SELECT id,kind,payload,status FROM intents WHERE status IN "
                 "('unknown','partial','prepared','canceling') ORDER BY updated")
         ]
+
+    def trades(self, venue, since_ms: int) -> list[dict]:
+        """Retain immutable fills; refresh a one-day overlap after the last read.
+
+        A gap beyond the supported observation window requires owner reconciliation.
+        No balance anchor is replaced, and identical timestamps retain every ID.
+        """
+        def observed_ms():
+            if hasattr(venue, '_timestamp'):
+                return venue._timestamp()
+            return int((getattr(venue, 'clock', None) or getattr(venue, '_clock', time))() * 1000)
+        now_ms = observed_ms()
+        watermark = self.get('fill_watermark')
+        if watermark and now_ms < watermark['through_ms']:
+            raise Unknown('fill observation clock moved backwards')
+        if watermark and now_ms - watermark['through_ms'] > 80 * 86400000:
+            raise Unknown('fill observation gap exceeds supported recovery window')
+        start = since_ms if watermark is None else max(
+            watermark['from_ms'], watermark['through_ms'] - 86400000)
+        # Older requested fills remain available locally. Only an uncovered prefix
+        # requires a historical request; empty responses do not adopt holdings.
+        if watermark and since_ms < watermark['from_ms']:
+            start = since_ms
+        observed = list(venue.trades(start))
+        with self.db:
+            for row in observed:
+                if type(row.get('id')) is not int or type(row.get('time')) is not int:
+                    raise Unknown('fill identity or timestamp is invalid')
+                if row['time'] < start or row['time'] > observed_ms():
+                    raise Unknown('fill lies outside the requested observation')
+                payload = json.dumps(serial(row), sort_keys=True, allow_nan=False)
+                prior = self.db.execute('SELECT payload FROM fills WHERE id=?', (row['id'],)).fetchone()
+                if prior and prior[0] != payload:
+                    raise Unknown('previously recorded fill changed')
+                self.db.execute('INSERT OR IGNORE INTO fills VALUES (?,?,?,?)',
+                                (row['id'], row['time'], row['order_id'], payload))
+            saved = {'from_ms': min(since_ms, watermark['from_ms']) if watermark else since_ms,
+                     'through_ms': now_ms}
+            self.db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)',
+                            ('fill_watermark', json.dumps(saved, sort_keys=True)))
+        rows = []
+        for payload, in self.db.execute('SELECT payload FROM fills WHERE time_ms>=? ORDER BY time_ms,id',
+                                       (since_ms,)):
+            row = json.loads(payload)
+            for key in ('qty', 'quote', 'price', 'commission'):
+                row[key] = D(row[key])
+            rows.append(row)
+        return rows
+
+    def archive(self, report: dict) -> dict:
+        """Immutable session report and consistent SQLite backup; no state reset."""
+        directory = self.directory / 'sessions'
+        directory.mkdir(mode=0o700, exist_ok=True)
+        name = str(report.get('session_started_at_ms', int(time() * 1000))) + '-' + uuid.uuid4().hex
+        backup = directory / (name + '.sqlite')
+        try:
+            with sqlite3.connect(backup) as destination:
+                self.db.backup(destination)
+            with open(backup, 'rb') as stream:
+                os.fsync(stream.fileno())
+            digest = hashlib.sha256(backup.read_bytes()).hexdigest()
+            value = dict(report, state_identity=self.identity, backup_sha256=digest,
+                         backup_file=backup.name, archive_format=1)
+            path = directory / (name + '.json')
+            with path.open('x', encoding='utf-8') as stream:
+                json.dump(serial(value), stream, indent=2, allow_nan=False)
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            return {'report': str(path), 'backup': str(backup), 'backup_sha256': digest}
+        except (OSError, sqlite3.Error):
+            raise Unknown('session archive or consistent backup failed') from None
 
     def report(self, value: dict) -> None:
         """Persist the latest observation. Reports never contain credentials."""
