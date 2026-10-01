@@ -1,16 +1,19 @@
 # Handoff
 
-本次完整交付已开始实施全部登记方向，见 research/complete-delivery-PROTOCOL.md。
-完整20组账户正在实际 session.run/Lifecycle 上运行，记录源43521a2；3种实际
-资金预算账户源a288297，不能按10k曲线缩放。完成前不引用部分年化或晋升。
-127项离线检查已通过；执行行情是明确的日OHLC高→低线性代理，不是原生盘口。
-持久增量fills、不可覆盖会话报告、在线backup、restore-check已实现；原件恢复
-演练保留在 evidence/complete-delivery-20261001/recovery-drill，未知物质外部BTC
-不接管。原生验收工具只核验提供的文件结构，不能认证Binance或放开权限；
-真实native证据和实际观察日数仍为0，NOT_QUALIFIED。旧78.49%/31.40%仅为
-不同日线账本的历史记录，不能冒称新的会话账户结果。剩余归因、采用决策、
-完整审查和CI/PR集成随全账户审计完成，不另建进度账本。
-
+本轮全部登记方向持续实施，见 research/complete-delivery-PROTOCOL.md。
+已修复已归属SELL后的分数BTC遗失，保留真实残币并正确重建新入场；
+200会话资金/恢复审计及四情景串并行逐字段验证通过。实际20候选账户与
+3预算账户从干净源2d1e5fe运行，资金代码为独立审查通过的53df29c。
+旧43521a2中断矩阵、a288297残币失败预算及/tmp容量失败运行均排除，
+不据部分年化晋升。TMPDIR已移至/workspace/scratch/spotquant-complete-tmp，
+保留真实运行归档规则；完整输出spot-accounts-final.json及
+portfolio-spot-accounts-final.json完成后再审计。131项离线检查通过。
+当前归因helper a7c738d增加固定BTC/现金及滞后波动基准、全部候选币种
+匹配回归。新的recovery-drill-final合成入场/备份/隔离重启保持余额与
+submissionIDs，物质外部BTC仍Unknown。原生工具只查文件结构，真实
+native案例0、实际观察0日，NOT_QUALIFIED。旧78.49%/31.40%来自不同日线
+账本，不能充当实际会话结果。剩余完整账户、归因/选择、独立审查及
+CI/PR集成继续；不另建进度账本。
 
 Third-round entry: `evidence/third-round-20261001/RESULT.md`. P4 owner Demo
 and synthetic replay now share session.run/cycle and execution.Lifecycle.
