@@ -114,3 +114,24 @@ false、NOT_QUALIFIED、不开放权限。标签是所有者声明，hash不能�
 早期`*-final`文件来自旧源，只作历史。源摘要变化后应在私人目录生成
 新模板，不修改旧验收输出。所有模板仍留空账户和资金，零原生/零观察，
 不会由工程脚本自动启动Demo。
+
+## 完整归因和固定资金的复算
+
+Coin预算使用同一primary schedule和同一已封存特征，三个账户独立建账：
+
+```sh
+python -m research.complete_perp --crowding /tmp/crowding-NEW.json --restore-prints --portfolio-budgets --out /tmp/perp-budgets-NEW.json
+```
+
+回算已交付原件，在Spot目录使用新的输出名：
+
+```sh
+python -m research.complete_assessment --spot evidence/complete-delivery-20261001/spot-accounts-verified.json --perp ../coinquant/evidence/complete-delivery-20261001/perp-exclusive-accounts.json --spot-budgets evidence/complete-delivery-20261001/portfolio-spot-accounts-final.json --spot-selected-budgets evidence/complete-delivery-20261001/portfolio-spot-consensus.json --perp-budgets ../coinquant/evidence/complete-delivery-20261001/portfolio-perp-accounts.json --out /tmp/assessment-NEW.json
+python evidence/complete-delivery-20261001/render_report.py --spot evidence/complete-delivery-20261001/spot-accounts-verified.json --perp ../coinquant/evidence/complete-delivery-20261001/perp-exclusive-accounts.json --assessment /tmp/assessment-NEW.json --outdir /tmp/btc-report-NEW
+python evidence/complete-delivery-20261001/export_plots.py --spot evidence/complete-delivery-20261001/spot-accounts-verified.json --perp ../coinquant/evidence/complete-delivery-20261001/perp-exclusive-accounts.json --assessment /tmp/assessment-NEW.json --outdir /tmp/btc-report-NEW/plots
+```
+
+图表导出可选依赖matplotlib，核心运行和CI仍只需标准库。归因还验证Coin
+预算的完整市场/协议/会话身份与full28一致，并显式保留budget测量源和
+exclusive终点派生源，不能只凭相同FX来拼不同市场输入。报告脚本只渲染
+已通过资金审计的冻结结果，不调参或改变采用决策。

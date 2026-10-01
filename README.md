@@ -55,7 +55,7 @@ python3 -m spotquant run --config config.json
 | `session_seconds` | 本次运行 1～86400 秒，默认 300 |
 | `poll_seconds` | 轮询 1～60 秒，默认 5，不得超过会话时长 |
 | `environment` | `live`（默认，`api.binance.com`）或 `demo`（`demo-api.binance.com`）。状态范围是 `binance:BTCUSDT:spot:{live\|demo}:{uid}` |
-| `capital_limit_usdt` | 可选，十进制字符串。预览买单的资金池只用 `min(可用 USDT 加上本次开盘退出的估计所得, 上限)`，再按不持币的分仓数平分。共识买单另按当前持币名义金额扣减剩余额度；它限制预览规模，不是亏损上限 |
+| `capital_limit_usdt` | 可选，十进制字符串。上限覆盖整个持仓名义：从上限扣除保留持仓估值后，限制可用现金加预计退出所得的买单池，再按空仓分仓数分配。共识提升使用真实可用现金且受剩余额度约束；它不是亏损上限 |
 
 Demo 与实盘共用一个适配器，默认只读。`run --execute` 在两种环境都被阻止。
 所有者 Demo 使用单独的 [配置模板](config.demo.example.json) 和入口：
@@ -95,7 +95,7 @@ python -m spotquant status --config demo.json
 - 预览买单是市价、按报价资产数量；预览卖单也是市价；预览保护是带 `stopPrice` 的 `STOP_LOSS`。默认预览不是委托；显式 Demo 执行才持久记录并提交。
 - 冷启动和前向账本用同一种起点：已经看多的状态要等一次新鲜穿越，不是只跳过第一轮。同一天平掉的分仓不会在同一根已完成日线上再次入场。执行过的订单按持久权重归到分仓；没有归属的旧跟随遇到等量歧义仍为未知。观察失败不单独推进模型。名义金额不到 5 USDT 的分仓仍算持仓，三份加起来达到门槛时合成一张卖单。进程停着的时候不会继续改止损。
 
-## 经济测量
+## 历史等份日线经济测量（不衡量当前默认共识仓位）
 
 ```sh
 python3 -m unittest discover -s tests -v
