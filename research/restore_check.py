@@ -21,6 +21,13 @@ def check(path):
         identity = db.execute("SELECT value FROM meta WHERE key='identity'").fetchone()
         if not identity or json.loads(identity[0]) != report['state_identity']:
             raise ValueError('backup account identity mismatch')
+        core = {k: v for k, v in report.items() if k not in (
+            'state_identity', 'backup_sha256', 'backup_file', 'archive_format', 'archived_report_sha256')}
+        core_digest = hashlib.sha256(json.dumps(core, sort_keys=True, allow_nan=False).encode()).hexdigest()
+        binding = db.execute("SELECT value FROM meta WHERE key='last_archived_report_sha256'").fetchone()
+        if (core_digest != report.get('archived_report_sha256') or not binding
+                or json.loads(binding[0]) != core_digest):
+            raise ValueError('archived report/source identity differs from backed-up state')
         anchor = db.execute("SELECT value FROM meta WHERE key='execution_anchor'").fetchone()
         count = db.execute('SELECT COUNT(*) FROM fills').fetchone()[0]
         pending = db.execute("SELECT COUNT(*) FROM intents WHERE status IN "

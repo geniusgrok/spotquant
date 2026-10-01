@@ -4,7 +4,7 @@ from decimal import Decimal as D
 
 from spotquant.model import DAY
 from spotquant.offline import P4Venue
-from spotquant.types import Blocked
+from spotquant.types import Blocked, Unknown, NotSent
 
 
 class HistoricalVenue(P4Venue):
@@ -19,7 +19,7 @@ class HistoricalVenue(P4Venue):
         self.fee, self.slip, self.stop_slip = fee, slip, stop_slip
         self.price = self.price_at(start)
         self.initial_cash = cash
-        self.curve, self.peak, self.mdd = [], D(10000), D(0)
+        self.curve, self.peak, self.mdd = [], cash * fx(start) / D('.999'), D(0)
         self.daily = {}
         self.read_latency_ms, self.write_latency_ms = 200, 1000
         self._mark()
@@ -81,6 +81,8 @@ class HistoricalVenue(P4Venue):
         self.advance(self.now_ms + max(1, int(seconds * 1000)))
 
     def _read(self):
+        if hasattr(self, '_stop') and self._stop():
+            raise Unknown('session deadline reached')
         self.advance(self.now_ms + self.read_latency_ms)
 
     def completed_daily(self, after):
@@ -102,6 +104,8 @@ class HistoricalVenue(P4Venue):
         return super().query(identity)
 
     def submit(self, identity, payload):
+        if hasattr(self, '_stop') and self._stop():
+            raise NotSent('session deadline reached before dispatch')
         self.advance(self.now_ms + self.write_latency_ms)
         market = self.price
         if payload['type'] == 'MARKET':
@@ -113,6 +117,8 @@ class HistoricalVenue(P4Venue):
             self._mark()
 
     def cancel(self, identity):
+        if hasattr(self, '_stop') and self._stop():
+            raise NotSent('session deadline reached before dispatch')
         self.advance(self.now_ms + self.write_latency_ms)
         return super().cancel(identity)
 

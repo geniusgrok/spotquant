@@ -164,13 +164,17 @@ class State:
         name = str(report.get('session_started_at_ms', int(time() * 1000))) + '-' + uuid.uuid4().hex
         backup = directory / (name + '.sqlite')
         try:
+            report_bytes = json.dumps(serial(report), sort_keys=True, allow_nan=False).encode()
+            report_digest = hashlib.sha256(report_bytes).hexdigest()
+            self.set('last_archived_report_sha256', report_digest)
             with sqlite3.connect(backup) as destination:
                 self.db.backup(destination)
             with open(backup, 'rb') as stream:
                 os.fsync(stream.fileno())
             digest = hashlib.sha256(backup.read_bytes()).hexdigest()
             value = dict(report, state_identity=self.identity, backup_sha256=digest,
-                         backup_file=backup.name, archive_format=1)
+                         backup_file=backup.name, archive_format=1,
+                         archived_report_sha256=report_digest)
             path = directory / (name + '.json')
             with path.open('x', encoding='utf-8') as stream:
                 json.dump(serial(value), stream, indent=2, allow_nan=False)

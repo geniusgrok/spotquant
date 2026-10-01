@@ -24,15 +24,21 @@ class Lifecycle:
         self.state, self.venue, self.config = state, venue, config
 
     def rows(self):
-        return [(identity, json.loads(payload), status, json.loads(result))
-                for identity, payload, status, result in self.state.db.execute(
-                    "SELECT id,payload,status,result FROM intents WHERE kind='p4' ORDER BY updated,id")]
+        if getattr(self, '_rows', None) is None:
+            self._rows = [(identity, json.loads(payload), status, json.loads(result))
+                          for identity, payload, status, result in self.state.db.execute(
+                              "SELECT id,payload,status,result FROM intents WHERE kind='p4' ORDER BY updated,id")]
+        return self._rows
 
     def save(self, identity, payload, status, result):
+        encoded = (json.dumps(serial(payload)), status, json.dumps(serial(result)))
+        prior = self.state.db.execute('SELECT payload,status,result FROM intents WHERE id=?', (identity,)).fetchone()
+        if prior == encoded:
+            return
+        self._rows = None
         with self.state.db:
             self.state.db.execute('INSERT OR REPLACE INTO intents VALUES (?,?,?,?,?,?)',
-                                  (identity, 'p4', json.dumps(serial(payload)), status,
-                                   json.dumps(serial(result)), time()))
+                                  (identity, 'p4', *encoded, time()))
 
     def recover(self):
         for identity, payload, status, prior in self.rows():

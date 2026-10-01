@@ -345,6 +345,8 @@ def _trades_for(state, venue, positions, follows, cursor):
     if not starts:
         return []
     trades = state.trades(venue, min(starts))
+    if cursor is not None:
+        trades = [trade for trade in trades if trade['time'] >= int(cursor)]
     seen = getattr(state, '_seen_trades', [])
     state._seen_trades = seen + trades
     return trades

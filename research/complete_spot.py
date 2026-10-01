@@ -11,6 +11,7 @@ import tempfile
 from research.market import load_daily, file_digest
 from research.rebuild import END_MS, START_MS, source_identity
 from research.session_account import HistoricalVenue, audit
+from research.restore_check import check
 from spotquant import session
 from spotquant.config import Config
 from spotquant.model import DAY, SLEEVES
@@ -63,8 +64,13 @@ class Policy:
                 for o in buys:
                     for w in o['sleeves']:
                         decision['sleeves'][str(w)].update(action='flat', order=None)
-        if self.candidate == 'consensus' and buys and sum(bool(m.bull) for m in views.values()) >= 2:
-            budget = floor_step(D(snapshot['usdt_free']) * D('.90'), QUOTE_STEP)
+        voters = sum(bool(views[w].bull) and decision['sleeves'][str(w)]['action'] in ('enter', 'hold')
+                     for w in views)
+        if self.candidate == 'consensus' and buys and voters >= 2:
+            budget = D(snapshot['usdt_free']) * D('.90')
+            if kwargs['capital_limit'] is not None:
+                budget = min(budget, max(D(0), kwargs['capital_limit'] - D(snapshot['btc']) * D(snapshot['avg_price'])))
+            budget = floor_step(budget, QUOTE_STEP)
             if budget >= MIN_NOTIONAL:
                 buys[0]['quoteOrderQty'] = str(max(D(buys[0]['quoteOrderQty']), budget))
         if self.candidate == 'downside':
@@ -77,10 +83,13 @@ class Policy:
         bar = ref.last
         memo = self.state.get('research_downside') or {'phase': 'normal'}
         held = [w for w in SLEEVES if D(owned[w]) > BASE_STEP]
+        if memo['phase'] != 'normal':
+            decision['orders'] = [o for o in decision['orders'] if o['side'] != 'BUY']
         if any(o['side'] == 'SELL' for o in decision['orders']):
             return decision
         if not held:
-            self.state.set('research_downside', {'phase': 'normal'})
+            if memo['phase'] == 'normal' or (ref.bull and ref.streak >= 2):
+                self.state.set('research_downside', {'phase': 'normal'})
             return decision
         if memo['phase'] == 'reducing' and D(snapshot['btc']) <= D(memo['remaining']) + BASE_STEP * 4:
             memo['phase'] = 'reduced'
@@ -143,9 +152,13 @@ def measure(candidate, scenario, bars, starts, fx, features, *, limit=None, init
                 continue
             venue.advance(start)
             report = session.run(config, venue, execute=True, monotonic=venue.monotonic, wait=venue.wait)
+            archive_proof = check(report['session_archive']['report']) if 'session_archive' in report else None
             reports.append({'start_ms': start, 'status': report['status'], 'cycles': report['cycles'],
                             'errors': report['errors'], 'pending_intents': report['pending_intents'],
-                            'archive_verified': 'session_archive' in report})
+                            'elapsed_seconds': report['elapsed_seconds'],
+                            'ended_ms': venue.now_ms,
+                            'archive_verified': bool(archive_proof and archive_proof['integrity_verified']),
+                            'archive_backup_sha256': archive_proof['backup_sha256'] if archive_proof else None})
             if i % 100 == 0:
                 print(json.dumps({'candidate': candidate, 'scenario': scenario, 'session': i}), flush=True)
         end = starts[-1] + 420000 if limit else END_MS
@@ -158,7 +171,8 @@ def measure(candidate, scenario, bars, starts, fx, features, *, limit=None, init
     money = audit(venue)
     value = (venue.cash + venue.btc * venue.price) * fx(end) * D('.999')
     unresolved = sum(r['status'] not in ('offline_execution', 'demo_execution') for r in reports)
-    complete = limit is None and money['passed'] and not pending and not policy_pending and not unresolved
+    complete = (limit is None and money['passed'] and not pending and not policy_pending and not unresolved
+                and all(r['archive_verified'] for r in reports))
     return serial({'candidate': candidate, 'scenario': scenario, 'complete': complete,
                    'initial_cny': initial_cny, 'final_cny': value,
                    'final_usdt': venue.cash + venue.btc * venue.price,
