@@ -126,15 +126,26 @@ def attribution(row, curve, market_returns, cny_market_returns, initial, fx):
         year = datetime.fromtimestamp(item['day_ms'] / 1000, timezone.utc).year
         years[year] = (years.get(year, 1) * (1 + value))
     down = [i for i, r in enumerate(market_returns) if r < 0]
+    up = [i for i, r in enumerate(market_returns) if r > 0]
+    capture = {name: {'days': len(indices),
+                     'mean_account_usdt_return': statistics.mean(usd_returns[i] for i in indices),
+                     'mean_btc_usdt_return': statistics.mean(market_returns[i] for i in indices),
+                     'arithmetic_capture_ratio': sum(usd_returns[i] for i in indices) /
+                                                sum(market_returns[i] for i in indices)}
+               for name, indices in (('up', up), ('down', down)) if indices}
     return {'metrics': metrics, 'usdt_btc_regression': regression(usd_returns, market_returns),
             'cny_btc_regression': regression(returns, cny_market_returns),
             'down_market_beta': regression([usd_returns[i] for i in down], [market_returns[i] for i in down])['beta_btc'],
             'calendar_returns': {str(y): v - 1 for y, v in years.items()},
             'mean_closing_gross_exposure_over_equity': statistics.mean(r['gross_exposure_over_equity'] for r in curve),
+            'mean_closing_signed_exposure_over_equity': statistics.mean(
+                (1 if r['net_btc'] >= 0 else -1) * r['gross_exposure_over_equity'] for r in curve),
+            'btc_up_down_day_capture': capture,
             'days_with_closing_btc_position': sum(bool(r['net_btc']) for r in curve),
+            'days_with_closing_short_position': sum(r['net_btc'] < 0 for r in curve),
             'fees_usdt': row.get('fees', row.get('audit', {}).get('fees_usdt')),
             'funding_paid_usdt': row.get('funding', '0'),
-            'fill_count': len(row.get('fills', [])),
+            'fill_count': len(row.get('fills', row.get('trades', []))),
             'continuous_mdd_from_account': float(row['mdd']), 'native_execution_verified': False}
 
 
