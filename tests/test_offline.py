@@ -127,3 +127,23 @@ class OfflineTests(TestCase):
                 self.assertEqual(venue.orders[stop['id']]['status'], 'CANCELED')
                 self.assertEqual(venue.btc, 0)
                 self.assertEqual(len(venue.sent), 3)
+
+    def test_terminal_partial_exit_protects_the_remaining_coins(self):
+        with tempfile.TemporaryDirectory() as directory:
+            venue = OfflineVenue()
+            with State(directory, 'offline:BTCUSDT:spot:1') as state:
+                lifecycle = Lifecycle(state, venue)
+                lifecycle.submit(BUY, 1)
+                lifecycle.submit({'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
+                                  'quantity': str(venue.btc), 'stopPrice': '72'}, 1)
+                venue.fraction = D('.5')
+                lifecycle.submit({'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET',
+                                  'quantity': str(venue.btc)}, 2)
+                active = [row for row in venue.orders.values() if row['status'] == 'NEW']
+                self.assertEqual(len(active), 1)
+                self.assertEqual(D(active[0]['quantity']), venue.btc)
+            venue.trigger('70')
+            with State(directory, 'offline:BTCUSDT:spot:1') as state:
+                Lifecycle(state, venue)
+                self.assertEqual(venue.btc, 0)
+            self.assertEqual(len(venue.sent), 4)

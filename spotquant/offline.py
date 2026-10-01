@@ -206,6 +206,18 @@ class Lifecycle:
         if ((side == 'BUY' and D(payload['quoteOrderQty']) > self.venue.cash)
                 or (side == 'SELL' and D(payload['quantity']) > self.venue.btc)):
             raise Blocked('order exceeds reconciled available funds')
+        result = self._send(identity, payload)
+        if protections and kind == 'MARKET' and side == 'SELL' and self.venue.btc * self.venue.price >= MIN_NOTIONAL:
+            old = self.venue.orders[protections[0]]
+            if D(old['stopPrice']) >= self.venue.price:
+                raise Unknown('remaining offline position has a crossed stop; further reduction is unresolved')
+            remaining = {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
+                         'quantity': str(self.venue.btc), 'stopPrice': old['stopPrice']}
+            remaining_id = client_id(self.state.identity, bar, 'remaining-' + protections[0])
+            self._send(remaining_id, remaining)
+        return result
+
+    def _send(self, identity, payload):
         before = serial(self.venue.balances())
         self._save(identity, payload, 'unknown', {'before': before})
         try:
