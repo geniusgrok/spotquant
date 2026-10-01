@@ -9,7 +9,7 @@ from time import time
 from .model import SLEEVES
 from .preview import MIN_NOTIONAL, _protection
 from .state import client_id
-from .types import Blocked, Unknown, number, serial
+from .types import Blocked, Unknown, NotSent, number, serial
 
 TERMINAL = {'FILLED', 'EXPIRED', 'CANCELED', 'REJECTED', 'EXPIRED_IN_MATCH'}
 FIELDS = ('symbol', 'side', 'type', 'quantity', 'quoteOrderQty', 'stopPrice')
@@ -126,6 +126,9 @@ class Lifecycle:
         self.save(identity, payload, 'unknown', result)
         try:
             self.venue.submit(identity, payload['order'])
+        except NotSent:
+            self.save(identity, payload, 'prepared', {'not_sent': True})
+            raise
         except Unknown:
             pass
         except Blocked:

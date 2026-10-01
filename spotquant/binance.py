@@ -16,7 +16,7 @@ import urllib.request
 from decimal import Decimal as D
 
 from .follow import normalize_trade
-from .types import Blocked, Unknown, number
+from .types import Blocked, Unknown, NotSent, number
 
 HOSTS = {
     'live': 'https://api.binance.com',
@@ -98,7 +98,11 @@ class Binance:
             raise Blocked('Demo execution is not explicitly enabled')
         if not isinstance(identity, str) or not identity.startswith('sq-'):
             raise Blocked('Demo order requires a stable Spotquant identity')
-        if self.snapshot(self.demo_execution_uid)['can_trade'] is not True:
+        try:
+            can_trade = self.snapshot(self.demo_execution_uid)['can_trade']
+        except Unknown as exc:
+            raise NotSent(str(exc)) from exc
+        if can_trade is not True:
             raise Blocked('Demo account cannot trade')
         params = dict(payload, newClientOrderId=identity, newOrderRespType='FULL')
         if set(payload) - {'symbol', 'side', 'type', 'quantity', 'quoteOrderQty', 'stopPrice'}:
@@ -361,7 +365,12 @@ class Binance:
         pairs = [(key, str(value)) for key, value in (params or {}).items()]
         headers = {'User-Agent': 'spotquant/0.1.0'}
         if signed:
-            pairs.append(('timestamp', str(self._timestamp())))
+            try:
+                pairs.append(('timestamp', str(self._timestamp())))
+            except Unknown as exc:
+                if method != 'GET':
+                    raise NotSent(str(exc)) from exc
+                raise
             pairs.append(('recvWindow', RECV_WINDOW))
             query = urllib.parse.urlencode(pairs)
             signature = hmac.new(self.secret.encode(), query.encode(), hashlib.sha256).hexdigest()
@@ -372,7 +381,12 @@ class Binance:
         url = self.base + path + ('?' + query if query else '')
         if not url.startswith(self.base + '/'):
             raise Blocked('refusing a request outside the configured Binance host')
-        self._check_deadline()
+        try:
+            self._check_deadline()
+        except Unknown as exc:
+            if method != 'GET':
+                raise NotSent(str(exc)) from exc
+            raise
         if method != 'GET':
             self.write_attempted = True
         opened = self._opener(method, url, headers)

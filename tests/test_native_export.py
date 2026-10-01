@@ -1,17 +1,41 @@
 from decimal import Decimal as D
 import json
 from types import SimpleNamespace
+import tempfile
 from unittest import TestCase
 from unittest.mock import patch, Mock
 
 from spotquant.binance import Binance, _default_opener
 from spotquant.snapshot import export
-from spotquant.types import Blocked, Unknown
+from spotquant.types import Blocked, Unknown, NotSent
 from research.operations import combined
 from tests.test_binance import Script, KEY, SECRET
 
 
 class ExportTests(TestCase):
+    def test_failed_native_preflight_keeps_proven_unsent_intent_prepared(self):
+        from spotquant.config import Config
+        from spotquant.state import State
+        from spotquant.execution import Lifecycle
+        script = Script()
+        def transport(method, url, headers):
+            if '/api/v3/account' in url:
+                raise Unknown('account read unavailable')
+            return script(method, url, headers)
+        venue = Binance(key=KEY, secret=SECRET, environment='demo', opener=transport,
+                        capital_limit=D(100), demo_execution_uid='10001')
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('10001', directory, 1, 1, 'demo', '100')
+            with State(directory, config.scope) as state:
+                lifecycle = Lifecycle(state, venue, config)
+                identity = lifecycle.prepare({'symbol': 'BTCUSDT', 'type': 'MARKET', 'side': 'BUY',
+                    'quoteOrderQty': '10', 'sleeves': [30]}, script.now, {}, {})
+                with self.assertRaises(NotSent):
+                    lifecycle.send(identity)
+                self.assertEqual(lifecycle.rows()[0][2], 'prepared')
+                self.assertTrue(all(method == 'GET' for method in script.methods))
+                self.assertFalse(venue.write_attempted)
+
     def test_default_http_transport_preserves_explicit_demo_methods(self):
         response = Mock(status=200)
         response.read.return_value = b'{}'
