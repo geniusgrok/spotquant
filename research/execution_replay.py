@@ -84,7 +84,7 @@ def main(argv=None):
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
     print(json.dumps({'offline_passed': report['offline_passed'], 'tests_run': result.testsRun,
-                      'submissions': len(report['replay']['submissions'])}))
+                      'submissions': len(report['replay']['durable_allocations'])}))
     return 0 if report['offline_passed'] else 2
 
 
