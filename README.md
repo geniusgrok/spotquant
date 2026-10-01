@@ -7,6 +7,8 @@
 
 此前 `research.rebuild` 的 78.49%/31.40% 是另一套日线等份账本，
 不衡量当前默认共识仓位，也不等于有限 session/Lifecycle 结果。
+48项完整归因、七项经济对照、实际固定总资金配比和图表见
+[全方向结果](evidence/complete-delivery-20261001/ALPHA_BETA.md)。
 复现和所有者操作见 [完整交付指南](research/complete-delivery-GUIDE.md)。
 
 # Spotquant
