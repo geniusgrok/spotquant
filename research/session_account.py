@@ -129,7 +129,13 @@ class HistoricalVenue(P4Venue):
         self.advance(self.now_ms + self.write_latency_ms)
         self.client_events.append({'method': 'DELETE', 'client_id': identity,
                                    'sent_ms': sent_ms, 'received_ms': self.now_ms})
-        return super().cancel(identity)
+        row = self.orders.get(identity)
+        if row is None:
+            raise Unknown('cancel dispatched but original venue order is unknown')
+        if row['status'] == 'NEW':
+            row['status'] = 'CANCELED'
+            self.events.append({'event': 'canceled', 'order': dict(row)})
+        return row
 
 
 def audit(venue):

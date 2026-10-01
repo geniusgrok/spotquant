@@ -15,6 +15,16 @@ def bars():
 
 
 class SessionAccountTests(unittest.TestCase):
+    def test_dispatched_cancel_finishes_at_venue_even_after_client_deadline(self):
+        venue = HistoricalVenue(bars(), ORIGIN + 403 * DAY, D(1000), lambda t: D(7))
+        venue.submit('buy', {'symbol': 'BTCUSDT', 'side': 'BUY', 'type': 'MARKET', 'quoteOrderQty': '500'})
+        venue.submit('stop', {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
+                              'quantity': str(venue.btc), 'stopPrice': '80'})
+        deadline = venue.now_ms + 500
+        venue._stop = lambda: venue.now_ms >= deadline
+        venue.cancel('stop')
+        self.assertEqual(venue.orders['stop']['status'], 'CANCELED')
+        self.assertGreater(venue.now_ms, deadline)
     def test_deadline_is_installed_and_prevents_late_client_dispatch(self):
         venue = HistoricalVenue(bars(), ORIGIN + 401 * DAY, D(1000), lambda t: D(7))
         with tempfile.TemporaryDirectory() as directory:
