@@ -190,6 +190,9 @@ class Lifecycle:
         self.recover()
         if serial(self.venue.balances()) != self.state.get('offline_balances'):
             raise Unknown('unknown account change blocks new order')
+        if ((side == 'BUY' and D(payload['quoteOrderQty']) > self.venue.cash)
+                or (side == 'SELL' and D(payload['quantity']) > self.venue.btc)):
+            raise Blocked('order exceeds reconciled available funds')
         protections = [row['id'] for row in self.venue.orders.values()
                        if row['type'] == 'STOP_LOSS' and row['status'] == 'NEW']
         if protections and side == 'SELL' and kind == 'MARKET':

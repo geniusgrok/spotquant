@@ -117,6 +117,10 @@ class OfflineTests(TestCase):
                 lifecycle.submit(BUY, 1)
                 stop = lifecycle.submit({'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
                                          'quantity': str(venue.btc), 'stopPrice': '72'}, 1)
+                with self.assertRaises(Blocked):
+                    lifecycle.submit({'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET',
+                                      'quantity': str(venue.btc * 2)}, 2)
+                self.assertEqual(venue.orders[stop['id']]['status'], 'NEW')
                 venue.lose_ack = True
                 lifecycle.submit({'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET',
                                   'quantity': str(venue.btc)}, 2)
