@@ -1,0 +1,43 @@
+"""Three actual fixed-budget P4 accounts; no scaling of an existing equity curve."""
+import argparse
+from decimal import Decimal as D
+import hashlib
+import json
+from pathlib import Path
+
+from research.complete_spot import PriorFX, measure
+from research.market import load_daily, file_digest
+from research.rebuild import END_MS, source_identity
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--crowding', type=Path, default=Path('/tmp/btc-complete-inputs/crowding-complete.json'))
+    args = parser.parse_args(argv)
+    source = source_identity()
+    if source['dirty'] or args.out.exists():
+        parser.error('commit source and choose a new output')
+    root = Path('/tmp/spotquant-market/klines')
+    bars = load_daily(root, END_MS, require_through=END_MS)
+    schedule = Path('../coinquant/research/session_schedule.json')
+    starts = json.loads(schedule.read_text())['primary']['starts_ms']
+    fx = Path('../starquant/data/usdcny_frankfurter.json')
+    features = json.loads(args.crowding.read_text())
+    results = {}
+    for budget in (2500, 5000, 7500):
+        results[str(budget)] = measure('default', 'base', bars, starts, PriorFX(fx), features, initial_cny=D(budget))
+    report = {'inputs': {'source': source, 'market_sha256': file_digest(root),
+                         'schedule_sha256': hashlib.sha256(schedule.read_bytes()).hexdigest(),
+                         'fx_sha256': hashlib.sha256(fx.read_bytes()).hexdigest(),
+                         'crowding_sha256': hashlib.sha256(args.crowding.read_bytes()).hexdigest()},
+              'results': results, 'native_execution_verified': False,
+              'method': 'Independent actual 795-session accounts at each initial budget, no curve scaling or transfers.'}
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    with args.out.open('x') as stream:
+        json.dump(report, stream, separators=(',', ':'), allow_nan=False)
+        stream.write('\n')
+
+
+if __name__ == '__main__':
+    main()
