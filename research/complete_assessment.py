@@ -251,6 +251,12 @@ def main(argv=None):
                               'Nonzero BTC-balance day counts include retained dust; material-notional days are not strategy signal counts.',
                               'Separate BTC accounts do not provide asset diversification; no added capital or transfers.']}
     report['input_sources']['spot_account_sources'] = inputs['spot'].get('account_sources', {})
+    for name in ('spot_budgets', 'perp_budgets', 'spot_selected_budgets'):
+        if name in inputs:
+            report['input_sources'][name] = inputs[name]['inputs']['source']
+    if 'derivation' in inputs['perp']:
+        report['perp_terminal_derivation'] = inputs['perp']['derivation']
+        report['input_sources']['perp_derivation_source'] = inputs['perp']['inputs']['derivation_source']
     report['calendar_return_periods'] = {str(year): {
         'start_utc': datetime.fromtimestamp(min(b[0] for b in active if datetime.fromtimestamp(b[0] / 1000, timezone.utc).year == year) / 1000, timezone.utc).date().isoformat(),
         'end_exclusive_utc': datetime.fromtimestamp((max(b[0] for b in active if datetime.fromtimestamp(b[0] / 1000, timezone.utc).year == year) + DAY) / 1000, timezone.utc).date().isoformat(),
@@ -356,6 +362,10 @@ def verify_joint_inputs(inputs):
     for key in ('fx_sha256', 'crowding_sha256'):
         if any(not item.get(key) for item in metadata) or len({item[key] for item in metadata}) != 1:
             raise ValueError('joint account ' + key + ' differs')
+    full_perp, budget_perp = inputs['perp']['inputs'], inputs['perp_budgets']['inputs']
+    for key in ('market_identity', 'protocol_sha256', 'schedule_sha256'):
+        if not full_perp.get(key) or full_perp[key] != budget_perp.get(key):
+            raise ValueError('perpetual budget input differs: ' + key)
     reference = [r['start_ms'] for r in inputs['perp']['results']['incumbent']['base']['sessions']]
     if len(reference) != 795 or reference != [r['start_ms'] for r in inputs['spot']['results']['default-base']['sessions']]:
         raise ValueError('complete baseline sessions differ')

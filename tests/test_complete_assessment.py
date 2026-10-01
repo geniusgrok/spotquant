@@ -34,13 +34,18 @@ class CompleteAssessmentTests(unittest.TestCase):
 
     def test_baseline_joint_rejects_a_selected_budget_with_incumbent_endpoint(self):
         sessions = [{'start_ms': i} for i in range(795)]
-        metadata = dict(fx_sha256='fx', crowding_sha256='crowding')
+        metadata = dict(fx_sha256='fx', crowding_sha256='crowding', market_identity={'vision': []},
+                        protocol_sha256='protocol', schedule_sha256='starts')
         inputs = dict(spot=dict(metadata, results={'default-base': dict(sessions=sessions)}),
                       perp=dict(inputs=metadata, results={'incumbent': {'base': dict(sessions=sessions)}}))
         for kind, candidate in (('spot', 'default'), ('perp', 'incumbent')):
             inputs[kind + '_budgets'] = dict(inputs=metadata, results={
                 str(b): dict(candidate=candidate, sessions=sessions) for b in (2500, 5000, 7500)})
         verify_joint_inputs(inputs)
+        inputs['perp_budgets']['inputs'] = dict(metadata, market_identity={'vision': ['changed']})
+        with self.assertRaisesRegex(ValueError, 'perpetual budget input differs'):
+            verify_joint_inputs(inputs)
+        inputs['perp_budgets']['inputs'] = dict(metadata)
         inputs['spot_budgets']['results']['5000']['candidate'] = 'consensus'
         with self.assertRaisesRegex(ValueError, 'candidate differs'):
             verify_joint_inputs(inputs)
