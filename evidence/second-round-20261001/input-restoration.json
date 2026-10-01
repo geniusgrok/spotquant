@@ -1,0 +1,11 @@
+{
+  "source": {
+    "git_head": "c0d07cf27697b3beeb7ea68a610bddcee8a8f4d6",
+    "dirty": false,
+    "python_sources_sha256": "ee340328583e81307984f6eadd5f0a62fbc058e8b407d389504644634cf58887"
+  },
+  "verified_archives": 111,
+  "market_sha256": "3f6151860a87e8f82f315dc59581d6b73e4debf1ef5e3b86fb2e4d1ca987954e",
+  "original_market_sha256": "3f6151860a87e8f82f315dc59581d6b73e4debf1ef5e3b86fb2e4d1ca987954e",
+  "identical": true
+}

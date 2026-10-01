@@ -1,0 +1,334 @@
+{
+  "source": {
+    "git_head": "dff757ebf13a90f060f35078520855eaa8ba8ea9",
+    "dirty": false,
+    "python_sources_sha256": "6ae98d8314a08506f22456837982441ced2ade2cdb26b63d7a4bfc4cb048010c"
+  },
+  "offline_passed": true,
+  "tests_run": 8,
+  "test_log": "test_lost_ack_restart_and_partial_fill_protection (tests.test_offline.OfflineTests.test_lost_ack_restart_and_partial_fill_protection) ... ok\ntest_network_adapter_and_native_state_are_rejected (tests.test_offline.OfflineTests.test_network_adapter_and_native_state_are_rejected) ... ok\ntest_query_outage_after_fill_never_resubmits_on_restart (tests.test_offline.OfflineTests.test_query_outage_after_fill_never_resubmits_on_restart) ... ok\ntest_sell_proceeds_are_reconciled_before_a_new_buy (tests.test_offline.OfflineTests.test_sell_proceeds_are_reconciled_before_a_new_buy) ... ok\ntest_stop_failure_does_not_report_protection (tests.test_offline.OfflineTests.test_stop_failure_does_not_report_protection) ... ok\ntest_strategy_exit_cancels_confirmed_protection_before_selling (tests.test_offline.OfflineTests.test_strategy_exit_cancels_confirmed_protection_before_selling) ... ok\ntest_unconfirmed_send_and_external_funds_freeze (tests.test_offline.OfflineTests.test_unconfirmed_send_and_external_funds_freeze) ... ok\ntest_unsupported_replacement_keeps_the_prior_stop (tests.test_offline.OfflineTests.test_unsupported_replacement_keeps_the_prior_stop) ... ok\n\n----------------------------------------------------------------------\nRan 8 tests in 0.009s\n\nOK\n",
+  "replay": {
+    "synthetic": true,
+    "entry_preview": {
+      "action": "enter",
+      "reason": "enter: sleeves 30, 40, 50",
+      "order": {
+        "symbol": "BTCUSDT",
+        "side": "BUY",
+        "type": "MARKET",
+        "quoteOrderQty": "999.99",
+        "sleeves": [
+          30,
+          40,
+          50
+        ],
+        "note": "sized on an estimate of free USDT; a real buy waits until the sell has filled"
+      },
+      "orders": [
+        {
+          "symbol": "BTCUSDT",
+          "side": "BUY",
+          "type": "MARKET",
+          "quoteOrderQty": "999.99",
+          "sleeves": [
+            30,
+            40,
+            50
+          ],
+          "note": "sized on an estimate of free USDT; a real buy waits until the sell has filled"
+        }
+      ],
+      "protections": [
+        {
+          "symbol": "BTCUSDT",
+          "side": "SELL",
+          "type": "STOP_LOSS",
+          "stopPrice": "73.44",
+          "note": "quantity would be the filled base amount; stop starts 28% under the completed close and is amended to the fill",
+          "sleeves": [
+            30,
+            40,
+            50
+          ]
+        }
+      ],
+      "sleeves": {
+        "30": {
+          "action": "enter",
+          "reason": "two confirmed closes cleared the fresh-cross and crash filters",
+          "order": {
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "type": "MARKET",
+            "quoteOrderQty": "333.33"
+          },
+          "protection": {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "stopPrice": "73.44",
+            "note": "quantity would be the filled base amount; stop starts 28% under the completed close and is amended to the fill"
+          }
+        },
+        "40": {
+          "action": "enter",
+          "reason": "two confirmed closes cleared the fresh-cross and crash filters",
+          "order": {
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "type": "MARKET",
+            "quoteOrderQty": "333.33"
+          },
+          "protection": {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "stopPrice": "73.44",
+            "note": "quantity would be the filled base amount; stop starts 28% under the completed close and is amended to the fill"
+          }
+        },
+        "50": {
+          "action": "enter",
+          "reason": "two confirmed closes cleared the fresh-cross and crash filters",
+          "order": {
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "type": "MARKET",
+            "quoteOrderQty": "333.33"
+          },
+          "protection": {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "stopPrice": "73.44",
+            "note": "quantity would be the filled base amount; stop starts 28% under the completed close and is amended to the fill"
+          }
+        }
+      }
+    },
+    "positions": {
+      "30": {
+        "entry_fill": "103.0000000000000000000000000",
+        "first_ms": 1581120000001,
+        "entry_open_ms": 1581120000000,
+        "peak": "103.0000000000000000000000000",
+        "repair": false,
+        "repair_peak": null,
+        "adverse": false,
+        "through": 1581120000000,
+        "protection": "resting",
+        "qty": "1.61648"
+      },
+      "40": {
+        "entry_fill": "103.0000000000000000000000000",
+        "first_ms": 1581120000001,
+        "entry_open_ms": 1581120000000,
+        "peak": "103.0000000000000000000000000",
+        "repair": false,
+        "repair_peak": null,
+        "adverse": false,
+        "through": 1581120000000,
+        "protection": "resting",
+        "qty": "1.61648"
+      },
+      "50": {
+        "entry_fill": "103.0000000000000000000000000",
+        "first_ms": 1581120000001,
+        "entry_open_ms": 1581120000000,
+        "peak": "103.0000000000000000000000000",
+        "repair": false,
+        "repair_peak": null,
+        "adverse": false,
+        "through": 1581120000000,
+        "protection": "resting",
+        "qty": "1.616506067961165048543689320"
+      }
+    },
+    "hold_preview": {
+      "action": "hold",
+      "reason": "hold: sleeves 30, 40, 50",
+      "order": null,
+      "orders": [],
+      "protections": [
+        {
+          "symbol": "BTCUSDT",
+          "side": "SELL",
+          "type": "STOP_LOSS",
+          "stopPrice": "74.16",
+          "note": "amended STOP_LOSS; 28% under the high since the fill",
+          "quantity": "4.84946",
+          "sleeves": [
+            30,
+            40,
+            50
+          ]
+        }
+      ],
+      "sleeves": {
+        "30": {
+          "action": "hold",
+          "reason": "still above the SMA; protection is a stop 28% under the high since the fill",
+          "order": null,
+          "protection": {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "stopPrice": "74.16",
+            "note": "amended STOP_LOSS; 28% under the high since the fill",
+            "quantity": "1.61648"
+          }
+        },
+        "40": {
+          "action": "hold",
+          "reason": "still above the SMA; protection is a stop 28% under the high since the fill",
+          "order": null,
+          "protection": {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "stopPrice": "74.16",
+            "note": "amended STOP_LOSS; 28% under the high since the fill",
+            "quantity": "1.61648"
+          }
+        },
+        "50": {
+          "action": "hold",
+          "reason": "still above the SMA; protection is a stop 28% under the high since the fill",
+          "order": null,
+          "protection": {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "stopPrice": "74.16",
+            "note": "amended STOP_LOSS; 28% under the high since the fill",
+            "quantity": "1.61650"
+          }
+        }
+      }
+    },
+    "stop": {
+      "symbol": "BTCUSDT",
+      "side": "SELL",
+      "type": "STOP_LOSS",
+      "stopPrice": "74.16",
+      "quantity": "4.84946",
+      "id": "sq-aae19451d52c0d74690d846de99bd9",
+      "status": "FILLED",
+      "executedQty": "4.84946",
+      "quote": "339.12273780"
+    },
+    "venue_events": [
+      {
+        "event": "accepted",
+        "order": {
+          "symbol": "BTCUSDT",
+          "side": "BUY",
+          "type": "MARKET",
+          "quoteOrderQty": "999.99",
+          "id": "sq-b495ceca8d553b10588495e3995395",
+          "status": "EXPIRED",
+          "executedQty": "4.849466067961165048543689320",
+          "quote": "499.995"
+        },
+        "balances": {
+          "cash": "500.005",
+          "btc": "4.849466067961165048543689320"
+        }
+      },
+      {
+        "event": "accepted",
+        "order": {
+          "symbol": "BTCUSDT",
+          "side": "SELL",
+          "type": "STOP_LOSS",
+          "stopPrice": "74.16",
+          "quantity": "4.84946",
+          "id": "sq-aae19451d52c0d74690d846de99bd9",
+          "status": "NEW",
+          "executedQty": "0",
+          "quote": "0"
+        },
+        "balances": {
+          "cash": "500.005",
+          "btc": "4.849466067961165048543689320"
+        }
+      },
+      {
+        "event": "stop_triggered",
+        "order": {
+          "symbol": "BTCUSDT",
+          "side": "SELL",
+          "type": "STOP_LOSS",
+          "stopPrice": "74.16",
+          "quantity": "4.84946",
+          "id": "sq-aae19451d52c0d74690d846de99bd9",
+          "status": "FILLED",
+          "executedQty": "4.84946",
+          "quote": "339.12273780"
+        },
+        "balances": {
+          "cash": "839.12773780",
+          "btc": "0.000006067961165048543689320"
+        }
+      }
+    ],
+    "submissions": [
+      "sq-b495ceca8d553b10588495e3995395",
+      "sq-aae19451d52c0d74690d846de99bd9"
+    ],
+    "durable_intents": [
+      {
+        "id": "sq-b495ceca8d553b10588495e3995395",
+        "status": "settled",
+        "result": {
+          "before": {
+            "cash": "1000",
+            "btc": "0"
+          },
+          "order": {
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "type": "MARKET",
+            "quoteOrderQty": "999.99",
+            "id": "sq-b495ceca8d553b10588495e3995395",
+            "status": "EXPIRED",
+            "executedQty": "4.849466067961165048543689320",
+            "quote": "499.995"
+          }
+        }
+      },
+      {
+        "id": "sq-aae19451d52c0d74690d846de99bd9",
+        "status": "settled",
+        "result": {
+          "before": {
+            "cash": "500.005",
+            "btc": "4.849466067961165048543689320"
+          },
+          "order": {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_LOSS",
+            "stopPrice": "74.16",
+            "quantity": "4.84946",
+            "id": "sq-aae19451d52c0d74690d846de99bd9",
+            "status": "FILLED",
+            "executedQty": "4.84946",
+            "quote": "339.12273780"
+          }
+        }
+      }
+    ],
+    "balances": {
+      "cash": "839.12773780",
+      "btc": "0.000006067961165048543689320"
+    },
+    "limitations": [
+      "terminal partial fill is an IOC-like offline assumption",
+      "stop locking/amendment and native stop triggering are unverified",
+      "the daily-open economic meter is not this replay"
+    ],
+    "native_qualification": "NOT_QUALIFIED"
+  },
+  "native_execution_verified": false
+}

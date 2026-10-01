@@ -1,5 +1,11 @@
 # Handoff
 
+Second-round entry: `evidence/baselines-20261001/RESULT.md` and
+`evidence/second-round-20261001/RESULT.md`. P4 beats the fixed passive BTC
+books historically; economic target still NOT_MET. `spotquant.offline` is
+strictly an in-memory lifecycle, not a native executor. Manual archive
+observation has one real recorded day; no account or 30-day execution proof.
+
 Read `evidence/simplify-20261001/RESULT.md` for P5: all registered rule
 deletions rejected; P4 remains the default. Long-term destination is one BTC
 spot and one BTC perpetual project. Research may retain multiple candidates.
@@ -12,6 +18,9 @@ P4 was declared before it was measured (`research/PROTOCOL.md`, "P4 protocol"): 
 
 Live path: each sleeve is a `Model`. An entry preview anchors the stop on the completed close; a hold does too until a followed fill is recorded, and the stop then starts at that fill. Sleeves previewed on one signal day share one fill equally. A balance drop is recorded as a sleeve exit only when account sells leave exactly the coins of recorded sleeves; a full transfer with no sell is unknown. A crash reversal is previewed as a repair entry even when the ordinary entry is also armed. The 4% close sells the next open and does not cap the loss. Checkpoints recompute the crash filter and the crash reversal, and reject a rehashed flag that the closes do not support. A daily page that stops before the current UTC day is unknown. A failed observation keeps neither the model view nor `followed_position`. The observations table keeps the latest 1000 rows. Selection is full-sample. There is no out-of-sample result.
 
-Starquant's reported 120% uses both sides and leverage. Coinquant's reported 154% uses isolated leverage. Those mechanisms stay outside this account. `run --execute` stays blocked. Native qualification stays `NOT_QUALIFIED`.
+Starquant's current causal baseline is 117.31%; Coinquant M10 is 118.24%.
+Both are leveraged perpetual research under different execution/schedule/FX
+assumptions; they cannot be ranked against each other or mixed into this spot
+account. `run --execute` stays blocked. Native qualification is `NOT_QUALIFIED`.
 
 Do not add leverage, shorts, or perpetual positions. Do not move the window or lower the targets. Do not report a lookahead path as the account. A replacement rule has to go through `research.account.simulate_sleeves` (one sleeve prints the same account as `simulate`), be declared in the protocol before it is measured, and be recorded with `python3 -m research.rebuild --suite` on a clean `spotquant/` and `research/` tree. Writing into `evidence/rebuild-20260928/` is refused.

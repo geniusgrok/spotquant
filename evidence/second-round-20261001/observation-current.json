@@ -1,0 +1,52 @@
+{
+  "observed_at_ms": 1790858606500,
+  "recorded_date_utc": "2026-10-01",
+  "rules_sha256": "3211be7aa8d252d54082393c48ea6dc036755f221d7546c8fc7aa0491ced4b3e",
+  "source": {
+    "git_head": "c0d07cf27697b3beeb7ea68a610bddcee8a8f4d6",
+    "dirty": false,
+    "python_sources_sha256": "ee340328583e81307984f6eadd5f0a62fbc058e8b407d389504644634cf58887"
+  },
+  "mode": "market_archive_only",
+  "account_observed": false,
+  "write_attempted": false,
+  "native_qualification": "NOT_QUALIFIED",
+  "status": "observed",
+  "market_through": "2026-09-30",
+  "market_sha256": "9d8cbfc9682892cc37cf81249a7f0922d809a12e0655c150f3c19fba08d69d1d",
+  "simulated_ledger": {
+    "start": "2026-09-29T00:00:00Z",
+    "through": "2026-09-30",
+    "initial_usdt": "10000",
+    "days": [
+      [
+        "2026-09-29",
+        "10000.00000000"
+      ],
+      [
+        "2026-09-30",
+        "10000.00000000"
+      ]
+    ],
+    "final_usdt": "10000.00000000",
+    "return": 0.0,
+    "continuous_mdd": "0",
+    "fees_usdt": "0",
+    "trades": [],
+    "position_by_sleeve": {
+      "30": "0",
+      "40": "0",
+      "50": "0"
+    }
+  },
+  "backfill": true,
+  "note": "Ledger is recomputed from archives; recorded_date is the actual observation day.",
+  "operations": {
+    "calendar_days_since_first_attempt": 1,
+    "days_with_valid_observation": 1,
+    "missing_or_failed_days": 0,
+    "thirty_day_observation_complete": false,
+    "profitability_proven": false,
+    "native_execution_proven": false
+  }
+}

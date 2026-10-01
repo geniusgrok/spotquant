@@ -1,5 +1,11 @@
 # Spotquant
 
+第二轮已完成同口径 [现金／买持／分批投入基线](evidence/baselines-20261001/RESULT.md)，
+P4 的历史收益与回撤均优于两种持币基线。新增
+[离线订单闭环、手动前向观察与两账户汇总](evidence/second-round-20261001/RESULT.md)。
+日常只读观察：`python -m research.operations observe --refresh`。
+执行资格与原收益目标仍未通过。
+
 2026-10-01 首轮改造：已实现并完成 P5 简化规则对照，四个候选均被登记
 门槛淘汰，P4 保留。运行 `python -m research.rebuild --simplify`；原件和
 结论见 [P5](evidence/simplify-20261001/RESULT.md)。

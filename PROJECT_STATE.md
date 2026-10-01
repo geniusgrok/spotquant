@@ -1,5 +1,12 @@
 # Project state
 
+2026-10-01 第二轮：P6 完成 12 个同口径基线账户，P4 78.49%/31.40%，
+买持 42.55%/75.02%，初始资金分12个月投入 36.41%/75.02%；无简单基线
+支配 P4。结论见 `evidence/baselines-20261001/RESULT.md`。新增严格隔离的
+离线订单闭环、官方输入恢复、手动观察与两账户只读风险汇总工具，见
+`evidence/second-round-20261001/RESULT.md`。实际记录只有1个观察日、无账户
+观察；原生执行仍未实现/未获资格，100%/30%目标仍 NOT_MET。
+
 2026-10-01: P5 rule deletions implemented and measured in
 `evidence/simplify-20261001/RESULT.md`. All four deletions were rejected by
 the registered matched-scenario rule; P4 remains the single default.
