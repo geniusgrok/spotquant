@@ -52,7 +52,7 @@ def cycle(venue, state: State, config, *, execute=False) -> dict:
             lifecycle.recover()
             state._execution_owners = lifecycle.owners()
         current = _cycle(venue, state, config, lifecycle=lifecycle)
-        if not lifecycle or not lifecycle.act(current['model_preview'], current['market_through']):
+        if not lifecycle or not lifecycle.act(current['model_preview'], current['market_through'], current['actual']):
             return dict(current, write_attempted=_writes(venue),
                         status='offline_execution' if getattr(venue, 'offline', False) and execute else
                         'demo_execution' if execute else 'read_only')

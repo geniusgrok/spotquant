@@ -150,8 +150,15 @@ class Lifecycle:
         if row[2] != 'settled':
             raise Unknown('protection cancellation is not confirmed')
 
-    def act(self, decision, bar):
+    def act(self, decision, bar, observed):
         """One action, then the session re-observes fills before sizing any buy."""
+        snapshot = self.venue.snapshot(self.config.account_uid)
+        self.verify(snapshot)
+        def key(row):
+            return (number(row['btc']), number(row['usdt_free']), number(row['usdt_locked']),
+                    json.dumps(sorted(row['orders'], key=lambda order: order['order_id']), sort_keys=True))
+        if key(snapshot) != key(observed):
+            raise Unknown('account changed after decision; reconcile before any write')
         positions = self.state.get('positions') or {}
         follows = self.state.get('follows') or {}
         resting = [row for row in self.rows() if row[2] == 'resting']
@@ -188,7 +195,6 @@ class Lifecycle:
         # signal can issue another sale; this signal's stable market ID is consumed.
         from .session import _view
         from .model import Model
-        snapshot = self.venue.snapshot(self.config.account_uid)
         for window in SLEEVES:
             position = positions.get(str(window))
             if position and decision['sleeves'][str(window)]['action'] == 'exit':

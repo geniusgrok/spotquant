@@ -27,6 +27,27 @@ def add_day(venue, close, high=None):
 
 
 class P4ExecutionTests(TestCase):
+    def test_stop_fill_between_decision_and_write_requires_reconciliation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self.entered(directory)
+            snapshot = venue.snapshot
+            reads = 0
+            def changed(uid):
+                nonlocal reads
+                reads += 1
+                if reads == 2:
+                    venue.now_ms += 1
+                    venue.trigger('70')
+                return snapshot(uid)
+            venue.snapshot = changed
+            sent = len(venue.sent)
+            report = run_day(config, venue)
+            self.assertEqual(report['status'], 'unknown')
+            self.assertIn('account changed after decision', report['errors'][0]['reason'])
+            self.assertEqual(len(venue.sent), sent)
+            venue.snapshot = snapshot
+            self.assertEqual(run_day(config, venue)['errors'], [])
+
     def test_prepared_sale_recovers_after_a_new_daily_bar(self):
         with tempfile.TemporaryDirectory() as directory:
             config, venue = self.entered(directory)
