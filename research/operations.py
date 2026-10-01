@@ -109,12 +109,19 @@ def main(argv=None):
     observed = sub.add_parser('observe')
     observed.add_argument('--market', type=Path, default=Path('/tmp/spotquant-market/klines'))
     observed.add_argument('--extra', type=Path, action='append', default=[])
+    observed.add_argument('--refresh', action='store_true', help='verify frozen inputs and download completed forward days')
     observed.add_argument('--state', type=Path, default=Path.home() / '.local/state/spotquant/observations')
     summary = sub.add_parser('combine')
     summary.add_argument('snapshots', type=Path, nargs=2)
     args = parser.parse_args(argv)
     try:
         if args.command == 'observe':
+            if args.refresh:
+                from research.restore_btc import restore
+                forward = args.market.parent / 'forward'
+                restore(args.market, forward)
+                if forward not in args.extra:
+                    args.extra.append(forward)
             report = observe(args.market, args.state, args.extra)
         else:
             blobs = [path.read_bytes() for path in args.snapshots]
