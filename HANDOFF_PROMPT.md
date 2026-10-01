@@ -1,5 +1,9 @@
 # Handoff
 
+Read `evidence/simplify-20261001/RESULT.md` for P5: all registered rule
+deletions rejected; P4 remains the default. Long-term destination is one BTC
+spot and one BTC perpetual project. Research may retain multiple candidates.
+
 Spotquant is the spot peer of coinquant: Binance BTCUSDT, long or cash, manual bounded session, execute blocked.
 
 The acceptance targets are cost-net CAGR >= 100% and continuous MDD <= 30% from 2020-01-01 to 2026-09-20 exclusive, starting at CNY 10,000. They were not lowered. The default book P4 (SMA sleeves 30, 40, and 50 on one USDT pool) measures 78.49% CAGR and 31.40% MDD (final CNY 490,442, 123 trades, drawdown on 2024-10-13), so its economic qualification is `NOT_MET`. P3, the single SMA 40 book, measured 101.67% and 29.15% (final CNY 1,113,885, drawdown on 2020-03-16) and is kept unchanged as the in-sample upper bound: SMA 35, 45, 30, and 50 alone print 59.08%, 94.83%, 58.93%, and 70.37%, and the top three trades carry about 48% of the positive log return. P2 measured 75.19% and 33.10%. P1, the SMA 40 / 20% trail book, measured 58.06% and 52.77%. The owner chose P4 to trade in-sample return for less dependence on one parameter. Say so, and say `NOT_MET`, when quoting P4.

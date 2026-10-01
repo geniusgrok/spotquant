@@ -1,5 +1,12 @@
 # Project state
 
+2026-10-01: P5 rule deletions implemented and measured in
+`evidence/simplify-20261001/RESULT.md`. All four deletions were rejected by
+the registered matched-scenario rule; P4 remains the single default.
+Reproduce with `python3 -m research.rebuild --simplify`. Long-term use is
+one BTC spot project plus one perpetual project; the rule-deletion CLI is
+research only and does not introduce another production model.
+
 Spotquant is a read-only Binance BTCUSDT spot research path. No futures and no leverage.
 
 - CLI: `python3 -m spotquant status|run`. `run --execute` is blocked before config, credentials, and network.
