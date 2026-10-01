@@ -1,3 +1,14 @@
+本轮完整交付已采用 **P4 共识仓位**：保持 SMA30/40/50 的信号和退出规则，
+仅在至少两个真实看多分仓 enter/hold 且已有新买单时，提高该买单到至少
+90% 可用现金，并受资金上限约束。四个冻结压力场景全部通过采用标准。
+795 次有限会话的基础结果为 **51.85% CAGR / 41.21% 连续代理 MDD**，
+原等份基线为 47.78% / 41.48%。收益提高 4.07 个百分点，但原 100%/30%
+目标仍未达到。原生案例与实际观察均为零，NOT_QUALIFIED。
+
+此前 `research.rebuild` 的 78.49%/31.40% 是另一套日线等份账本，
+不衡量当前默认共识仓位，也不等于有限 session/Lifecycle 结果。
+复现和所有者操作见 [完整交付指南](research/complete-delivery-GUIDE.md)。
+
 # Spotquant
 
 第三轮接通 P4 的 `session.run → Lifecycle → Binance Demo`，离线回放也走
@@ -21,7 +32,7 @@ P4 的历史收益与回撤均优于两种持币基线。新增
 
 研究对象是个人使用的 Binance **BTCUSDT 现货**。只做多或持有 USDT，不借币、不做空、不开合约、不用杠杆。手动启动一个有限会话，会话内持续读取真实行情与账户状态、重复判断，超时或 Ctrl-C 后退出；没有后台守护进程。
 
-**主网写入继续禁止。** 所有者可显式启动有 UID 和资金上限的 Demo 验证。 `run --execute` 在读取配置、凭据和网络之前拒绝。默认三分仓账本 P4 没有达到两项目标，经济资格是 `NOT_MET`；原生交易资格是 `NOT_QUALIFIED`。
+**主网写入继续禁止。** 所有者可显式启动有 UID 和资金上限的 Demo 验证。 `run --execute` 在读取配置、凭据和网络之前拒绝。默认 P4 共识仓位没有达到两项目标，经济资格是 `NOT_MET`；原生交易资格是 `NOT_QUALIFIED`。
 
 ## 所有者本地研究
 
@@ -44,7 +55,7 @@ python3 -m spotquant run --config config.json
 | `session_seconds` | 本次运行 1～86400 秒，默认 300 |
 | `poll_seconds` | 轮询 1～60 秒，默认 5，不得超过会话时长 |
 | `environment` | `live`（默认，`api.binance.com`）或 `demo`（`demo-api.binance.com`）。状态范围是 `binance:BTCUSDT:spot:{live\|demo}:{uid}` |
-| `capital_limit_usdt` | 可选，十进制字符串。预览买单的资金池只用 `min(可用 USDT 加上本次开盘退出的估计所得, 上限)`，再按不持币的分仓数平分。它限制预览规模，不是亏损上限 |
+| `capital_limit_usdt` | 可选，十进制字符串。预览买单的资金池只用 `min(可用 USDT 加上本次开盘退出的估计所得, 上限)`，再按不持币的分仓数平分。共识买单另按当前持币名义金额扣减剩余额度；它限制预览规模，不是亏损上限 |
 
 Demo 与实盘共用一个适配器，默认只读。`run --execute` 在两种环境都被阻止。
 所有者 Demo 使用单独的 [配置模板](config.demo.example.json) 和入口：

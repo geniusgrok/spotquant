@@ -85,7 +85,7 @@ class CompleteAssessmentTests(unittest.TestCase):
         for i, (a, b) in enumerate(zip(usd_returns, cny_returns)):
             usd, cny = usd * (1 + a), cny * (1 + b)
             curve.append({'day_ms': START_MS + i * DAY, 'equity_usdt': usd,
-                          'equity_cny': cny, 'net_btc': 1,
+                          'equity_cny': cny, 'net_btc': 1, 'price_usdt': usd,
                           'gross_exposure_over_equity': 1})
         result = attribution({'mdd': '.1'}, curve, usd_returns, cny_returns,
                              10000, lambda stamp: D(1))

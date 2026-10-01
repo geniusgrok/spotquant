@@ -245,7 +245,7 @@ def _flat(reason: str) -> dict:
 
 
 def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool,
-              capital_limit: D | None) -> dict:
+              capital_limit: D | None, consensus: bool = True) -> dict:
     """The sleeves book. ``views`` maps a window to its model, ``owned`` to its recorded coins.
 
     An armed sleeve would spend the free USDT plus the proceeds of this open's exits, divided
@@ -331,7 +331,32 @@ def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool
     if exits:
         out['loss_capped'] = False
         out['untradeable'] = not any(order['side'] == 'SELL' for order in orders)
+    if consensus:
+        consensus_allocation(out, views, snapshot, capital_limit)
     return out
+
+
+def consensus_allocation(decision, views, snapshot, capital_limit):
+    """Increase only a real new BUY when at least two bullish sleeves participate."""
+    buys = [o for o in decision['orders'] if o['side'] == 'BUY']
+    voters = sum(bool(views[w].bull) and decision['sleeves'][str(w)]['action'] in ('enter', 'hold')
+                 for w in views)
+    if buys and voters >= 2:
+        budget = D(snapshot['usdt_free']) * D('.90')
+        if capital_limit is not None:
+            budget = min(budget, max(D(0), capital_limit - D(snapshot['btc']) * D(snapshot['avg_price'])))
+        budget = floor_step(budget, QUOTE_STEP)
+        if budget >= MIN_NOTIONAL:
+            buys[0]['quoteOrderQty'] = str(max(D(buys[0]['quoteOrderQty']), budget))
+            total = D(buys[0]['quoteOrderQty'])
+            group = sorted(buys[0]['sleeves'])
+            given = D(0)
+            for index, window in enumerate(group):
+                share = total - given if index == len(group) - 1 else total / len(group)
+                given += share
+                sleeve = decision['sleeves'][str(window)]
+                sleeve['order'] = dict(sleeve['order'], quoteOrderQty=str(share),
+                                       note='Advisory share of the pooled BUY allocation')
 
 
 def _merge_protections(decisions: dict, views: dict, snapshot: dict, reference: Model) -> list:

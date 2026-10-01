@@ -16,7 +16,7 @@ from research.restore_check import check
 from spotquant import session
 from spotquant.config import Config
 from spotquant.model import DAY, SLEEVES
-from spotquant.preview import BASE_STEP, QUOTE_STEP, MIN_NOTIONAL, portfolio
+from spotquant.preview import BASE_STEP, QUOTE_STEP, MIN_NOTIONAL, portfolio, consensus_allocation
 from spotquant.state import State
 from spotquant.types import floor_step, serial
 
@@ -54,7 +54,7 @@ class Policy:
         return D(rows[i][1])
 
     def __call__(self, views, owned, snapshot, **kwargs):
-        decision = portfolio(views, owned, snapshot, **kwargs)
+        decision = portfolio(views, owned, snapshot, consensus=False, **kwargs)
         buys = [o for o in decision['orders'] if o['side'] == 'BUY']
         if self.candidate in ('funding', 'basis') and buys:
             value = self.feature(self.candidate)
@@ -65,15 +65,8 @@ class Policy:
                 for o in buys:
                     for w in o['sleeves']:
                         decision['sleeves'][str(w)].update(action='flat', order=None)
-        voters = sum(bool(views[w].bull) and decision['sleeves'][str(w)]['action'] in ('enter', 'hold')
-                     for w in views)
-        if self.candidate == 'consensus' and buys and voters >= 2:
-            budget = D(snapshot['usdt_free']) * D('.90')
-            if kwargs['capital_limit'] is not None:
-                budget = min(budget, max(D(0), kwargs['capital_limit'] - D(snapshot['btc']) * D(snapshot['avg_price'])))
-            budget = floor_step(budget, QUOTE_STEP)
-            if budget >= MIN_NOTIONAL:
-                buys[0]['quoteOrderQty'] = str(max(D(buys[0]['quoteOrderQty']), budget))
+        if self.candidate == 'consensus':
+            consensus_allocation(decision, views, snapshot, kwargs['capital_limit'])
         if self.candidate == 'downside':
             decision = self.downside(decision, views, owned, snapshot)
         decision['order'] = decision['orders'][0] if decision['orders'] else None

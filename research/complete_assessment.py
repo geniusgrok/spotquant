@@ -148,6 +148,7 @@ def attribution(row, curve, market_returns, cny_market_returns, initial, fx):
                 (1 if r['net_btc'] >= 0 else -1) * r['gross_exposure_over_equity'] for r in curve),
             'btc_up_down_day_capture': capture,
             'days_with_closing_btc_position': sum(bool(r['net_btc']) for r in curve),
+            'days_with_closing_btc_notional_at_least_usdt5': sum(abs(r['net_btc']) * r['price_usdt'] >= 5 for r in curve),
             'days_with_closing_short_position': sum(r['net_btc'] < 0 for r in curve),
             'fees_usdt': row.get('fees', row.get('audit', {}).get('fees_usdt')),
             'funding_paid_usdt': row.get('funding', '0'),
@@ -247,6 +248,7 @@ def main(argv=None):
               'qualification': 'NOT_QUALIFIED', 'native_execution_verified': False,
               'limitations': ['All history already studied; regression intercept is descriptive and not proof of alpha.',
                               'Closing exposure is not maximum intraday leverage; joint MDD uses daily curves.',
+                              'Nonzero BTC-balance day counts include retained dust; material-notional days are not strategy signal counts.',
                               'Separate BTC accounts do not provide asset diversification; no added capital or transfers.']}
     report['input_sources']['spot_account_sources'] = inputs['spot'].get('account_sources', {})
     report['calendar_return_periods'] = {str(year): {
