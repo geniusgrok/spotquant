@@ -13,6 +13,12 @@ from tests.test_binance import Script, KEY, SECRET
 
 
 class ExportTests(TestCase):
+    def test_redirect_after_dispatch_is_unknown_not_a_proven_refusal(self):
+        opener = Mock()
+        opener.open.side_effect = Blocked('refusing an HTTP redirect')
+        with patch('spotquant.binance.urllib.request.build_opener', return_value=opener), self.assertRaises(Unknown):
+            _default_opener('POST', 'https://demo-api.binance.com/api/v3/order', {})
+
     def test_failed_native_preflight_keeps_proven_unsent_intent_prepared(self):
         from spotquant.config import Config
         from spotquant.state import State

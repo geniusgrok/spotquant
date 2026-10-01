@@ -40,8 +40,10 @@ def _default_opener(method: str, url: str, headers: dict):
             return response.status, response.read(), dict(response.headers.items())
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read(), dict(exc.headers.items())
-    except Blocked:
-        raise
+    except Blocked as exc:
+        # Redirect rejection happens after transport started. It cannot prove
+        # that a POST was refused by the venue.
+        raise Unknown('redirect refused after request dispatch; outcome unknown') from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise Unknown('Binance request failed before a usable response') from exc
 
