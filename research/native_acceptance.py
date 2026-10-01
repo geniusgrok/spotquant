@@ -166,7 +166,23 @@ def main(argv=None):
     parser.add_argument('manifest', type=Path)
     parser.add_argument('--package', type=Path, required=True)
     parser.add_argument('--archive', type=Path)
+    parser.add_argument('--template', action='store_true', help='create a fresh source-bound blank owner manifest')
     args = parser.parse_args(argv)
+    if args.template:
+        project = args.package.name
+        if project not in ('spotquant', 'coinquant') or args.archive:
+            parser.error('template requires a named execution package and no archive')
+        manifest = {'format': 1, 'project': project, 'environment': 'demo',
+                    'account_uid': '', 'capital_limit_usdt': '',
+                    'execution_code_sha256': digest(args.package),
+                    'cases': {name: {'file': name + '.json', 'sha256': ''} for name in CASES},
+                    'actual_observation_days': 0}
+        args.manifest.parent.mkdir(parents=True, exist_ok=True)
+        with args.manifest.open('x') as stream:
+            json.dump(manifest, stream, indent=2)
+            stream.write('\n')
+        print(json.dumps({'template': str(args.manifest), 'native_execution_verified': False, 'writes_authorized': False}))
+        return 0
     result = archive(args.manifest, args.package, args.archive) if args.archive else check(args.manifest, args.package)
     print(json.dumps(result, indent=2))
     return 0 if result['ready_for_owner_native_review'] else 2
