@@ -50,3 +50,28 @@ the same spot fee/slippage and warmup history. These are economic proxy
 benchmarks, not executable finite-session candidates or promotion searches.
 Report all candidate/scenario attribution, USDT returns against USDT BTC and
 CNY returns against CNY BTC. No benchmark result changes eligibility rules.
+## Grouped-close execution correction and measured-source preservation
+
+The complete clean2d1e5fe matrix is retained unchanged: sixteen accounts pass,
+while all four consensus accounts stop qualifying after an unplaceable grouped
+SELL rounding remainder. This is an execution defect, not an extra strategy
+trial or permission to choose from an incomplete account. Correct only the
+fully applied, terminal-confirmed rounded full-group remainder, keep every
+owned coin, and block until consistent terminal readback if confirmation is
+late. Intentional reductions and genuine partial fills remain positions.
+
+Before any replacement outcome, independently replay every original fill and
+allocation against the exact added predicate, including cumulative application
+and the pending-readback guard. Reuse only complete audited accounts with zero
+new-branch matches and reviewed unchanged financial behavior; rerun every other
+account in full. Bind original bytes, account content, reviewed implementation,
+replacement immutable Git source and each account's own measured provenance.
+Preserve the original failed matrix. The final collection is explicitly mixed
+source and does not rename unchanged rows as new-source measurements.
+
+If a candidate is mechanically eligible, compare its own actual2500/5000/7500
+accounts with the same candidate's measured10000 endpoint. Keep incumbent joint
+accounts separately. Never mix a selected candidate's budget rows with an
+incumbent10000 endpoint, scale an existing curve, or use budget comparisons to
+change the already frozen strategy-selection rule. Native qualification stays
+NOT_QUALIFIED and actual observations remain zero.

@@ -83,7 +83,7 @@ class Policy:
         ref = views[40]
         bar = ref.last
         memo = self.state.get('research_downside') or {'phase': 'normal'}
-        held = [w for w in SLEEVES if D(owned[w]) > BASE_STEP]
+        held = [w for w in SLEEVES if D(owned[w]) > BASE_STEP and not getattr(views[w], '_owned_dust', False)]
         if memo['phase'] != 'normal':
             decision['orders'] = [o for o in decision['orders'] if o['side'] != 'BUY']
         if any(o['side'] == 'SELL' for o in decision['orders']):

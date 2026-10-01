@@ -270,6 +270,44 @@ def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open
     return positions, follows, accounted, closed
 
 
+def grouped_close_dust(owner, remaining, price, applied):
+    """Only a fully applied rounded full-group close can leave extra step dust."""
+    if applied is None:
+        return False
+    intended = D(owner['order']['quantity'])
+    rounded = sum((floor_step(D(v), BASE_STEP) for v in owner['weights'].values()), D(0))
+    remainder = (intended == rounded and abs(applied - intended) <= D('1e-24')
+                 and BASE_STEP <= remaining < BASE_STEP * len(owner['sleeves'])
+                 and remaining * price < MIN_NOTIONAL)
+    if remainder and (owner.get('native_status') != 'FILLED'
+                      or owner.get('native_executed_qty') is None
+                      or D(owner['native_executed_qty']) != intended):
+        # Do not commit/account this fold before terminal readback arrives:
+        # the next cycle must replay the fill with confirmed native metadata.
+        raise Unknown('rounded group close awaits consistent terminal native readback')
+    return remainder
+
+
+def _sell_applied(positions, owner, order_id, quantity):
+    """Gross fills applied through this trade, retained across restarts.
+
+    A legacy partial position without a counter has incomplete history; it
+    cannot qualify for the enlarged residual branch by guessing earlier fills.
+    """
+    stored = [(positions.get(w) or {}).get('sell_applied', {}).get(order_id, 'absent')
+              for w in owner['sleeves']]
+    known = [value for value in stored if value != 'absent']
+    if known:
+        if any(value != known[0] for value in known):
+            raise Unknown('durable applied sell amounts differ across sleeves')
+        previous = None if known[0] is None else D(known[0])
+    else:
+        untouched = all(abs(D((positions.get(w) or {}).get('qty', '0')) - D(owner['weights'][str(w)]))
+                        <= D('1e-24') for w in owner['sleeves'])
+        previous = D(0) if untouched else None
+    return None if previous is None else previous + quantity
+
+
 def _owned_fills(models, positions, follows, accounted, trades, owners, history):
     """Attribute fills by the order's durable allocation, including partial fills."""
     closed = []
@@ -282,6 +320,8 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
         total = sum(weights.values(), D(0))
         if total <= 0 or set(weights) != set(group):
             raise Unknown('invalid durable sleeve allocation')
+        order_id = str(trade['order_id'])
+        applied = None if trade['buyer'] else _sell_applied(positions, owner, order_id, trade['qty'])
         delta = abs(_base_delta(trade))
         given = D(0)
         for index, window in enumerate(group):
@@ -297,6 +337,8 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
                         built['entry_fill'] = format((D(prior['entry_fill']) * old_qty + trade['price'] * qty)
                                                     / (old_qty + qty), 'f')
                     built['qty'] = format(old_qty + qty, 'f')
+                    if prior and 'sell_applied' in prior:
+                        built['sell_applied'] = dict(prior['sell_applied'])
                     positions[window] = built
                 else:
                     old_qty = D(prior['qty'])
@@ -310,7 +352,10 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
                 if prior is None or qty > D(prior['qty']) + BASE_STEP:
                     raise Unknown('allocated sell exceeds its recorded sleeve')
                 remaining = max(D(0), D(prior['qty']) - qty)
-                if remaining < BASE_STEP:
+                counters = dict(prior.get('sell_applied', {}))
+                counters[order_id] = None if applied is None else format(applied, 'f')
+                prior = dict(prior, sell_applied=counters)
+                if remaining < BASE_STEP or grouped_close_dust(owner, remaining, trade['price'], applied):
                     # A floored native sell does not remove fractional coins.
                     # Retain their proven sleeve ownership across restarts and
                     # reuse it at the next genuine entry; never infer a deposit.

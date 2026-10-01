@@ -15,6 +15,13 @@ TERMINAL = {'FILLED', 'EXPIRED', 'CANCELED', 'REJECTED', 'EXPIRED_IN_MATCH'}
 FIELDS = ('symbol', 'side', 'type', 'quantity', 'quoteOrderQty', 'stopPrice')
 
 
+def allocation_owners(rows):
+    """Attach only durable native readback to an immutable sleeve allocation."""
+    return {str(result['orderId']): dict(payload, native_status=result.get('status'),
+                                       native_executed_qty=result.get('executedQty'))
+            for payload, result in rows if 'orderId' in result}
+
+
 class Lifecycle:
     def __init__(self, state, venue, config):
         if not getattr(venue, 'execution_authorized', False) or config.environment != 'demo':
@@ -63,8 +70,7 @@ class Lifecycle:
             self.save(identity, payload, 'settled' if row['status'] in TERMINAL else 'resting', row)
 
     def owners(self):
-        return {str(result['orderId']): payload for _, payload, _, result in self.rows()
-                if 'orderId' in result}
+        return allocation_owners((payload, result) for _, payload, _, result in self.rows())
 
     def verify(self, snapshot):
         known = {identity for identity, _, _, _ in self.rows()}

@@ -258,7 +258,12 @@ def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool
     if reference.close is None:
         return dict(_flat('no completed daily close is available'), sleeves={}, orders=[], protections=[])
     price = reference.close
-    coins = {window: floor_step(D(owned.get(window, 0)), BASE_STEP) for window in views}
+    dust = {window: D(owned.get(window, 0)) for window, model in views.items()
+            if getattr(model, '_owned_dust', False) and D(owned.get(window, 0)) >= BASE_STEP}
+    if any(floor_step(qty, BASE_STEP) * D(snapshot['avg_price']) >= MIN_NOTIONAL for qty in dust.values()):
+        raise Unknown('retained close residual is now placeable; owner reconciliation required')
+    coins = {window: D(0) if getattr(views[window], '_owned_dust', False)
+             else floor_step(D(owned.get(window, 0)), BASE_STEP) for window in views}
     external = D(snapshot['btc']) - sum((D(owned.get(window, 0)) for window in views), D(0))
     if external * price >= MIN_NOTIONAL:
         raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
@@ -271,6 +276,8 @@ def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool
     exiting = [window for window, item in first.items() if item['action'] == 'exit']
     flat_count = sum(1 for window in views if coins[window] == 0) + len(exiting)
     held_value = sum((coins[window] * price for window in views if window not in exiting), D(0))
+    if dust:
+        held_value += sum(dust.values(), D(0)) * D(snapshot['avg_price'])
     pool = D(snapshot['usdt_free']) + sum((coins[window] * price for window in exiting), D(0))
     if capital_limit is not None:
         # The limit is the whole exposure, including coins already held.

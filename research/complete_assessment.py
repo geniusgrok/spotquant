@@ -211,12 +211,15 @@ def main(argv=None):
     parser.add_argument('--perp', type=Path, required=True)
     parser.add_argument('--spot-budgets', type=Path, required=True)
     parser.add_argument('--perp-budgets', type=Path, required=True)
+    parser.add_argument('--spot-selected-budgets', type=Path)
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args(argv)
     if args.out.exists():
         parser.error('never overwrite an assessment')
     # Budget schema is validated after actual budget replays complete.
     inputs = {name: json.loads(getattr(args, name).read_text()) for name in ('spot', 'perp', 'spot_budgets', 'perp_budgets')}
+    if args.spot_selected_budgets:
+        inputs['spot_selected_budgets'] = json.loads(args.spot_selected_budgets.read_text())
     verify_joint_inputs(inputs)
     market_root = Path('/tmp/spotquant-market/klines')
     fx_path = Path('../starquant/data/usdcny_frankfurter.json')
@@ -245,6 +248,12 @@ def main(argv=None):
               'limitations': ['All history already studied; regression intercept is descriptive and not proof of alpha.',
                               'Closing exposure is not maximum intraday leverage; joint MDD uses daily curves.',
                               'Separate BTC accounts do not provide asset diversification; no added capital or transfers.']}
+    report['input_sources']['spot_account_sources'] = inputs['spot'].get('account_sources', {})
+    report['calendar_return_periods'] = {str(year): {
+        'start_utc': datetime.fromtimestamp(min(b[0] for b in active if datetime.fromtimestamp(b[0] / 1000, timezone.utc).year == year) / 1000, timezone.utc).date().isoformat(),
+        'end_exclusive_utc': datetime.fromtimestamp((max(b[0] for b in active if datetime.fromtimestamp(b[0] / 1000, timezone.utc).year == year) + DAY) / 1000, timezone.utc).date().isoformat(),
+        'complete_calendar_year': year != 2026}
+        for year in range(2020, 2027)}
     spot = inputs['spot']['results']['default-base']
     perp = inputs['perp']['results']['incumbent']['base']
     for name, row in (('spot', spot), ('perp', perp)):
@@ -268,13 +277,22 @@ def main(argv=None):
     report['daily_return_correlation_spot_perp'] = statistics.correlation(spot_returns, perp_returns)
     # Filled by fixed-account replay integration, deliberately no curve scaling.
     report['joint_fixed_capital'] = joint(inputs, bars, fx)
+    selected_spot = report['spot_selection']['selected_research_candidate']
+    selected_perp = inputs['perp']['selection']['selected_research_candidate']
+    report['perp_selection'] = inputs['perp']['selection']
+    if selected_spot != 'default' or selected_perp != 'incumbent':
+        spot_budgets, perp_budgets = verify_selected_budgets(inputs, selected_spot, selected_perp)
+        report['joint_selected_fixed_capital'] = joint(inputs, bars, fx,
+            spot_candidate=selected_spot, perp_candidate=selected_perp,
+            spot_budget_rows=spot_budgets, perp_budget_rows=perp_budgets)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open('x') as stream:
         json.dump(report, stream, indent=2, allow_nan=False)
         stream.write('\n')
 
 
-def joint(inputs, bars, fx):
+def joint(inputs, bars, fx, *, spot_candidate='default', perp_candidate='incumbent',
+          spot_budget_rows=None, perp_budget_rows=None):
     rows = []
     for spot_budget in (0, 2500, 5000, 7500, 10000):
         perp_budget = 10000 - spot_budget
@@ -283,15 +301,20 @@ def joint(inputs, bars, fx):
             if not budget:
                 continue
             if budget == 10000:
-                row = inputs[kind]['results']['default-base'] if kind == 'spot' else inputs[kind]['results']['incumbent']['base']
+                row = inputs[kind]['results'][spot_candidate + '-base'] if kind == 'spot' else inputs[kind]['results'][perp_candidate]['base']
             else:
-                row = inputs[kind + '_budgets']['results'][str(budget)]
+                budget_rows = spot_budget_rows if kind == 'spot' else perp_budget_rows
+                row = (budget_rows if budget_rows is not None else inputs[kind + '_budgets']['results'])[str(budget)]
+            expected = spot_candidate if kind == 'spot' else perp_candidate
+            if row.get('candidate') != expected:
+                raise ValueError('joint account candidate differs: ' + kind + '/' + str(budget))
             if not row.get('complete') or not row['audit']['passed'] or int(D(str(row.get('initial_cny', 10000)))) != budget:
                 raise ValueError('complete audited actual budget required: ' + kind + '/' + str(budget))
             curves.append(canonical(row, bars, fx, budget, kind))
         combined = [sum(curve[i]['equity_cny'] for curve in curves) for i in range(len(curves[0]))]
         metrics, _ = daily_metrics(combined, 10000)
         rows.append({'spot_initial_cny': spot_budget, 'perp_initial_cny': perp_budget,
+                     'spot_candidate': spot_candidate, 'perp_candidate': perp_candidate,
                      'metrics': metrics, 'continuous_joint_mdd_verified': False,
                      'fixed_accounts_no_transfers': True,
                      'maximum_closing_gross_exposure_over_equity': max(
@@ -299,6 +322,31 @@ def joint(inputs, bars, fx):
                          sum(curve[i]['equity_usdt'] for curve in curves) for i in range(len(combined))),
                      'daily_equity_cny': combined})
     return rows
+
+
+def verify_selected_budgets(inputs, spot_candidate, perp_candidate):
+    reference = [r['start_ms'] for r in inputs['perp']['results']['incumbent']['base']['sessions']]
+    spot_bundle = inputs['spot_budgets'] if spot_candidate == 'default' else inputs.get('spot_selected_budgets')
+    if spot_bundle is None:
+        raise ValueError('selected Spot candidate requires its actual three budget accounts')
+    for key in ('fx_sha256', 'crowding_sha256', 'market_sha256', 'schedule_sha256'):
+        if spot_bundle['inputs'].get(key) != inputs['spot_budgets']['inputs'].get(key):
+            raise ValueError('selected Spot budget input differs: ' + key)
+    perp_bundle = inputs['perp_budgets']
+    if perp_candidate == 'incumbent':
+        perp_rows = perp_bundle['results']
+    elif perp_bundle.get('selected_candidate') == perp_candidate and 'selected_results' in perp_bundle:
+        perp_rows = perp_bundle['selected_results']
+    else:
+        raise ValueError('selected perpetual candidate requires its actual three budget accounts')
+    for kind, candidate, rows in (('spot', spot_candidate, spot_bundle['results']), ('perp', perp_candidate, perp_rows)):
+        for budget in ('2500', '5000', '7500'):
+            row = rows[budget]
+            if row.get('candidate') != candidate or D(str(row['initial_cny'])) != D(budget):
+                raise ValueError('selected budget candidate or capital differs: ' + kind + '/' + budget)
+            if [r['start_ms'] for r in row['sessions']] != reference:
+                raise ValueError('selected budget session schedule differs: ' + kind + '/' + budget)
+    return spot_bundle['results'], perp_rows
 
 
 def verify_joint_inputs(inputs):
@@ -312,6 +360,9 @@ def verify_joint_inputs(inputs):
     for kind in ('spot', 'perp'):
         for budget in ('2500', '5000', '7500'):
             row = inputs[kind + '_budgets']['results'][budget]
+            expected = 'default' if kind == 'spot' else 'incumbent'
+            if row.get('candidate') != expected:
+                raise ValueError('baseline joint budget candidate differs: ' + kind + '/' + budget)
             if [r['start_ms'] for r in row['sessions']] != reference:
                 raise ValueError('budget sessions differ: ' + kind + '/' + budget)
 

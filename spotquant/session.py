@@ -43,10 +43,10 @@ def cycle(venue, state: State, config, *, execute=False) -> dict:
         lifecycle = Lifecycle(state, venue, config)
     else:
         import json
+        from .execution import allocation_owners
         allocated = list(state.db.execute("SELECT payload,result FROM intents WHERE kind='p4'"))
-        state._execution_owners = ({str(json.loads(result)['orderId']): json.loads(payload)
-                                   for payload, result in allocated if 'orderId' in json.loads(result)}
-                                  if allocated else None)
+        state._execution_owners = (allocation_owners((json.loads(payload), json.loads(result))
+                                                    for payload, result in allocated) if allocated else None)
     for _ in range(12 if execute else 1):
         if lifecycle:
             lifecycle.recover()
@@ -418,9 +418,10 @@ def _view(model: Model, position):
     if position is None:
         return model, D(0)
     if position.get('dust'):
-        # These coins remain owned but cannot form a native quantity step.
-        # The closed strategy uses its fresh-cross model, not its old stop peak.
-        return model, D(position['qty'])
+        # The closed strategy is flat; every residual coin still stays owned.
+        view = Model.restore(model.checkpoint())
+        view._owned_dust = True
+        return view, D(position['qty'])
     view = Model.restore(model.checkpoint())
     view.entry = D(position['entry_fill'])
     view.position_peak = D(position['peak'])
