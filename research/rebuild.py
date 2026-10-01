@@ -263,8 +263,9 @@ def _public_sleeves(result: dict, name: str, symbol: str, windows, constants: di
 
 
 def run_sleeves(bars, fx, name: str, *, symbol='BTCUSDT', windows=SLEEVES, adverse=None,
-                vol_target=None, series=True, **kwargs) -> dict:
+                vol_target=None, series=True, rules=None, **kwargs) -> dict:
     constants = model_constants(adverse)
+    constants.update(rules or {})
     result = simulate_sleeves(
         bars, fx, start_ms=START_MS, end_ms=END_MS, windows=windows,
         model_kwargs=dict(constants), vol_target=vol_target, **kwargs,
@@ -441,9 +442,11 @@ def main(argv=None):
     parser.add_argument('--sequence', default='primary', choices=('primary', 'skip', 'block'))
     parser.add_argument('--grid', action='store_true')
     parser.add_argument('--suite', action='store_true')
+    parser.add_argument('--simplify', action='store_true', help='registered P5 rule deletions, BTC only')
     parser.add_argument('--out', default=None)
     args = parser.parse_args(argv)
-    out_dir = Path(args.out) if args.out else OUT
+    out_dir = Path(args.out) if args.out else (
+        ROOT / 'evidence' / 'simplify-20261001' if args.simplify else OUT)
     if out_dir.resolve() == OLD_OUT.resolve():
         raise SystemExit('refusing to write into the P1, P2, and P3 evidence directory')
     bars = load_daily(Path(args.market), END_MS + 86_400_000, args.symbol, require_through=END_MS)
@@ -459,6 +462,18 @@ def main(argv=None):
         'exit_slip': D(args.exit_slip),
         'stop_slip': D(args.stop_slip),
     }
+    if args.simplify:
+        if args.symbol != 'BTCUSDT' or args.suite or args.grid or args.book != 'sleeves':
+            raise SystemExit('P5 uses only the frozen BTC sleeves account')
+        if (args.windows != ','.join(str(item) for item in SLEEVES)
+                or args.sequence != 'primary' or args.adverse is not None or args.vol_target is not None
+                or D(args.fee) != FEE or D(args.entry_slip) != ENTRY_SLIP
+                or D(args.exit_slip) != EXIT_SLIP or D(args.stop_slip) != STOP_SLIP):
+            raise SystemExit('P5 uses the registered constants and scenarios; custom knobs are refused')
+        from research.simplify import run_simplification
+        payload = run_simplification(bars, fx, out_dir, identity, market_hash)
+        print(json.dumps(payload['decision'], indent=2))
+        return 0 if payload['baseline_reproduced'] else 1
     if args.suite:
         eth_bars = load_daily(Path(args.eth_market), END_MS + 86_400_000, 'ETHUSDT', require_through=END_MS)
         payload = run_suite(
