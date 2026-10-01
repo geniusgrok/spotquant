@@ -284,13 +284,13 @@ def main(argv=None):
     _, perp_returns = daily_metrics([r['equity_cny'] for r in perp_curve], 10000)
     report['daily_return_correlation_spot_perp'] = statistics.correlation(spot_returns, perp_returns)
     # Filled by fixed-account replay integration, deliberately no curve scaling.
-    report['joint_fixed_capital'] = joint(inputs, bars, fx)
+    report['joint_fixed_capital'] = joint(inputs, bars, fx, btc_returns, cny_btc_returns)
     selected_spot = report['spot_selection']['selected_research_candidate']
     selected_perp = inputs['perp']['selection']['selected_research_candidate']
     report['perp_selection'] = inputs['perp']['selection']
     if selected_spot != 'default' or selected_perp != 'incumbent':
         spot_budgets, perp_budgets = verify_selected_budgets(inputs, selected_spot, selected_perp)
-        report['joint_selected_fixed_capital'] = joint(inputs, bars, fx,
+        report['joint_selected_fixed_capital'] = joint(inputs, bars, fx, btc_returns, cny_btc_returns,
             spot_candidate=selected_spot, perp_candidate=selected_perp,
             spot_budget_rows=spot_budgets, perp_budget_rows=perp_budgets)
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -299,7 +299,7 @@ def main(argv=None):
         stream.write('\n')
 
 
-def joint(inputs, bars, fx, *, spot_candidate='default', perp_candidate='incumbent',
+def joint(inputs, bars, fx, btc_returns, cny_btc_returns, *, spot_candidate='default', perp_candidate='incumbent',
           spot_budget_rows=None, perp_budget_rows=None):
     rows = []
     for spot_budget in (0, 2500, 5000, 7500, 10000):
@@ -320,10 +320,16 @@ def joint(inputs, bars, fx, *, spot_candidate='default', perp_candidate='incumbe
                 raise ValueError('complete audited actual budget required: ' + kind + '/' + str(budget))
             curves.append(canonical(row, bars, fx, budget, kind))
         combined = [sum(curve[i]['equity_cny'] for curve in curves) for i in range(len(curves[0]))]
-        metrics, _ = daily_metrics(combined, 10000)
+        metrics, combined_cny_returns = daily_metrics(combined, 10000)
+        combined_usdt = [sum(curve[i]['equity_usdt'] for curve in curves) for i in range(len(curves[0]))]
+        initial_usdt = float(D(10000) / fx(START_MS) * D('.999'))
+        _, combined_usdt_returns = daily_metrics(combined_usdt, initial_usdt)
         rows.append({'spot_initial_cny': spot_budget, 'perp_initial_cny': perp_budget,
                      'spot_candidate': spot_candidate, 'perp_candidate': perp_candidate,
-                     'metrics': metrics, 'continuous_joint_mdd_verified': False,
+                     'metrics': metrics,
+                     'usdt_btc_regression': regression(combined_usdt_returns, btc_returns),
+                     'cny_btc_regression': regression(combined_cny_returns, cny_btc_returns),
+                     'continuous_joint_mdd_verified': False,
                      'fixed_accounts_no_transfers': True,
                      'maximum_closing_gross_exposure_over_equity': max(
                          sum(abs(curve[i]['net_btc']) * curve[i]['price_usdt'] for curve in curves) /
