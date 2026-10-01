@@ -9,7 +9,7 @@ from pathlib import Path
 import statistics
 
 from research.complete_spot import CANDIDATES, SCENARIOS, PriorFX
-from research.market import load_daily
+from research.market import load_daily, file_digest
 from research.rebuild import START_MS, END_MS, source_identity
 from spotquant.model import DAY
 
@@ -137,6 +137,34 @@ def attribution(row, curve, market_returns, initial, fx):
             'continuous_mdd_from_account': float(row['mdd']), 'native_execution_verified': False}
 
 
+def passive_controls(bars, fx):
+    """Economic benchmarks at fixed monthly opens, not actual-session accounts."""
+    active = [b for b in bars if START_MS <= b[0] < END_MS]
+    initial_cash = D(10000) / fx(START_MS) * D('.999')
+    report = {}
+    for method in ('cash', 'buy_hold', 'twelve_month_dca'):
+        cash, btc, curve, purchases = initial_cash, D(0), [], 0
+        for day, open_, high, low, close, volume in active:
+            date = datetime.fromtimestamp(day / 1000, timezone.utc)
+            buy = (method == 'buy_hold' and day == START_MS) or (
+                method == 'twelve_month_dca' and date.year == 2020 and date.day == 1)
+            if buy:
+                spent = cash if method == 'buy_hold' else min(cash, initial_cash / 12)
+                # Same spot fee, entry slippage and final mark convention.
+                btc += spent * D('.999') / (open_ * D('1.0005'))
+                cash -= spent
+                purchases += 1
+            curve.append(float((cash + btc * close) * fx(day + DAY) * D('.999')))
+        metrics, _ = daily_metrics(curve, 10000)
+        report[method] = {'metrics': metrics, 'purchases': purchases, 'initial_cny': 10000,
+                          'additional_capital_cny': 0, 'market': 'spot',
+                          'method': 'Fixed daily-open benchmark with fractional BTC, not finite-session/Lifecycle fills.',
+                          'fees_each_buy': '.001', 'entry_slippage': '.0005',
+                          'terminal_valuation': 'mark-to-market, no assumed terminal sale',
+                          'continuous_mdd_verified': False, 'native_execution_verified': False}
+    return report
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--spot', type=Path, required=True)
@@ -149,8 +177,16 @@ def main(argv=None):
         parser.error('never overwrite an assessment')
     # Budget schema is validated after actual budget replays complete.
     inputs = {name: json.loads(getattr(args, name).read_text()) for name in ('spot', 'perp', 'spot_budgets', 'perp_budgets')}
-    bars = load_daily(Path('/tmp/spotquant-market/klines'), END_MS, require_through=END_MS)
-    fx = PriorFX(Path('../starquant/data/usdcny_frankfurter.json'))
+    verify_joint_inputs(inputs)
+    market_root = Path('/tmp/spotquant-market/klines')
+    fx_path = Path('../starquant/data/usdcny_frankfurter.json')
+    if hashlib.sha256(fx_path.read_bytes()).hexdigest() != inputs['spot']['fx_sha256']:
+        raise ValueError('analysis FX bytes differ from frozen account input')
+    market_digest = file_digest(market_root)
+    if market_digest != inputs['spot']['market_sha256'] or market_digest != inputs['spot_budgets']['inputs']['market_sha256']:
+        raise ValueError('analysis spot archive bytes differ from frozen account input')
+    bars = load_daily(market_root, END_MS, require_through=END_MS)
+    fx = PriorFX(fx_path)
     active = [b for b in bars if START_MS <= b[0] < END_MS]
     previous_price = active[0][1]
     btc_returns = []
@@ -160,6 +196,7 @@ def main(argv=None):
     report = {'analysis_source': source_identity(), 'inputs': {n: hashlib.sha256(getattr(args, n).read_bytes()).hexdigest() for n in inputs},
               'input_sources': {'spot': inputs['spot']['source'], 'perp': inputs['perp']['inputs']['source']},
               'spot_selection': select_spot(inputs['spot']['results']), 'attribution': {},
+              'passive_controls': passive_controls(bars, fx),
               'qualification': 'NOT_QUALIFIED', 'native_execution_verified': False,
               'limitations': ['All history already studied; regression intercept is descriptive and not proof of alpha.',
                               'Closing exposure is not maximum intraday leverage; joint MDD uses daily curves.',
@@ -171,6 +208,10 @@ def main(argv=None):
             raise ValueError('complete audited baseline required')
         curve = canonical(row, bars, fx, 10000, name)
         report['attribution'][name] = attribution(row, curve, btc_returns, 10000, fx)
+    spot_curve, perp_curve = canonical(spot, bars, fx, 10000, 'spot'), canonical(perp, bars, fx, 10000, 'perp')
+    _, spot_returns = daily_metrics([r['equity_cny'] for r in spot_curve], 10000)
+    _, perp_returns = daily_metrics([r['equity_cny'] for r in perp_curve], 10000)
+    report['daily_return_correlation_spot_perp'] = statistics.correlation(spot_returns, perp_returns)
     # Filled by fixed-account replay integration, deliberately no curve scaling.
     report['joint_fixed_capital'] = joint(inputs, bars, fx)
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -204,6 +245,21 @@ def joint(inputs, bars, fx):
                          sum(curve[i]['equity_usdt'] for curve in curves) for i in range(len(combined))),
                      'daily_equity_cny': combined})
     return rows
+
+
+def verify_joint_inputs(inputs):
+    metadata = [inputs['spot'], inputs['perp']['inputs'], inputs['spot_budgets']['inputs'], inputs['perp_budgets']['inputs']]
+    for key in ('fx_sha256', 'crowding_sha256'):
+        if any(not item.get(key) for item in metadata) or len({item[key] for item in metadata}) != 1:
+            raise ValueError('joint account ' + key + ' differs')
+    reference = [r['start_ms'] for r in inputs['perp']['results']['incumbent']['base']['sessions']]
+    if len(reference) != 795 or reference != [r['start_ms'] for r in inputs['spot']['results']['default-base']['sessions']]:
+        raise ValueError('complete baseline sessions differ')
+    for kind in ('spot', 'perp'):
+        for budget in ('2500', '5000', '7500'):
+            row = inputs[kind + '_budgets']['results'][budget]
+            if [r['start_ms'] for r in row['sessions']] != reference:
+                raise ValueError('budget sessions differ: ' + kind + '/' + budget)
 
 
 if __name__ == '__main__':

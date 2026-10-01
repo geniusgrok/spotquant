@@ -75,3 +75,28 @@ class NativeEvidenceTests(unittest.TestCase):
             path = root / 'manifest.json'
             path.write_text(json.dumps(manifest))
             self.assertFalse(check(path, package)['cases']['entry']['structural_evidence_present'])
+
+    def test_repeated_or_canceled_readbacks_cannot_inflate_protection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            _, manifest, record = self.fixture(Path(temporary))
+            record['events'][0]['response']['status'] = 'PARTIALLY_FILLED'
+            record['observed_position_btc'] = '0.02'
+            stop = {'symbol': 'BTCUSDT', 'orderId': 11, 'side': 'SELL',
+                    'status': 'NEW', 'type': 'STOP_LOSS', 'origQty': '0.01'}
+            for stamp in (1001, 1002):
+                record['events'].append({'observed_at_ms': stamp, 'endpoint': '/api/v3/order', 'response': dict(stop)})
+            with self.assertRaises(ValueError):
+                verify_case('partial_protection', record, manifest)
+            record['observed_position_btc'] = '0.01'
+            verify_case('partial_protection', record, manifest)
+            record['events'].append({'observed_at_ms': 1003, 'endpoint': '/api/v3/order',
+                                     'response': dict(stop, status='CANCELED')})
+            with self.assertRaises(ValueError):
+                verify_case('partial_protection', record, manifest)
+
+    def test_reserved_manifest_filename_cannot_overwrite_archive(self):
+        from research.native_acceptance import safe_file
+        with tempfile.TemporaryDirectory() as temporary:
+            for name in ('manifest.json', 'acceptance.json'):
+                with self.assertRaises(ValueError):
+                    safe_file(Path(temporary), name)

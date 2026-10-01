@@ -40,7 +40,7 @@ def identity(value):
 
 
 def safe_file(root, name):
-    if not isinstance(name, str) or Path(name).name != name:
+    if not isinstance(name, str) or Path(name).name != name or name in ('manifest.json', 'acceptance.json'):
         raise ValueError('native artifact must be a sibling file')
     path = root / name
     if path.is_symlink() or not path.is_file():
@@ -67,6 +67,13 @@ def verify_case(name, record, manifest):
         if response.get('symbol') != 'BTCUSDT' or not identity(response.get('orderId', response.get('algoId'))):
             raise ValueError('BTCUSDT native order identity required')
     rows = [event['response'] for event in events]
+    latest = {}
+    for event in sorted(events, key=lambda e: e['observed_at_ms']):
+        response = event['response']
+        # Native order and algo namespaces are distinct. Repeated readbacks are
+        # observations of one protection, not additional sell quantities.
+        key = ('order', str(int(response['orderId']))) if 'orderId' in response else ('algo', str(int(response['algoId'])))
+        latest[key] = response
     fills = [r for r in rows if r.get('status') == 'FILLED' and number(r.get('executedQty', 0), True) > 0]
     if name == 'entry' and not any(r.get('side') == 'BUY' for r in fills):
         raise ValueError('filled native entry missing')
@@ -74,12 +81,12 @@ def verify_case(name, record, manifest):
         raise ValueError('filled native reduction missing')
     if name == 'partial_protection':
         partial = [r for r in rows if r.get('status') == 'PARTIALLY_FILLED']
-        stops = [r for r in rows if r.get('status') == 'NEW' and 'STOP' in r.get('type', '') and r.get('side') == 'SELL']
+        stops = [r for r in latest.values() if r.get('status', r.get('algoStatus')) == 'NEW' and 'STOP' in r.get('type', r.get('orderType', '')) and r.get('side') == 'SELL']
         held = number(record.get('observed_position_btc'), True)
         protected = sum((held if r.get('closePosition') is True else number(r.get('origQty', 0)) for r in stops), Decimal(0))
         if not partial or not stops or protected < held:
             raise ValueError('partial-fill native protection does not cover observed BTC')
-        if manifest['project'] == 'coinquant' and not any(r.get('type') == 'TAKE_PROFIT_MARKET' and r.get('status') == 'NEW' and r.get('closePosition') is True for r in rows):
+        if manifest['project'] == 'coinquant' and not any(r.get('type', r.get('orderType')) == 'TAKE_PROFIT_MARKET' and r.get('status', r.get('algoStatus')) == 'NEW' and r.get('closePosition') is True for r in latest.values()):
             raise ValueError('full-position native take profit missing')
     if name == 'restart':
         before, after = record.get('before_client_ids'), record.get('after_client_ids')
