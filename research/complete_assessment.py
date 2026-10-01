@@ -53,9 +53,15 @@ def regression(account, market):
     for lag in range(1, min(7, n - 1) + 1):
         variance += 2 * (1 - lag / 8) * sum(influence[i] * influence[i - lag] for i in range(lag, n))
     variance = max(0, variance) * n / (n - 2)
+    standard_error = math.sqrt(variance)
     return {'beta_btc': beta, 'intercept_daily': intercept,
             'residual_arithmetic_annualized': 365.25 * intercept,
-            'intercept_hac7_t_descriptive': intercept / math.sqrt(variance) if variance else None,
+            'intercept_hac7_t_descriptive': intercept / standard_error if variance else None,
+            'intercept_hac7_standard_error_daily': standard_error,
+            'residual_arithmetic_annualized_normal95_descriptive': [
+                365.25 * (intercept - 1.96 * standard_error),
+                365.25 * (intercept + 1.96 * standard_error)],
+            'uncertainty_limit': 'Descriptive fixed seven-lag normal approximation; no selection adjustment or prospective claim.',
             'residual_volatility_annualized': statistics.stdev(errors) * math.sqrt(365.25),
             'days': n, 'prospective_alpha_proven': False}
 
