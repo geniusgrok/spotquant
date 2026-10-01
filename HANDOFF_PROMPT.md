@@ -4,7 +4,7 @@ Third-round entry: `evidence/third-round-20261001/RESULT.md`. P4 owner Demo
 and synthetic replay now share session.run/cycle and execution.Lifecycle.
 Durable allocations resolve multiple/equal groups; unknown sent identities
 never resubmit; prepared reductions and stop replacements recover across days.
-105 offline tests and the 17-case replay pass. Native exports and concurrent
+107 offline tests and the 18-case replay pass. Native exports and concurrent
 account collection are implemented; actual account observations remain zero.
 No native Demo/Live closure or 30-day proof. Public run --execute stays blocked.
 P4 daily economic replay is unchanged: 78.49%/31.40%, NOT_MET; it is not a
