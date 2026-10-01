@@ -12,7 +12,8 @@
 python -m research.prepare_inputs --futures-input evidence/complete-delivery-20261001/futures.json --out /tmp/crowding-NEW.json
 mkdir -p /workspace/scratch/spotquant-complete-tmp
 TMPDIR=/workspace/scratch/spotquant-complete-tmp python -m research.complete_spot --crowding /tmp/crowding-NEW.json --workers 2 --out /tmp/spot-accounts-NEW.json
-TMPDIR=/workspace/scratch/spotquant-complete-tmp python -m research.portfolio_spot --crowding /tmp/crowding-NEW.json --out /tmp/spot-budgets-NEW.json
+TMPDIR=/workspace/scratch/spotquant-complete-tmp python -m research.portfolio_spot --candidate default --crowding /tmp/crowding-NEW.json --out /tmp/spot-baseline-budgets-NEW.json
+TMPDIR=/workspace/scratch/spotquant-complete-tmp python -m research.portfolio_spot --candidate consensus --crowding /tmp/crowding-NEW.json --out /tmp/spot-consensus-budgets-NEW.json
 ```
 
 在Coin目录使用同一特征：
@@ -32,20 +33,20 @@ worker加一个预算进程应预留至少20GB。TMPDIR只改变研究临时路�
 ## 收益与联合资金
 
 2500/5000/7500元每个账户实际重新运行，不缩放10k曲线；联合总额始终
-10000元，无追加、再平衡或转账。不能把两个10k账户相加当10k投资组合。
+10000元，无追加、再平衡或转账。不能把两个10k账户相加当10k投资组合。当前默认是已通过四场景采用规则的P4共识仓位；研究default仍冻结原等份基线。联合报告分别列基线与选中策略的完整五种配比，不能混用不同策略预算和10k末端。
 
 `complete_assessment`校验实际FX/spot archives及各账户冻结输入、795会话，
 给出USDT/CNY BTC回归、下跌日beta、费用/资金费、年收益、历史ES5%、
 每日水下时长及敞口。OLS截距和HAC7统计仅描述已研究历史，包含非线性
-择时影响，不证明未来alpha。日终敞口不是最大日内杠杆，联合日終MDD不是
-连续MDD。cash/buyhold/12月DCA明确是固定日开盘、分数BTC经济基线，
+择时影响，不证明未来alpha。日终敞口不是最大日内杠杆，联合日终MDD不是
+连续MDD。2026年收益只覆盖至9月19日，未完整一年；非零BTC持仓日数包含残币，另列名义至少5USDT日数，不能解释为信号次数。cash/buyhold/12月DCA、固定25/50/75%BTC及prior20return RMS的40%年波动上限策略，明确是固定日开盘、分数BTC经济基线，
 不是实际session账户。两项目都持BTC，项目数量不意味着资产分散。
 
 ## 成交和恢复
 
 Spot将完整fills保存到SQLite，一天重叠按fillID去重，同毫秒新ID不丢失；
 改变过往成交、超期缺口或无法解释的余额仍Unknown。已归属卖出的不足
-步长残币保留真实分仓数量，合法新入场合并数量/成本并重建fill高点；
+步长残币保留真实分仓数量。合并全卖的比例分配可能留下略大于一个数量步长但名义不足5USDT的残币；仅经完整终态、确为全组取整卖出、逐订单实际SELL累计及严格小额门证明后，战略视图才视为平仓，真实拥有数量不消失。晚到终态回读回滚事务等待恢复，刻意减仓/部分成交/旧状态歧义不按平仓处理。合法新入场合并数量/成本并重建fill高点；
 残币不能挂保护时不称已覆盖。旧状态缺可靠归属时不自动接管或推断转账。
 
 每次会话在固定state_dir/sessions保存不可覆盖报告及在线backup。先验证：
@@ -92,3 +93,24 @@ false、NOT_QUALIFIED、不开放权限。标签是所有者声明，hash不能�
 和缺日不补造。历史/合成记录或工程耗时不计实际30自然日；本轮native案例
 0、实际观察0日，不能用一次离线交付让日历经过30天。代理本轮没有调用
 凭据、账户、订单、转账或账户设置。
+
+## 原始测量与当前默认的区别
+
+现货完整集合保留每项实际测量源：16项原等份/减仓/过滤结果来自2d1e5fe，
+原共识4项失败原件不参与选择；替代共识4项来自修复源1fca802，
+实际共识3预算来自7b4b44e（相同Python源码摘要）。详细完整40位SHA见
+`evidence/complete-delivery-20261001/RESULT.md`。零影响证明针对旧源与
+已审查修复文件绑定，`assemble_spot`还验证不可变测量Git树。当前默认
+抽取同一共识函数，研究基线显式consensus=False；独立2592组可执行
+委托/决策/保护等价性验证通过，不伪称旧16账户由当前源重新测量。
+
+复查原始组合时可在隔离Git worktree的7b4b44e完整快照中使用已保留的
+原件、修复4项和证明；该证明刻意拒绝不同执行文件，不能在新默认源上
+重新贴标签。若重新研究，直接在干净当前源完整运行全部20项、基线及
+共识各3预算，使用新输出名并重新计算源摘要。
+
+当前运行源零案例模板是`spot-native-template-consensus.json`，验收
+`spot-native-acceptance-consensus.json`，合成演练为`recovery-drill-consensus`。
+早期`*-final`文件来自旧源，只作历史。源摘要变化后应在私人目录生成
+新模板，不修改旧验收输出。所有模板仍留空账户和资金，零原生/零观察，
+不会由工程脚本自动启动Demo。
