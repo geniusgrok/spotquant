@@ -2,8 +2,9 @@ from decimal import Decimal as D
 import json
 from types import SimpleNamespace
 from unittest import TestCase
+from unittest.mock import patch, Mock
 
-from spotquant.binance import Binance
+from spotquant.binance import Binance, _default_opener
 from spotquant.snapshot import export
 from spotquant.types import Blocked, Unknown
 from research.operations import combined
@@ -11,6 +12,35 @@ from tests.test_binance import Script, KEY, SECRET
 
 
 class ExportTests(TestCase):
+    def test_default_http_transport_preserves_explicit_demo_methods(self):
+        response = Mock(status=200)
+        response.read.return_value = b'{}'
+        response.headers.items.return_value = []
+        opener = Mock()
+        opener.open.return_value.__enter__ = Mock(return_value=response)
+        opener.open.return_value.__exit__ = Mock(return_value=False)
+        with patch('spotquant.binance.urllib.request.build_opener', return_value=opener):
+            for method in ('POST', 'DELETE'):
+                _default_opener(method, 'https://demo-api.binance.com/api/v3/order', {})
+                self.assertEqual(opener.open.call_args.args[0].get_method(), method)
+
+    def test_changing_balances_during_order_scan_are_unknown(self):
+        script = Script()
+        account_reads = 0
+        def transport(method, url, headers):
+            nonlocal account_reads
+            status, body = script(method, url, headers)
+            if '/api/v3/account' in url:
+                account_reads += 1
+                if account_reads > 1:
+                    payload = json.loads(body)
+                    payload['balances'][1]['free'] = '20'
+                    body = json.dumps(payload).encode()
+            return status, body
+        venue = Binance(key=KEY, secret=SECRET, environment='demo', opener=transport)
+        with self.assertRaises(Unknown):
+            venue.snapshot('10001')
+
     def test_read_only_export_includes_locked_cash_and_uses_fresh_price(self):
         script = Script()
         def transport(method, url, headers):

@@ -16,10 +16,17 @@ def export(config, venue):
         raise Unknown('account and price collection exceeded five seconds')
     cash = D(snapshot['usdt_free']) + D(snapshot['usdt_locked'])
     qty = D(snapshot['btc'])
+    stops = [row for row in snapshot['orders'] if row['side'] == 'SELL' and row['type'] == 'STOP_LOSS'
+             and row['status'] in ('NEW', 'PARTIALLY_FILLED') and D(row.get('stop_price', '0')) > 0]
+    protected = sum((max(D(0), D(row['orig_qty']) - D(row['executed_qty'])) for row in stops), D(0))
     return serial({'known': True, 'symbol': 'BTCUSDT', 'market': 'spot',
                    'environment': config.environment, 'account_uid': config.account_uid,
                    'observed_at_ms': started, 'collected_until_ms': ended,
                    'equity_usdt': cash + qty * price, 'cash_usdt': cash,
                    'btc_position': qty, 'btc_price_usdt': price,
+                   'available_usdt': snapshot['usdt_free'],
+                   'native_stop_quantity_btc': protected,
+                   'btc_without_native_stop': max(D(0), qty - protected),
+                   'protection_observation': 'quantity only; ownership and trigger execution are not verified',
                    'orders': snapshot['orders'], 'write_attempted': False,
                    'native_execution_verified': False})

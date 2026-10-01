@@ -1,4 +1,4 @@
-"""One manually started read-only session. No order is submitted."""
+"""One bounded session: read-only by default, explicit owner Demo execution."""
 from __future__ import annotations
 
 import time
@@ -23,7 +23,7 @@ RECORDED_LIMITS = {
     'adverse_exit': 'next_open',
     'adverse_loss_capped': False,
     'path_convention': 'stop_from_prior_peak',
-    'execution': 'not_implemented',
+    'execution': 'shared_session_lifecycle; native Demo unverified; live blocked',
     'selection': 'full_sample',
     'sleeves': list(SLEEVES),
     'economic_targets_met': False,
@@ -53,10 +53,15 @@ def cycle(venue, state: State, config, *, execute=False) -> dict:
             state._execution_owners = lifecycle.owners()
         current = _cycle(venue, state, config, lifecycle=lifecycle)
         if not lifecycle or not lifecycle.act(current['model_preview'], current['market_through']):
-            return dict(current, write_attempted=execute,
+            return dict(current, write_attempted=_writes(venue),
                         status='offline_execution' if getattr(venue, 'offline', False) and execute else
                         'demo_execution' if execute else 'read_only')
     raise Unknown('bounded execution cycle exhausted; reconcile on the next cycle')
+
+
+def _writes(venue):
+    return bool(getattr(venue, 'write_attempted', False)
+                or len(getattr(venue, 'sent', ())) > getattr(venue, '_session_sent_start', 0))
 
 
 def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
@@ -108,7 +113,9 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
 
 
 def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sleep, stopping=lambda: False):
-    """Observe until the deadline or Ctrl-C. Nothing is sent to the order API."""
+    """Run until the deadline or Ctrl-C; execution needs the explicit Demo gate."""
+    venue.write_attempted = False
+    venue._session_sent_start = len(getattr(venue, 'sent', ()))
     started = monotonic()
     deadline = started + config.session_seconds
     report = {
@@ -176,7 +183,15 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
             if report['pending_intents']:
                 report.update(status='unknown', reason='Durable execution requires recovery', observation_current=False)
                 clear_stale(report)
-            report['write_attempted'] = execute
+            import hashlib
+            from pathlib import Path
+            digest = hashlib.sha256()
+            for path in sorted(Path(__file__).parent.glob('*.py')):
+                digest.update(path.name.encode() + b'\0' + path.read_bytes() + b'\0')
+            report.update(execution_code_sha256=digest.hexdigest(), account_uid=config.account_uid,
+                          environment=config.environment, capital_limit_usdt=str(config.capital_limit),
+                          execution_enabled=execute, native_execution_verified=False)
+            report['write_attempted'] = _writes(venue)
             report['session_ended'] = True
             report['observation_current'] = False
             report['stops_while_down'] = 'this process does not amend a stop while it is stopped'

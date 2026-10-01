@@ -1,8 +1,8 @@
-"""Read-only Binance spot BTCUSDT adapter. GET requests only.
+"""Default read-only Binance spot BTCUSDT adapter; explicit Demo lifecycle.
 
 Live host ``api.binance.com``. Demo host ``demo-api.binance.com``. The API key
-is sent only to that configured host. Redirects are refused. ``place_order``
-cannot be turned into a request.
+is sent only to that configured host. Redirects are refused. Live writes stay
+blocked; Demo writes require a dedicated UID and capital ceiling.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _default_opener(method: str, url: str, headers: dict):
-    request = urllib.request.Request(url, headers=headers, method='GET')
+    request = urllib.request.Request(url, headers=headers, method=method)
     opener = urllib.request.build_opener(_NoRedirect)
     try:
         with opener.open(request, timeout=10) as response:
@@ -57,9 +57,11 @@ class Binance:
         self.secret = secret
         self.environment = environment
         self.capital_limit = capital_limit
+        self.write_attempted = False
         if demo_execution_uid is not None and (environment != 'demo' or capital_limit is None
                 or number(capital_limit, positive=True) <= 0
-                or not isinstance(demo_execution_uid, str) or not demo_execution_uid.isdigit()):
+                or not isinstance(demo_execution_uid, str) or not demo_execution_uid.isascii()
+                or not demo_execution_uid.isdigit() or int(demo_execution_uid) <= 0):
             raise Blocked('Demo execution needs explicit UID and capital ceiling')
         self.demo_execution_uid = demo_execution_uid
         self.execution_authorized = demo_execution_uid is not None
@@ -94,6 +96,8 @@ class Binance:
     def submit(self, identity, payload):
         if not self.execution_authorized:
             raise Blocked('Demo execution is not explicitly enabled')
+        if not isinstance(identity, str) or not identity.startswith('sq-'):
+            raise Blocked('Demo order requires a stable Spotquant identity')
         if self.snapshot(self.demo_execution_uid)['can_trade'] is not True:
             raise Blocked('Demo account cannot trade')
         params = dict(payload, newClientOrderId=identity, newOrderRespType='FULL')
@@ -101,9 +105,21 @@ class Binance:
             raise Blocked('unsupported Demo order fields')
         if payload.get('symbol') != 'BTCUSDT' or payload.get('type') not in ('MARKET', 'STOP_LOSS'):
             raise Blocked('unsupported Demo market or order type')
+        if payload.get('side') not in ('BUY', 'SELL'):
+            raise Blocked('invalid Demo order side')
+        buying = payload['side'] == 'BUY'
+        sizing = 'quoteOrderQty' if buying else 'quantity'
+        if number(payload.get(sizing), positive=True) <= 0 or ('quantity' if buying else 'quoteOrderQty') in payload:
+            raise Blocked('invalid Demo order sizing')
+        if buying and (payload['type'] != 'MARKET' or number(payload[sizing]) > self.capital_limit):
+            raise Blocked('Demo buy exceeds its configured cash ceiling')
+        if payload['type'] == 'STOP_LOSS' and (buying or number(payload.get('stopPrice'), positive=True) <= 0):
+            raise Blocked('only sell-side Demo stop protection is supported')
         return self._execution_order(self._get('/api/v3/order', params, signed=True, method='POST'))
 
     def cancel(self, identity):
+        if not isinstance(identity, str) or not identity.startswith('sq-'):
+            raise Blocked('Demo cancellation requires its original Spotquant identity')
         return self._execution_order(self._get('/api/v3/order',
             {'symbol': 'BTCUSDT', 'origClientOrderId': identity}, signed=True, method='DELETE'))
 
@@ -135,6 +151,11 @@ class Binance:
         if not isinstance(raw_orders, list):
             raise Unknown('open orders response is not a list')
         orders = [_order(row) for row in raw_orders]
+        after = self._get('/api/v3/account', signed=True)
+        if (not isinstance(after, dict) or str(after.get('uid')) != uid
+                or after.get('balances') != account['balances']
+                or after.get('canTrade') != account.get('canTrade')):
+            raise Unknown('account changed during bounded spot observation')
         btc = D(0)
         usdt_free = D(0)
         usdt_locked = D(0)
@@ -352,6 +373,8 @@ class Binance:
         if not url.startswith(self.base + '/'):
             raise Blocked('refusing a request outside the configured Binance host')
         self._check_deadline()
+        if method != 'GET':
+            self.write_attempted = True
         opened = self._opener(method, url, headers)
         if not isinstance(opened, tuple) or len(opened) not in (2, 3):
             raise Unknown('Binance response is incomplete')

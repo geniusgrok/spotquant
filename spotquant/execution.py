@@ -99,6 +99,7 @@ class Lifecycle:
         buying = raw.get('side') == 'BUY'
         weights = {str(w): '1' if buying else positions[str(w)]['qty'] for w in group}
         payload = serial({'order': raw, 'sleeves': group, 'weights': weights,
+                          'signal_ms': bar,
                           'repair': {str(w): bool((follows.get(str(w)) or {}).get('repair')) for w in group}})
         # One market intent per signal and allocation; stop revisions include their parameters.
         operation = raw['side'] + '-' + raw['type'] + '-' + ','.join(map(str, group))
@@ -154,6 +155,23 @@ class Lifecycle:
         positions = self.state.get('positions') or {}
         follows = self.state.get('follows') or {}
         resting = [row for row in self.rows() if row[2] == 'resting']
+        for identity, payload, status, _ in self.rows():
+            if status != 'prepared' or payload['order']['type'] != 'MARKET':
+                continue
+            if payload['order']['side'] == 'BUY':
+                if payload.get('signal_ms') != bar:
+                    self.save(identity, payload, 'settled', {'not_sent': True, 'reason': 'entry signal expired'})
+                continue
+            held = sum((D((positions.get(str(w)) or {}).get('qty', '0')) for w in payload['sleeves']), D(0))
+            if not held:
+                self.save(identity, payload, 'settled', {'not_sent': True, 'reason': 'owned fills already closed sleeves'})
+                continue
+            if number(payload['order']['quantity']) > held:
+                raise Unknown('prepared reduction exceeds reconciled holdings; original identity is retained')
+            for stop_id, stop, _, _ in resting:
+                if set(stop['sleeves']) & set(payload['sleeves']):
+                    self.cancel(stop_id)
+            return self.send(identity)
         sells = [order for order in decision['orders'] if order['side'] == 'SELL']
         for order in sells:
             identity = self.prepare(order, bar, positions, follows)
@@ -184,9 +202,12 @@ class Lifecycle:
             if order.get('placeable') is False:
                 raise Blocked('desired protection fails venue filters')
             raw = {key: order[key] for key in FIELDS if key in order}
-            matching = [row for row in resting if row[1]['order'] == raw
+            matching = [row for row in self.rows() if row[2] in ('resting', 'prepared') and row[1]['order'] == raw
                         and row[1]['sleeves'] == sorted(order['sleeves'])]
             wanted.append(matching[0][0] if matching else self.prepare(order, bar, positions, follows))
+        for identity, payload, status, _ in self.rows():
+            if status == 'prepared' and payload['order']['type'] == 'STOP_LOSS' and identity not in wanted:
+                self.save(identity, payload, 'settled', {'not_sent': True, 'reason': 'protection preparation superseded'})
         # Locked spot coins require confirmed cancellation before replacement. This gap
         # is measured explicitly; native Demo qualification must verify its behavior.
         active = {row[0] for row in resting}

@@ -1,0 +1,8 @@
+{
+  "account_uid": "",
+  "state_dir": "~/.spotquant/binance-btcusdt-spot-demo",
+  "session_seconds": 300,
+  "poll_seconds": 5,
+  "environment": "demo",
+  "capital_limit_usdt": "100"
+}

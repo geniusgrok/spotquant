@@ -1,4 +1,4 @@
-"""One Binance spot observation entrypoint. Unqualified execution stays blocked."""
+"""Binance spot read-only entrypoint and bounded owner-operated Demo check."""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +21,7 @@ CREDENTIALS = {
 
 
 def connect(config, *, demo_execute=False):
-    """Read-only adapter. Demo credentials never go to the live host."""
+    """Default read-only adapter. Demo credentials go only to the Demo host."""
     names = CREDENTIALS[config.environment]
     key, secret = (os.environ.get(name, '') for name in names)
     if not key or not secret:
@@ -89,7 +89,7 @@ def observe(config_path) -> dict:
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog='spotquant',
-        description='Spotquant Binance BTCUSDT spot observation. Execution stays blocked.',
+        description='BTCUSDT spot observation and owner Demo check. Live execution stays blocked.',
     )
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ('status', 'run'):

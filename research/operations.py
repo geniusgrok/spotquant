@@ -9,7 +9,7 @@ import uuid
 import subprocess
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
 
@@ -22,6 +22,8 @@ from spotquant.types import Blocked, number
 
 
 def combined(snapshots, now_ms, valuation_price=None):
+    if len(snapshots) != 2 or {row.get('market') for row in snapshots} != {'spot', 'perpetual'}:
+        raise ValueError('provide exactly one spot and one perpetual account snapshot')
     if valuation_price is None and len(snapshots) == 2 and all(
             key in row for row in snapshots for key in
             (('cash_usdt',) if row.get('market') == 'spot' else ('wallet_usdt', 'entry_price_usdt'))):
@@ -67,46 +69,92 @@ def combined(snapshots, now_ms, valuation_price=None):
             'btc_net': str(net), 'btc_gross': str(gross), 'net_notional_usdt': str(net * price),
             'gross_notional_usdt': str(gross * price), 'gross_exposure_over_equity': str(gross * price / equity),
             'linear_pnl_if_btc_down_10pct_usdt': str(-D('.1') * price * net),
-            'accounts': [dict(zip(('environment', 'uid', 'market'), identity)) for identity in identities],
+            'accounts': [dict(dict(zip(('environment', 'uid', 'market'), identity)),
+                         equity_usdt=str(account_equity), btc_position=str(qty),
+                         **{key: row[key] for key in ('available_usdt', 'cash_usdt',
+                             'native_stop_quantity_btc', 'btc_without_native_stop',
+                             'native_full_position_protected', 'possible_entry_remainders',
+                             'liquidation_price_usdt', 'liquidation_buffer_fraction') if key in row})
+                         for identity, account_equity, qty, row in zip(identities, equities, quantities, snapshots)],
             'snapshot_times_ms': stamps, 'btc_price_usdt': str(price),
             'inputs_verified_remotely': False, 'write_attempted': False,
             'limitations': 'Supplied snapshots; equity includes PnL, not added collateral. Linear stress omits liquidation, funding and exit costs.',
             'new_risk_authorized': False}
 
 
+def account_days(records, report):
+    """Count actual collection dates for this account pair in these saved reports."""
+    today = datetime.fromisoformat(report['recorded_date_utc']).date()
+    records = [row for row in records if row.get('collection') == 'native_read_only_exporters'
+               and row.get('configured_accounts') == report['configured_accounts']
+               and row.get('recorded_date_utc', '9999') <= today.isoformat()]
+    attempted = {datetime.fromisoformat(row['recorded_date_utc']).date() for row in records}
+    valid = {datetime.fromisoformat(row['recorded_date_utc']).date() for row in records
+             if row.get('status') == 'read_only' and row.get('account_observed') is True}
+    span = (today - min(attempted)).days + 1
+    window = {today - timedelta(days=i) for i in range(min(span, 30))}
+    return {'calendar_days_since_first_attempt': span, 'days_with_valid_account_observation': len(valid),
+            'missing_or_failed_days_last_30': len(window - valid),
+            'thirty_day_observation_complete': span >= 30 and window <= valid,
+            'native_execution_proven': False, 'profitability_proven': False}
+
+
 def collect(spot_config, perp_config, perp_repo, output):
     """Collect both native read-only exports concurrently, with no order flags."""
     if output.exists():
         raise ValueError('refusing to overwrite an account observation')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    scope = []
+    for market, path in (('spot', spot_config), ('perpetual', perp_config)):
+        config = json.loads(path.read_bytes())
+        scope.append({'market': market, 'account_uid': config.get('account_uid'),
+                      'environment': config.get('environment', 'live')})
+    report = {'status': 'unknown', 'write_attempted': False, 'new_risk_authorized': False,
+              'collection': 'native_read_only_exporters', 'account_observed': False,
+              'recorded_date_utc': iso(int(time.time() * 1000))[:10], 'configured_accounts': scope,
+              'native_execution_verified': False}
     with tempfile.TemporaryDirectory(prefix='btc-read-only-') as temporary:
         files = [Path(temporary) / 'spot.json', Path(temporary) / 'perpetual.json']
         commands = [([sys.executable, '-m', 'spotquant', 'snapshot', '--config', str(spot_config.resolve()),
                       '--out', str(files[0])], Path(__file__).resolve().parents[1]),
                     ([sys.executable, '-m', 'coinquant', 'snapshot', '--config', str(perp_config.resolve()),
                       '--out', str(files[1])], perp_repo)]
-        jobs = [subprocess.Popen(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                for command, root in commands]
+        jobs = []
         try:
+            for command, root in commands:
+                jobs.append(subprocess.Popen(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE))
             for job in jobs:
                 stdout, _stderr = job.communicate(timeout=45)
                 if job.returncode:
-                    payload = json.loads(stdout)
+                    try:
+                        payload = json.loads(stdout)
+                    except (ValueError, UnicodeError):
+                        payload = {'reason': 'exporter returned no valid JSON'}
                     raise ValueError('read-only account collection failed: ' + payload.get('reason', 'unknown'))
             blobs = [path.read_bytes() for path in files]
-            report = combined([json.loads(blob) for blob in blobs], int(time.time() * 1000))
-            report.update(collection='native_read_only_exporters', account_observed=True,
-                          recorded_date_utc=iso(int(time.time() * 1000))[:10],
+            report.update(combined([json.loads(blob) for blob in blobs], int(time.time() * 1000)))
+            report.update(account_observed=True,
                           input_sha256=[hashlib.sha256(blob).hexdigest() for blob in blobs],
                           snapshots=[json.loads(blob) for blob in blobs])
-            with output.open('x') as stream:
-                json.dump(report, stream, indent=2)
-                stream.write('\n')
-            return report
+        except (OSError, ValueError, KeyError, TypeError, Blocked, subprocess.TimeoutExpired) as exc:
+            report.update(status='unknown', reason='account collection timed out' if isinstance(exc, subprocess.TimeoutExpired)
+                          else str(exc), account_observed=False)
         finally:
             for job in jobs:
                 if job.poll() is None:
                     job.kill()
                 job.communicate()
+    prior = []
+    for path in output.parent.glob('*.json'):
+        try:
+            prior.append(json.loads(path.read_text()))
+        except (OSError, ValueError):
+            continue
+    report['operations'] = account_days([*prior, report], report)
+    with output.open('x') as stream:
+        json.dump(report, stream, indent=2, allow_nan=False)
+        stream.write('\n')
+    return report
 
 
 def observe(market, directory, extra=()):

@@ -27,6 +27,44 @@ def add_day(venue, close, high=None):
 
 
 class P4ExecutionTests(TestCase):
+    def test_prepared_sale_recovers_after_a_new_daily_bar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self.entered(directory)
+            add_day(venue, '97')
+            cancel = venue.cancel
+            def crash(identity):
+                cancel(identity)
+                raise KeyboardInterrupt
+            venue.cancel = crash
+            run_day(config, venue)
+            with State(directory, config.scope) as state:
+                prepared = state.db.execute("SELECT id FROM intents WHERE status='prepared' AND payload LIKE '%MARKET%'").fetchone()[0]
+            add_day(venue, '96')
+            venue.cancel = cancel
+            result = run_day(config, venue)
+            self.assertEqual(result['errors'], [])
+            self.assertIn(prepared, venue.orders)
+            with State(directory, config.scope) as state:
+                self.assertFalse(state.pending())
+
+    def test_prepared_stop_replacement_recovers_after_a_new_daily_bar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self.entered(directory)
+            add_day(venue, '103', '110')
+            cancel = venue.cancel
+            def crash(identity):
+                cancel(identity)
+                raise KeyboardInterrupt
+            venue.cancel = crash
+            run_day(config, venue)
+            add_day(venue, '104', '112')
+            venue.cancel = cancel
+            result = run_day(config, venue)
+            self.assertEqual(result['errors'], [])
+            self.assertTrue(any(row['status'] == 'NEW' for row in venue.orders.values()))
+            with State(directory, config.scope) as state:
+                self.assertFalse(state.pending())
+
     def test_unconfirmed_protection_stays_unknown_on_subsequent_sessions(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Config('1', directory, 1, 1, 'demo', '1000')
