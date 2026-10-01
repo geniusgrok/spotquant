@@ -6,7 +6,7 @@ import hashlib
 import json
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal as D
 from pathlib import Path
 
@@ -15,7 +15,7 @@ from research.market import file_digest, load_daily
 from research.rebuild import iso, source_identity
 from spotquant.model import DAY
 from spotquant.state import State
-from spotquant.types import number
+from spotquant.types import Blocked, number
 
 
 def combined(snapshots, now_ms):
@@ -113,12 +113,16 @@ def main(argv=None):
     summary = sub.add_parser('combine')
     summary.add_argument('snapshots', type=Path, nargs=2)
     args = parser.parse_args(argv)
-    if args.command == 'observe':
-        report = observe(args.market, args.state, args.extra)
-    else:
-        blobs = [path.read_bytes() for path in args.snapshots]
-        report = combined([json.loads(blob) for blob in blobs], int(time.time() * 1000))
-        report['input_sha256'] = [hashlib.sha256(blob).hexdigest() for blob in blobs]
+    try:
+        if args.command == 'observe':
+            report = observe(args.market, args.state, args.extra)
+        else:
+            blobs = [path.read_bytes() for path in args.snapshots]
+            report = combined([json.loads(blob) for blob in blobs], int(time.time() * 1000))
+            report['input_sha256'] = [hashlib.sha256(blob).hexdigest() for blob in blobs]
+    except (OSError, ValueError, KeyError, TypeError, Blocked) as exc:
+        report = {'status': 'unknown', 'reason': str(exc), 'write_attempted': False,
+                  'new_risk_authorized': False}
     print(json.dumps(report, indent=2, allow_nan=False))
     return 2 if report['status'] == 'unknown' else 0
 

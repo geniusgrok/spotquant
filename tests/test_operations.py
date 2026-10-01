@@ -1,6 +1,9 @@
 from unittest import TestCase
+from unittest.mock import patch
+from pathlib import Path
+import tempfile
 
-from research.operations import combined
+from research.operations import combined, observe
 
 
 def snapshot(market, qty):
@@ -21,3 +24,18 @@ class OperationsTests(TestCase):
         for override in ({'known': False}, {'observed_at_ms': 1}, {'btc_price_usdt': '101'}, {'environment': 'live'}):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 combined([snapshot('spot', '1'), dict(snapshot('perpetual', '1'), **override)], 1000001)
+
+    def test_two_attempts_on_one_real_day_do_not_manufacture_two_forward_days(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('research.operations.time.time', return_value=1790856000), \
+                patch('research.operations.source_identity', return_value={'dirty': False}), \
+                patch('research.operations.load_daily', return_value=[(1790726400000,)]), \
+                patch('research.operations.ledger', return_value={'through': '2026-09-30'}), \
+                patch('research.operations.file_digest', return_value='fixture'):
+            root = Path(directory)
+            first = observe(root / 'market', root / 'state')
+            second = observe(root / 'market', root / 'state')
+            self.assertEqual(first['recorded_date_utc'], '2026-10-01')
+            self.assertEqual(second['operations']['days_with_valid_observation'], 1)
+            self.assertFalse(second['operations']['thirty_day_observation_complete'])
+            self.assertEqual(len(list((root / 'state/observations').glob('*.json'))), 2)
