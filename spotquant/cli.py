@@ -104,6 +104,7 @@ def main(argv=None):
     demo = commands.add_parser('demo-check', help='Owner-operated bounded Demo execution; does not qualify live')
     demo.add_argument('--config', required=True)
     demo.add_argument('--execute', action='store_true')
+    demo.add_argument('--authorize-uid', help='Repeat the dedicated Demo account UID for this invocation')
     args = parser.parse_args(argv)
     try:
         if args.command == 'run' and args.execute:
@@ -120,6 +121,8 @@ def main(argv=None):
             config = load(args.config)
             if config.environment != 'demo' or config.capital_limit is None:
                 raise Blocked('Demo validation requires Demo UID, separate persistent state and capital ceiling')
+            if args.execute and args.authorize_uid != config.account_uid:
+                raise Blocked('Demo execution requires matching --authorize-uid')
             report = run(config, connect(config, demo_execute=args.execute), execute=args.execute)
         elif args.command == 'status':
             report = observe(args.config)

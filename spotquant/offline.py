@@ -296,6 +296,7 @@ class P4Venue(OfflineVenue):
         lose_ack, self.lose_ack = self.lose_ack, False
         row = super().submit(identity, payload)
         row['orderId'] = len(self.orders)
+        row['clientOrderId'] = identity
         self._fill(row, before)
         if lose_ack:
             raise Unknown('offline acknowledgement lost')

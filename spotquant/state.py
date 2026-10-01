@@ -99,7 +99,8 @@ class State:
         return [
             dict(id=item_id, kind=kind, payload=json.loads(payload), status=status)
             for item_id, kind, payload, status in self.db.execute(
-                "SELECT id,kind,payload,status FROM intents WHERE status IN ('unknown','partial') ORDER BY updated")
+                "SELECT id,kind,payload,status FROM intents WHERE status IN "
+                "('unknown','partial','prepared','canceling') ORDER BY updated")
         ]
 
     def report(self, value: dict) -> None:

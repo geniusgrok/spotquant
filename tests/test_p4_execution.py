@@ -27,6 +27,19 @@ def add_day(venue, close, high=None):
 
 
 class P4ExecutionTests(TestCase):
+    def test_unconfirmed_protection_stays_unknown_on_subsequent_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            run_day(config, venue)
+            add_day(venue, '101')
+            run_day(config, venue)
+            add_day(venue, '102')
+            venue.reject_stop = True
+            for _ in range(2):
+                self.assertEqual(run_day(config, venue)['status'], 'unknown')
+            self.assertEqual(len([row for row in venue.orders.values() if row['type'] == 'MARKET']), 1)
+
     def entered(self, directory):
         config = Config('1', directory, 1, 1, 'demo', '1000')
         venue = venue_before_entry()

@@ -1,6 +1,5 @@
 """Normalized, fresh, read-only BTC account export."""
 from decimal import Decimal as D
-import time
 
 from .types import Unknown, number, serial
 
@@ -8,6 +7,8 @@ from .types import Unknown, number, serial
 def export(config, venue):
     started = int(venue.clock() * 1000)
     snapshot = venue.snapshot(config.account_uid)
+    if snapshot.get('other_assets'):
+        raise Unknown('other assets prevent a complete BTC/USDT account export')
     ticker = venue._get('/api/v3/ticker/price', {'symbol': 'BTCUSDT'}, signed=False)
     price = number(ticker['price'], positive=True)
     ended = int(venue.clock() * 1000)

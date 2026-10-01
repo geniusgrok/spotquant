@@ -41,6 +41,8 @@ class Lifecycle:
             row = self.venue.query(identity)
             if row is None:
                 raise Unknown('sent order is not confirmed; stable identity is never resubmitted')
+            if row.get('clientOrderId') != identity:
+                raise Unknown('native order identity differs from its durable intent')
             for key, value in payload['order'].items():
                 actual = row.get(key)
                 if key in ('quantity', 'quoteOrderQty', 'stopPrice'):
@@ -113,8 +115,12 @@ class Lifecycle:
     def send(self, identity):
         saved = next(row for row in self.rows() if row[0] == identity)
         _, payload, status, result = saved
+        if status == 'rejected':
+            raise Blocked('durable order was rejected; owner review is required')
         if status != 'prepared':
             self.recover()
+            if payload['order']['type'] == 'STOP_LOSS' and status == 'settled':
+                raise Unknown('desired protection is already terminal; no active coverage inferred')
             return False
         self.save(identity, payload, 'unknown', result)
         try:

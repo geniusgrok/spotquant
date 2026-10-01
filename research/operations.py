@@ -6,6 +6,9 @@ import hashlib
 import json
 import time
 import uuid
+import subprocess
+import sys
+import tempfile
 from datetime import datetime
 from decimal import Decimal as D
 from pathlib import Path
@@ -19,6 +22,10 @@ from spotquant.types import Blocked, number
 
 
 def combined(snapshots, now_ms, valuation_price=None):
+    if valuation_price is None and len(snapshots) == 2 and all(
+            key in row for row in snapshots for key in
+            (('cash_usdt',) if row.get('market') == 'spot' else ('wallet_usdt', 'entry_price_usdt'))):
+        valuation_price = next(row['btc_price_usdt'] for row in snapshots if row.get('market') == 'perpetual')
     if valuation_price is not None:
         price = number(valuation_price, positive=True)
         snapshots = [dict(row) for row in snapshots]
@@ -65,6 +72,41 @@ def combined(snapshots, now_ms, valuation_price=None):
             'inputs_verified_remotely': False, 'write_attempted': False,
             'limitations': 'Supplied snapshots; equity includes PnL, not added collateral. Linear stress omits liquidation, funding and exit costs.',
             'new_risk_authorized': False}
+
+
+def collect(spot_config, perp_config, perp_repo, output):
+    """Collect both native read-only exports concurrently, with no order flags."""
+    if output.exists():
+        raise ValueError('refusing to overwrite an account observation')
+    with tempfile.TemporaryDirectory(prefix='btc-read-only-') as temporary:
+        files = [Path(temporary) / 'spot.json', Path(temporary) / 'perpetual.json']
+        commands = [([sys.executable, '-m', 'spotquant', 'snapshot', '--config', str(spot_config.resolve()),
+                      '--out', str(files[0])], Path(__file__).resolve().parents[1]),
+                    ([sys.executable, '-m', 'coinquant', 'snapshot', '--config', str(perp_config.resolve()),
+                      '--out', str(files[1])], perp_repo)]
+        jobs = [subprocess.Popen(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                for command, root in commands]
+        try:
+            for job in jobs:
+                stdout, _stderr = job.communicate(timeout=45)
+                if job.returncode:
+                    payload = json.loads(stdout)
+                    raise ValueError('read-only account collection failed: ' + payload.get('reason', 'unknown'))
+            blobs = [path.read_bytes() for path in files]
+            report = combined([json.loads(blob) for blob in blobs], int(time.time() * 1000))
+            report.update(collection='native_read_only_exporters', account_observed=True,
+                          recorded_date_utc=iso(int(time.time() * 1000))[:10],
+                          input_sha256=[hashlib.sha256(blob).hexdigest() for blob in blobs],
+                          snapshots=[json.loads(blob) for blob in blobs])
+            with output.open('x') as stream:
+                json.dump(report, stream, indent=2)
+                stream.write('\n')
+            return report
+        finally:
+            for job in jobs:
+                if job.poll() is None:
+                    job.kill()
+                job.communicate()
 
 
 def observe(market, directory, extra=()):
@@ -124,6 +166,11 @@ def main(argv=None):
     summary = sub.add_parser('combine')
     summary.add_argument('snapshots', type=Path, nargs=2)
     summary.add_argument('--valuation-price', help='Revalue both fresh exports at one explicit BTC price')
+    collected = sub.add_parser('collect', help='Concurrently collect fresh native read-only exports')
+    collected.add_argument('--spot-config', type=Path, required=True)
+    collected.add_argument('--perp-config', type=Path, required=True)
+    collected.add_argument('--perp-repo', type=Path, default=Path('/workspace/coinquant'))
+    collected.add_argument('--out', type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == 'observe':
@@ -134,6 +181,8 @@ def main(argv=None):
                 if forward not in args.extra:
                     args.extra.append(forward)
             report = observe(args.market, args.state, args.extra)
+        elif args.command == 'collect':
+            report = collect(args.spot_config, args.perp_config, args.perp_repo, args.out)
         else:
             blobs = [path.read_bytes() for path in args.snapshots]
             report = combined([json.loads(blob) for blob in blobs], int(time.time() * 1000), args.valuation_price)

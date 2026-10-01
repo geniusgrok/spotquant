@@ -71,6 +71,7 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
         raise Blocked('exchange adapter and configuration differ in capital limit')
     models, enabled, fresh = _load_models(state, venue)
     snapshot = venue.snapshot(config.account_uid)
+    actual_snapshot = snapshot
     if lifecycle:
         lifecycle.verify(snapshot)
         # Confirmed owned STOP_LOSS orders reserve BTC, but do not consume the cash pool.
@@ -94,7 +95,7 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
     return {
         'status': 'read_only',
         'model_preview': decision,
-        'actual': _public_snapshot(snapshot),
+        'actual': _public_snapshot(actual_snapshot),
         'market_through': reference.last,
         'model_bull': {str(window): model.bull for window, model in models.items()},
         'entries_enabled': enabled,
@@ -172,6 +173,9 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
         finally:
             report['elapsed_seconds'] = max(0, monotonic() - started)
             report['pending_intents'] = len(state.pending())
+            if report['pending_intents']:
+                report.update(status='unknown', reason='Durable execution requires recovery', observation_current=False)
+                clear_stale(report)
             report['write_attempted'] = execute
             report['session_ended'] = True
             report['observation_current'] = False

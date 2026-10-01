@@ -139,6 +139,7 @@ class Binance:
         usdt_free = D(0)
         usdt_locked = D(0)
         seen = set()
+        other_assets = []
         for row in account['balances']:
             if not isinstance(row, dict) or 'asset' not in row or 'free' not in row or 'locked' not in row:
                 raise Unknown('account balance row is incomplete')
@@ -153,6 +154,10 @@ class Binance:
             elif asset == 'USDT':
                 usdt_free = free
                 usdt_locked = locked
+            elif free + locked > 0:
+                other_assets.append(asset)
+        if not {'BTC', 'USDT'} <= seen:
+            raise Unknown('account response omits BTC or USDT balances')
         if not isinstance(average, dict) or 'price' not in average:
             raise Unknown('average price response is incomplete')
         return {
@@ -162,6 +167,7 @@ class Binance:
             'usdt_locked': usdt_locked,
             'open_orders': len(orders),
             'orders': orders,
+            'other_assets': other_assets,
             'can_trade': account.get('canTrade') is True,
             'environment': self.environment,
             'avg_price': number(average['price'], 'avgPrice', positive=True),
