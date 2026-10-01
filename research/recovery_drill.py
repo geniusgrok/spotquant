@@ -44,7 +44,8 @@ def drill(output):
         after = serial({'cash': venue.cash, 'btc': venue.btc, 'submitted_ids': venue.sent})
         if before != after or observed['status'] != 'read_only':
             raise ValueError('restored read-only account did not reconcile unchanged')
-        venue.btc += D('.001')
+        # Deliberate material discrepancy exceeds the existing USDT5 dust threshold.
+        venue.btc += D('.1')
         external = run(restored_config, venue, execute=False, monotonic=venue.monotonic, wait=venue.wait)
         if external['status'] != 'unknown' or before['submitted_ids'] != venue.sent:
             raise ValueError('external BTC was adopted or a read-only cycle submitted an order')
