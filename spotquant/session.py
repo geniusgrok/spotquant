@@ -6,12 +6,12 @@ from decimal import Decimal as D
 
 from .follow import advance, apply_day, day_open, unexplained
 from .model import DAY, SLEEVES, Model
-from .preview import MIN_NOTIONAL, portfolio
+from .preview import MIN_NOTIONAL, decision as portfolio
 from .state import State
 from .types import Blocked, Unknown
 
-# A state directory written by another rule is not reused over an open position.
-RULE = '2026-09-29-static-stop'
+# A different rule is never recovered or silently re-anchored, even while flat.
+RULE = '2026-10-02-atr-stop'
 
 # Dropped when a cycle fails so the previous success cannot be read as current.
 STALE_REPORT_FIELDS = (
@@ -22,7 +22,7 @@ STALE_REPORT_FIELDS = (
 RECORDED_LIMITS = {
     'adverse_exit': 'next_open',
     'adverse_loss_capped': False,
-    'path_convention': 'stop_from_prior_peak',
+    'path_convention': 'completed_ATR14_decision_stop_with_native_floor; static_follow_catchup',
     'execution': 'shared_session_lifecycle; native Demo unverified; live blocked',
     'selection': 'full_sample',
     'sleeves': list(SLEEVES),
@@ -37,6 +37,8 @@ def clear_stale(report: dict) -> None:
 
 
 def cycle(venue, state: State, config, *, execute=False) -> dict:
+    _guard_state(state)
+    _allocation_scale(state, venue)
     lifecycle = None
     if execute:
         from .execution import Lifecycle
@@ -93,7 +95,9 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
     for window, model in models.items():
         views[window], owned[window] = _view(model, positions[window])
     decision = portfolio(
-        views, owned, snapshot, entries_enabled=enabled, capital_limit=config.capital_limit)
+        views, owned, snapshot, entries_enabled=enabled, capital_limit=config.capital_limit,
+        positions=positions, owners=getattr(state, '_execution_owners', None) or {},
+        allocation_scale=_allocation_scale(state, venue))
     follows = _follow_after(decision, models, positions, follows, exit_through)
     reference = models[SLEEVES[0]]
     _commit(state, models, positions, follows, accounted, exit_through, fresh, reference.last)
@@ -204,6 +208,118 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
     return report
 
 
+def _guard_state(state):
+    """Read-only migration boundary, before any lifecycle recovery or venue request."""
+    saved, rule = state.get('models'), state.get('rule')
+    if rule is not None and rule != RULE:
+        raise Blocked('state was written for another rule; a new directory is not a flat account')
+    if not RULE.startswith('alpha-spot:') and state.get('alpha_identity') is not None:
+        raise Blocked('research state is incompatible with the canonical rule')
+    if saved is None:
+        if (rule is not None or state.get('positions') is not None or state.get('follows') is not None
+                or state.db.execute('SELECT 1 FROM intents LIMIT 1').fetchone()):
+            raise Blocked('missing model checkpoint for durable state')
+        return None
+    if rule != RULE or type(saved) is not dict or set(saved) != {str(w) for w in SLEEVES}:
+        raise Blocked('state rule or sleeve checkpoint identity mismatch')
+    models = {w: Model.restore(saved[str(w)]) for w in SLEEVES}
+    parameters = ('sma_window', 'trail', 'confirm', 'crash', 'high_window', 'fresh', 'extend',
+                  'cap_drop', 'cap_bounce', 'cap_depth', 'cap_hand', 'cap_window', 'adverse_stop')
+    for w, model in models.items():
+        expected = Model(w)
+        if any(getattr(model, k) != getattr(expected, k) for k in parameters):
+            raise Blocked('model checkpoint rule parameters mismatch')
+    if len({m.last for m in models.values()}) != 1:
+        raise Blocked('sleeve checkpoints are not on the same daily bar')
+    try:
+        positions, follows = state.get('positions'), state.get('follows')
+        keys = {str(w) for w in SLEEVES}
+        anchor = state.get('entries_after')
+        last = next(iter(models.values())).last
+        if (type(positions) is not dict or set(positions) != keys
+                or type(follows) is not dict or set(follows) != keys
+                or type(anchor) is not int or last is None or anchor > last or anchor != day_open(anchor)):
+            raise ValueError('state layout')
+        for key in keys:
+            position, follow = positions[key], follows[key]
+            if position is not None:
+                values = [D(position[k]) for k in ('qty', 'entry_fill', 'peak')]
+                if position['repair_peak'] is not None:
+                    values.append(D(position['repair_peak']))
+                if (any(not value.is_finite() or value <= 0 for value in values)
+                        or position['entry_open_ms'] != day_open(position['first_ms'])
+                        or any(type(position[k]) is not bool for k in ('repair', 'adverse'))
+                        or (position['through'] is not None and (type(position['through']) is not int
+                            or position['through'] > last or position['through'] != day_open(position['through'])))):
+                    raise ValueError('position')
+            if follow is not None and (type(follow['repair']) is not bool
+                    or type(follow['signal_ms']) is not int or follow['signal_ms'] > last
+                    or follow['signal_ms'] != day_open(follow['signal_ms'])):
+                raise ValueError('follow')
+    except (KeyError, TypeError, ValueError, ArithmeticError, Unknown) as exc:
+        raise Blocked('incomplete or malformed position checkpoint') from exc
+    # Pending dispatch/recovery must never run on malformed or foreign allocations.
+    import json
+    from .execution import FIELDS
+    try:
+        for kind, encoded, status in state.db.execute(
+                "SELECT kind,payload,status FROM intents WHERE status NOT IN ('settled','rejected')"):
+            payload = json.loads(encoded)
+            group, order = payload['sleeves'], payload['order']
+            if (kind != 'p4' or status not in ('prepared', 'unknown', 'resting', 'canceling')
+                    or type(group) is not list or not group or group != sorted(set(group))
+                    or any(type(w) is not int or w not in SLEEVES for w in group)
+                    or set(payload['weights']) != {str(w) for w in group}
+                    or set(payload['repair']) != {str(w) for w in group}
+                    or any(type(v) is not bool for v in payload['repair'].values())
+                    or type(payload['signal_ms']) is not int
+                    or payload['signal_ms'] != day_open(payload['signal_ms'])
+                    or not set(order) <= set(FIELDS) or order['symbol'] != 'BTCUSDT'
+                    or order['side'] not in ('BUY', 'SELL') or order['type'] not in ('MARKET', 'STOP_LOSS')
+                    or (order['type'] == 'STOP_LOSS' and order['side'] != 'SELL')):
+                raise ValueError('allocation')
+            quantities = list(payload['weights'].values())
+            quantities.append(order['quoteOrderQty'] if order['side'] == 'BUY' else order['quantity'])
+            if order['type'] == 'STOP_LOSS':
+                quantities.append(order['stopPrice'])
+            if any(not D(v).is_finite() or D(v) <= 0 for v in quantities):
+                raise ValueError('quantity')
+    except (KeyError, TypeError, ValueError, ArithmeticError, Unknown) as exc:
+        raise Blocked('incompatible durable pending allocation') from exc
+    return models
+
+
+def _allocation_scale(state, venue):
+    # Only the offline canonical replay attaches this verified file-bound profile.
+    import hashlib
+    import json
+    profile = getattr(venue, '_adoption_risk', None)
+    prior = state.get('adoption_risk')
+    if profile is None:
+        if prior is not None:
+            raise Blocked('diagnostic risk identity requires its original offline replay')
+        return D(1)
+    try:
+        scale = D(profile['scale'])
+        raw = profile['profile']
+        calibration_sha = profile['calibration_sha256']
+        if (not getattr(venue, 'offline', False) or profile['rule'] != RULE
+                or profile['candidate'] != 'atr-stop' or profile['cutoff_ms'] != 1640995200000
+                or not scale.is_finite() or not 0 <= scale <= 1
+                or (calibration_sha is None and (scale != 1 or raw != {'scale': '1', 'sha256': None}))
+                or (calibration_sha is not None and (type(calibration_sha) is not str
+                    or len(calibration_sha) != 64 or any(c not in '0123456789abcdef' for c in calibration_sha)))
+                or raw['scale'] != profile['scale'] or raw['sha256'] != profile['calibration_sha256']
+                or hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest() != profile['profile_sha256']
+                or (prior is not None and prior != profile)
+                or (prior is None and state.get('models') is not None)):
+            raise ValueError('identity')
+    except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        raise Blocked('diagnostic risk identity mismatch') from exc
+    state._adoption_risk = profile
+    return scale if venue.now_ms >= 1640995200000 else D(1)
+
+
 def _load_models(state: State, venue):
     state._staged = None
     state._seen_trades = []
@@ -211,29 +327,8 @@ def _load_models(state: State, venue):
     anchor = state.get('entries_after')
     if saved is not None and set(saved) != {str(window) for window in SLEEVES}:
         raise Blocked('state was written for other sleeves; use a new state directory')
-    stored_rule = state.get('rule')
-    positions = state.get('positions') or {}
-    held = any(positions.get(str(window)) is not None for window in SLEEVES)
-    if held and stored_rule != RULE:
-        raise Blocked('state was written for another rule; a new directory is not a flat account')
-    models = {}
-    for window in SLEEVES:
-        models[window] = Model(window) if saved is None else Model.restore(saved[str(window)])
-        if models[window].sma_window != window:
-            raise Blocked('model checkpoint does not match this sleeve')
+    models = _guard_state(state) or {window: Model(window) for window in SLEEVES}
     last = models[SLEEVES[0]].last
-    if saved is not None and any(model.last != last for model in models.values()):
-        raise Blocked('sleeve checkpoints are not on the same daily bar')
-    if saved is not None and stored_rule != RULE and not held:
-        # A directory written before this rule has no position to protect.
-        # Flatten the restored entry so an already-bullish regime waits for a fresh cross.
-        for model in models.values():
-            model.note_flat()
-        exit_through = {
-            str(window): model.last for window, model in models.items() if model.last is not None
-        }
-        _stash(state, {window: None for window in SLEEVES}, {window: None for window in SLEEVES},
-               set(state.get('accounted_ids') or []), exit_through, state.get('trade_cursor_ms'))
     for open_ms, high, low, close in venue.completed_daily(None if saved is None else last):
         _consume_bar(state, venue, models, open_ms, high, low, close)
     if models[SLEEVES[0]].last is None:
@@ -381,6 +476,8 @@ def _commit(state, models, positions, follows, accounted, exit_through, fresh, l
         'exit_through': {str(key): value for key, value in exit_through.items()},
         'trade_cursor_ms': cursor,
     }
+    if getattr(state, '_adoption_risk', None) is not None:
+        values['adoption_risk'] = state._adoption_risk
     if fresh:
         values['entries_after'] = last
     state.set_many(values)

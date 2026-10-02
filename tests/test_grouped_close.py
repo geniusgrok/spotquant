@@ -28,7 +28,8 @@ class GroupedCloseTests(TestCase):
                              repair_peak=None, adverse=False, through=ORIGIN + 59 * DAY)
                      for w, q in quantities.items()}
         owner = dict(sleeves=list(SLEEVES), weights={str(w): q for w, q in quantities.items()},
-                     order=dict(side='SELL', quantity=intended), native_status=status,
+                     order=dict(symbol='BTCUSDT', side='SELL', type='MARKET', quantity=intended),
+                     signal_ms=ORIGIN + 59 * DAY, repair={str(w): False for w in SLEEVES}, native_status=status,
                      native_executed_qty=executed)
         return models, positions, {w: None for w in SLEEVES}, {'17': owner}
 
@@ -132,7 +133,7 @@ class GroupedCloseTests(TestCase):
         self.assertLess(abs(sum((D(p['qty']) for p in positions.values()), D(0)) - old_qty - D('.003')), D('1e-24'))
 
     def test_readonly_recovery_and_executor_use_the_same_durable_native_metadata(self):
-        _, _, _, owners = self.fixtures()
+        models, _, _, owners = self.fixtures()
         payload = dict(owners['17'])
         payload.pop('native_status')
         payload.pop('native_executed_qty')
@@ -141,6 +142,10 @@ class GroupedCloseTests(TestCase):
             config = Config('1', directory, 300, 5, 'demo', '1000')
             venue = SimpleNamespace(execution_authorized=True, sent=[])
             with State(directory, config.scope) as state:
+                state.set_many({'rule': RULE, 'models': {str(w): m.checkpoint() for w, m in models.items()},
+                                'positions': {str(w): None for w in SLEEVES},
+                                'follows': {str(w): None for w in SLEEVES},
+                                'entries_after': ORIGIN + 59 * DAY})
                 lifecycle = Lifecycle(state, venue, config)
                 lifecycle.save('owned-sale', payload, 'settled', result)
                 expected = lifecycle.owners()

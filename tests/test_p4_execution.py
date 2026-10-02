@@ -159,6 +159,8 @@ class P4ExecutionTests(TestCase):
             self.assertEqual(report['errors'], [])
             stops = [row for row in venue.orders.values() if row['status'] == 'NEW']
             self.assertEqual(len(stops), 3)
+            # Remainder uses the canonical 10% decision distance and native floor.
+            self.assertTrue(all(D(row['stopPrice']) == D('91.80') for row in stops))
             self.assertLess(abs(sum(D(row['quantity']) for row in stops) - venue.btc), D('.00004'))
             before = len(venue.sent)
             run_day(config, venue)
@@ -217,7 +219,7 @@ class P4ExecutionTests(TestCase):
             self.assertEqual(report['errors'], [])
             active = [row for row in venue.orders.values() if row['status'] == 'NEW']
             self.assertEqual(len(active), 1)
-            self.assertEqual(D(active[0]['stopPrice']), D('79.20'))
+            self.assertEqual(D(active[0]['stopPrice']), D('99.00'))
             venue.now_ms += 2000
             venue.trigger('70')
             report = run_day(config, venue)

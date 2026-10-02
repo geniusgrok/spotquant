@@ -13,7 +13,10 @@ above the SMA and no more than 11% under that 400-day high, the repair
 position ignores the SMA exit, the blow-off, and the 4% close. Any other
 position sells the next open when a completed close is 4% or more under its
 entry fill. There is no same-day re-entry.
-Protection is a stop 28% under the running high. That is wider than Binance
+The stored model and historical catch-up use a 28% trail. The canonical
+session adjusts a decision copy to clip(4*ATR14/close, 10%, 30%), bounded
+below by allocated native stop prices; it never amends catch-up history.
+Historical model protection is a stop 28% under the running high. That is wider than Binance
 spot trailingDelta (2000 bips), so the preview amends a STOP_LOSS price.
 An entry preview has no fill yet, so its stop is 28% under the completed
 close. A hold with no recorded fill uses that same close: the bullish-streak
@@ -60,7 +63,7 @@ CAP_DEPTH = D('0.50')
 CAP_HAND = D('0.11')
 CAP_WINDOW = 400
 ADVERSE = D('0.04')
-VERSION = 4
+VERSION = 5
 
 
 def percent(value) -> str:
@@ -120,6 +123,7 @@ class Model:
         self.cap_window = cap_window
         self.adverse_stop = adverse_stop
         self.closes: deque[D] = deque(maxlen=max(sma_window, high_window, cap_window))
+        self.true_ranges: deque[tuple[int, D]] = deque(maxlen=14)
         self.last: int | None = None
         self.close: D | None = None
         self.prev_close: D | None = None
@@ -225,6 +229,8 @@ class Model:
             raise Blocked('nonfinite daily bar')
         if not D(0) < low <= close <= high:
             raise Blocked('invalid daily bar')
+        if self.close is not None:
+            self.true_ranges.append((open_time, max(high - low, abs(high - self.close), abs(low - self.close))))
         self.older_close = self.prev_close
         self.prev_close = self.close
         self.closes.append(close)
@@ -263,10 +269,14 @@ class Model:
         self.enter = self.streak >= self.confirm and self.crash_ok and not blocked
         return self.bull
 
+    @property
+    def atr14(self):
+        return sum((value for _, value in self.true_ranges), D(0)) / 14 if len(self.true_ranges) == 14 else None
+
     def stop_price(self, peak_high: D) -> D:
-        """Stop price from the running high. Not a trailingDelta: 28% exceeds 2000 bips."""
+        """Running-high price, with a runtime-only native floor on decision copies."""
         peak = number(peak_high, 'peak', positive=True)
-        return peak * (D(1) - self.trail)
+        return max(getattr(self, '_stop_floor', D(0)), peak * (D(1) - self.trail))
 
     def checkpoint(self) -> dict:
         body = {
@@ -286,6 +296,7 @@ class Model:
             'adverse_stop': format(self.adverse_stop, 'f'),
             'last': self.last,
             'closes': [format(item, 'f') for item in self.closes],
+            'true_ranges': [[stamp, format(value, 'f')] for stamp, value in self.true_ranges],
             'prev_close': None if self.prev_close is None else format(self.prev_close, 'f'),
             'older_close': None if self.older_close is None else format(self.older_close, 'f'),
             'sma': None if self.sma is None else format(self.sma, 'f'),
@@ -310,7 +321,7 @@ class Model:
         try:
             body = saved['body']
             digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
-            if saved['sha256'] != digest or body['version'] != VERSION:
+            if saved['sha256'] != digest or type(body['version']) is not int or body['version'] != VERSION:
                 raise ValueError('identity')
             model = cls(
                 body['sma_window'], body['trail'], body['confirm'], body['crash'],
@@ -322,8 +333,20 @@ class Model:
             if model.last is not None and (type(model.last) is not int or model.last < ORIGIN or (model.last - ORIGIN) % DAY):
                 raise ValueError('clock')
             limit = max(model.sma_window, model.high_window, model.cap_window)
-            if len(body['closes']) > limit:
-                raise ValueError('closes')
+            count = 0 if model.last is None else (model.last - ORIGIN) // DAY + 1
+            if type(body['closes']) is not list or len(body['closes']) != min(limit, count):
+                raise ValueError('closes chronology')
+            ranges = body['true_ranges']
+            if (type(ranges) is not list or len(ranges) != min(14, max(0, count - 1))
+                    or any(type(item) is not list or len(item) != 2 for item in ranges)):
+                raise ValueError('true range chronology')
+            for i, (stamp, value) in enumerate(ranges):
+                if (type(stamp) is not int or stamp != model.last - (len(ranges) - i - 1) * DAY
+                        or type(value) is not str):
+                    raise ValueError('true range chronology')
+            model.true_ranges = deque(((stamp, D(value)) for stamp, value in ranges), maxlen=14)
+            if any(not value.is_finite() or value < 0 for _, value in model.true_ranges):
+                raise ValueError('true ranges')
             model.closes = deque((D(item) for item in body['closes']), maxlen=limit)
             if any(not item.is_finite() or item <= 0 for item in model.closes):
                 raise ValueError('closes')
@@ -346,6 +369,8 @@ class Model:
             if type(model.streak) is not int or type(model.need_reset) is not bool or type(model.crash_ok) is not bool:
                 raise ValueError('flags')
             if type(model.extended) is not bool or type(model.cap_enter) is not bool or type(model.repair) is not bool:
+                raise ValueError('flags')
+            if any(type(body[k]) is not bool for k in ('bull', 'enter', 'cap_enter')):
                 raise ValueError('flags')
             if type(model.adverse) is not bool:
                 raise ValueError('flags')

@@ -2,7 +2,7 @@
 import argparse
 import bisect
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from decimal import Decimal as D
 import hashlib
 import json
@@ -15,7 +15,7 @@ from research.session_account import HistoricalVenue, audit
 from research.restore_check import check
 from spotquant import session
 from spotquant.config import Config
-from spotquant.model import DAY, SLEEVES
+from spotquant.model import DAY, SLEEVES, Model
 from spotquant.preview import BASE_STEP, QUOTE_STEP, MIN_NOTIONAL, portfolio, consensus_allocation
 from spotquant.state import State
 from spotquant.types import floor_step, serial
@@ -54,6 +54,9 @@ class Policy:
         return D(rows[i][1])
 
     def __call__(self, views, owned, snapshot, **kwargs):
+        # Historical research owns its decision context; canonical context is explicit.
+        for key in ('positions', 'owners', 'allocation_scale'):
+            kwargs.pop(key, None)
         decision = portfolio(views, owned, snapshot, consensus=False, **kwargs)
         buys = [o for o in decision['orders'] if o['side'] == 'BUY']
         if self.candidate in ('funding', 'basis') and buys:
@@ -130,16 +133,30 @@ def configured(policy):
         session.portfolio, session.State = original_portfolio, original_state
 
 
-def measure(candidate, scenario, bars, starts, fx, features, *, limit=None, initial_cny=D(10000)):
+def measure(candidate, scenario, bars, starts, fx, features, *, limit=None, initial_cny=D(10000),
+            canonical=False, calibration_path=None):
+    if canonical:
+        from spotquant import execution, follow, model, preview
+        if (session.portfolio is not preview.decision or session.State is not State
+                or session.Model is not Model or model.Model is not Model or follow.Model is not Model
+                or execution._protection is not preview._protection):
+            raise ValueError('canonical replay refuses installed research engine hooks')
     starts = starts[:limit]
     wallet = initial_cny / fx(START_MS) * D('.999')
     venue = HistoricalVenue(bars, START_MS, wallet, fx,
                             fee=D('.0015') if scenario == 'fee150' else D('.001'),
                             slip=D('.001') if scenario == 'slip2' else D('.0005'),
                             stop_slip=D('.002') if scenario == 'slip2' else D('.001'))
-    policy = Policy(candidate, venue, features)
+    if canonical:
+        if candidate != 'atr-stop' or features:
+            raise ValueError('canonical replay is the shared ATR default without research features')
+        from research.adoption_spot import risk_identity
+        venue._adoption_risk = risk_identity(calibration_path)
+    elif calibration_path is not None:
+        raise ValueError('diagnostic calibration requires canonical replay')
+    policy = None if canonical else Policy(candidate, venue, features)
     reports, failure = [], None
-    with tempfile.TemporaryDirectory(prefix='spot-complete-') as directory, configured(policy):
+    with tempfile.TemporaryDirectory(prefix='spot-complete-') as directory, (nullcontext() if canonical else configured(policy)):
         config = Config('1', directory, 300, 5, 'demo', '5000000')
         for i, start in enumerate(starts):
             if scenario == 'outage' and 1583020800000 <= start < 1584835200000:
@@ -170,7 +187,7 @@ def measure(candidate, scenario, bars, starts, fx, features, *, limit=None, init
     unresolved = sum(r['execution_unresolved'] for r in reports)
     complete = (limit is None and money['passed'] and not pending and not policy_pending and not unresolved
                 and all(r['archive_verified'] for r in reports))
-    return serial({'candidate': candidate, 'scenario': scenario, 'complete': complete,
+    result = serial({'candidate': candidate, 'scenario': scenario, 'complete': complete,
                    'initial_cny': initial_cny, 'final_cny': value,
                    'final_usdt': venue.cash + venue.btc * venue.price,
                    'cagr': (float(value / initial_cny) ** (1 / ((end - START_MS) / (365.25 * DAY))) - 1)
@@ -180,8 +197,15 @@ def measure(candidate, scenario, bars, starts, fx, features, *, limit=None, init
                    'client_events': venue.client_events,
                    'session_error_count': sum(bool(r['errors']) for r in reports),
                    'execution_unresolved_sessions': unresolved, 'policy_pending': policy_pending,
-                   'filters': policy.filters, 'positions': positions, 'allocations': allocations,
+                   'filters': policy.filters if policy else {'blocked': 0, 'missing': 0}, 'positions': positions, 'allocations': allocations,
                    'pending_intents': pending, 'native_execution_verified': False})
+    if canonical:
+        identity = venue._adoption_risk
+        if risk_identity(calibration_path) != identity:
+            raise ValueError('diagnostic calibration changed during replay')
+        result.update(research_identity=dict(execution='canonical_shared_session', **identity),
+                      risk_calibration=identity['profile'], opportunity_ledger=[], subpools=None)
+    return result
 
 
 def main(argv=None):

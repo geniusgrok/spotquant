@@ -7,7 +7,7 @@ from decimal import Decimal as D
 from time import time
 
 from .model import SLEEVES
-from .preview import MIN_NOTIONAL, _protection
+from .preview import MIN_NOTIONAL, _protection, decision_view
 from .state import client_id
 from .types import Blocked, Unknown, NotSent, number, serial
 
@@ -214,6 +214,7 @@ class Lifecycle:
             position = positions.get(str(window))
             if position and decision['sleeves'][str(window)]['action'] == 'exit':
                 view, qty = _view(Model.restore(self.state.get('models')[str(window)]), position)
+                view = decision_view(view, position, getattr(self.state, '_execution_owners', None) or {})
                 stop = _protection(view, qty, snapshot)
                 if D(stop['stopPrice']) >= D(snapshot['avg_price']):
                     raise Unknown('partial exit remainder has a crossed stop; explicit reduction needed')
