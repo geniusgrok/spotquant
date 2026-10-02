@@ -113,8 +113,10 @@ class AlphaSpotTests(unittest.TestCase):
                         meta={'exit_types': {'30': reason}})
             self.assertEqual(p.recovery(view, 30, [sale], 2, {}), expected)
         bought = dict(stop, owner={'sleeves': [30], 'order': {'side': 'BUY', 'type': 'MARKET'}},
-                      qty=D('.01'), meta={'mechanism': 'trend-reentry'}, last_ms=view.last + DAY)
+                      qty=D('.01'), meta={'mechanism': 'trend-reentry', 'reentry_sleeves': [30]}, last_ms=view.last + DAY)
         self.assertFalse(p.recovery(view, 30, [stop, bought], 2, {}))
+        other_sleeve = dict(bought, meta={'mechanism': 'trend-reentry', 'reentry_sleeves': [40]})
+        self.assertTrue(p.recovery(view, 30, [stop, other_sleeve], 2, {}))
         view.last += 2 * DAY
         view.streak = 2  # A reset means the old exit does not authorize the new episode.
         self.assertFalse(p.recovery(view, 30, [stop], 2, {}))

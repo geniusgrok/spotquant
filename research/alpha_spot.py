@@ -161,7 +161,7 @@ class Policy:
             return False
         episode = view.last - (view.streak - 1) * DAY
         relevant = [r for r in records if window in r['owner']['sleeves'] and r['last_ms'] >= episode]
-        if any(r['meta'].get('mechanism') == 'trend-reentry' and r['owner']['order']['side'] == 'BUY'
+        if any(window in r['meta'].get('reentry_sleeves', []) and r['owner']['order']['side'] == 'BUY'
                for r in relevant):
             return False
         sells = [r for r in relevant if r['owner']['order']['side'] == 'SELL']
@@ -343,7 +343,8 @@ class Policy:
             for order in decision['orders']:
                 key = signal_key(order['side'], last, order['sleeves'])
                 signals.setdefault(key, {'mechanism': self.core_mode if order['sleeves'] == [200] else mechanism,
-                                         'exit_types': exit_types, 'decision_ms': self.venue.now_ms,
+                                         'exit_types': exit_types, 'reentry_sleeves': [w for w in order['sleeves'] if w in recovery],
+                                         'decision_ms': self.venue.now_ms,
                                          'decision_price': str(snapshot['avg_price'])})
             self.state._alpha_values = {'alpha_identity': self.identity, 'alpha_signals': signals}
         self.last_signals = signals
