@@ -226,6 +226,9 @@ class Policy:
                 'trigger_close': close, 'age_ms': self.venue.now_ms - trigger - DAY, **exit_link}
 
     def __call__(self, views, owned, snapshot, **kwargs):
+        # Historical research owns its decision context; canonical context is explicit.
+        for key in ('positions', 'owners', 'allocation_scale'):
+            kwargs.pop(key, None)
         original_views = views
         views = {w: copy.copy(v) for w, v in views.items()}
         last = views[30].last

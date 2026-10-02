@@ -1,9 +1,10 @@
 """Read-only spot decision. No order is built into a network request here."""
 from __future__ import annotations
 
+import copy
 from decimal import Decimal as D
 
-from .model import Model, percent
+from .model import DAY, Model, percent
 from .types import Unknown, floor_step
 
 MIN_NOTIONAL = D('5')
@@ -387,3 +388,66 @@ def _merge_protections(decisions: dict, views: dict, snapshot: dict, reference: 
         sample.pop('sleeve', None)
         merged.append(sample)
     return merged
+
+
+def decision_view(model, position, owners):
+    """Adaptive protection on a copy; catch-up and checkpoints keep the static trail."""
+    view = copy.copy(model)
+    atr = model.atr14
+    if atr is None:
+        return view
+    from .execution import TERMINAL
+    view.trail = min(D('.30'), max(D('.10'), 4 * atr / view.close))
+    proven = [D(o['order']['stopPrice']) for o in owners.values()
+              if position and view.sma_window in o['sleeves'] and o['order']['type'] == 'STOP_LOSS'
+              and o.get('native_status') in (TERMINAL - {'REJECTED'}) | {'NEW', 'PARTIALLY_FILLED'}
+              and o['signal_ms'] >= int(position['first_ms']) // DAY * DAY - DAY]
+    view._stop_floor = max(proven, default=D(0))
+    view.protection = 'resting'
+    return view
+
+
+def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capital_limit,
+             allocation_scale=D(1)):
+    """Canonical ATR book: actual protection, exits first, then bounded new allocation."""
+    views = {w: decision_view(v, positions.get(w), owners) for w, v in views.items()}
+    out = portfolio(views, owned, snapshot, entries_enabled=entries_enabled, capital_limit=capital_limit)
+    forced = False
+    for w in views:
+        sleeve = out['sleeves'][str(w)]
+        stop = sleeve.get('protection')
+        if (stop and 'quantity' in stop and D(stop['stopPrice']) >= D(snapshot['avg_price'])
+                and sleeve['action'] != 'exit'):
+            sleeve.update(action='exit', protection=None, order=None)
+            forced = True
+    if forced:
+        group = [w for w in views if out['sleeves'][str(w)]['action'] == 'exit']
+        quantity = sum((floor_step(D(owned[w]), BASE_STEP) for w in group), D(0))
+        out['orders'] = [o for o in out['orders'] if o['side'] != 'SELL']
+        if quantity * D(snapshot['avg_price']) >= MIN_NOTIONAL:
+            out['orders'].append(dict(symbol='BTCUSDT', side='SELL', type='MARKET',
+                                      quantity=str(quantity), sleeves=group))
+    out['protections'] = _merge_protections(
+        {w: out['sleeves'][str(w)] for w in views}, views, snapshot, next(iter(views.values())))
+    sells = any(o['side'] == 'SELL' for o in out['orders'])
+    free = D(snapshot['usdt_free'])
+    cap_remaining = max(D(0), capital_limit - D(snapshot['btc']) * D(snapshot['avg_price'])) if capital_limit is not None else free
+    for order in list(out['orders']):
+        if order['side'] != 'BUY':
+            continue
+        quote = floor_step(min(D(order['quoteOrderQty']), free, cap_remaining) * allocation_scale, QUOTE_STEP)
+        if sells or quote < MIN_NOTIONAL:
+            out['orders'].remove(order)
+            for w in order['sleeves']:
+                if out['sleeves'][str(w)]['action'] == 'enter':
+                    out['sleeves'][str(w)].update(action='flat', order=None, protection=None)
+            continue
+        order['quoteOrderQty'] = str(quote)
+        for w in order['sleeves']:
+            sleeve_order = out['sleeves'][str(w)].get('order')
+            if sleeve_order and sleeve_order['side'] == 'BUY':
+                sleeve_order['quoteOrderQty'] = str(quote / len(order['sleeves']))
+        free -= quote
+        cap_remaining -= quote
+    out['order'] = out['orders'][0] if out['orders'] else None
+    return out

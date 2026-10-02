@@ -38,7 +38,7 @@ class Venue:
             'usdt_free': D('1000'),
             'usdt_locked': D(0),
             'open_orders': 0,
-            'environment': 'live',
+            'environment': 'live', 'avg_price': self.bars[-1][-1],
         }
 
     def completed_daily(self, after):
@@ -86,7 +86,7 @@ class SessionTests(unittest.TestCase):
         venue = Venue(bars(252, 100))
         venue.snapshot = lambda uid: {
             'account_uid': uid, 'btc': D('1'), 'usdt_free': D('1000'),
-            'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
+            'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live', 'avg_price': venue.bars[-1][-1],
         }
         with tempfile.TemporaryDirectory() as directory:
             config = Config('10001', directory, session_seconds=2, poll_seconds=1)
@@ -108,7 +108,7 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(armed['model_preview']['action'], 'enter')
             venue.snapshot = lambda uid: {
                 'account_uid': uid, 'btc': D('0.6'), 'usdt_free': D('0'),
-                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
+                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live', 'avg_price': venue.bars[-1][-1],
             }
             venue.trade_rows = [{
                 'id': 1,
@@ -125,8 +125,8 @@ class SessionTests(unittest.TestCase):
             self.assertTrue(held['followed_position'])
             self.assertEqual(held['followed_sleeves'], [30, 40, 50])
             self.assertEqual(held['model_preview']['action'], 'hold')
-            # 111 * 0.72 for each sleeve. The bullish-streak high is not the anchor.
-            self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '79.92')
+            # ATR clips to 10%; the actual 111 fill is the peak, not the pre-fill wick.
+            self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '99.90')
             self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [30, 40, 50])
             self.assertIn('since the fill', held['model_preview']['sleeves']['40']['reason'])
             venue.snapshot = lambda uid: (_ for _ in ()).throw(Unknown('feed broke'))
@@ -149,7 +149,7 @@ class SessionTests(unittest.TestCase):
         run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         venue.snapshot = lambda uid: {
             'account_uid': uid, 'btc': D('0.6'), 'usdt_free': D('0'),
-            'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
+            'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live', 'avg_price': venue.bars[-1][-1],
         }
         venue.trade_rows = [{
             'id': 1, 'time': ORIGIN + 254 * DAY + 60_000, 'qty': D('0.6'), 'quote': D('66.6'),
@@ -164,7 +164,7 @@ class SessionTests(unittest.TestCase):
             config, venue = self._held_venue(directory)
             venue.snapshot = lambda uid: {
                 'account_uid': uid, 'btc': D(0), 'usdt_free': D(0),
-                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
+                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live', 'avg_price': venue.bars[-1][-1],
             }
             report = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(report['status'], 'unknown')
@@ -178,7 +178,7 @@ class SessionTests(unittest.TestCase):
             venue.bars.append((ORIGIN + 254 * DAY, D(111), D(50), D(50)))
             venue.snapshot = lambda uid: {
                 'account_uid': uid, 'btc': D(0), 'usdt_free': D('66'),
-                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live',
+                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live', 'avg_price': venue.bars[-1][-1],
             }
             venue.trade_rows.append({
                 'id': 2, 'time': ORIGIN + 255 * DAY + 60_000, 'qty': D('0.6'), 'quote': D('30'),
@@ -201,8 +201,8 @@ class SessionTests(unittest.TestCase):
             venue.snapshot = healthy
             held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(held['status'], 'read_only')
-        # The 150 high arrived while the preview failed and still lifts the stop: 150 * 0.72.
-        self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '108.00')
+        # The 150 peak and completed true ranges catch up together after failure.
+        self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '132.85')
         self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [30, 40, 50])
 
     def test_a_flat_account_reads_later_trades_from_the_cursor(self):
@@ -211,7 +211,7 @@ class SessionTests(unittest.TestCase):
             venue.bars.append((ORIGIN + 254 * DAY, D(111), D(50), D(50)))
             venue.snapshot = lambda uid: {
                 'account_uid': uid, 'btc': D(0), 'usdt_free': D('66'),
-                'usdt_locked': D(0), 'open_orders': 0, 'orders': [], 'environment': 'live',
+                'usdt_locked': D(0), 'open_orders': 0, 'orders': [], 'environment': 'live', 'avg_price': venue.bars[-1][-1],
             }
             sold_at = ORIGIN + 255 * DAY + 60_000
             venue.trade_rows.append({
@@ -229,7 +229,7 @@ class SessionTests(unittest.TestCase):
     def test_open_order_details_stay_on_the_report(self):
         orders = [{
             'order_id': 9, 'side': 'SELL', 'type': 'STOP_LOSS', 'status': 'NEW',
-            'stop_price': '79.92',
+            'stop_price': '99.90',
         }]
         with tempfile.TemporaryDirectory() as directory:
             config, venue = self._held_venue(directory)
@@ -240,7 +240,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(report['actual']['orders'], orders)
         self.assertNotEqual(report['model_preview']['action'], 'enter')
 
-    def test_an_old_checkpoint_does_not_keep_an_already_bullish_entry(self):
+    def test_an_old_checkpoint_is_rejected_even_when_flat(self):
         with tempfile.TemporaryDirectory() as directory:
             venue = Venue(bars(252, 100))
             config = Config('10001', directory, session_seconds=2, poll_seconds=1)
@@ -254,7 +254,9 @@ class SessionTests(unittest.TestCase):
             with State(config.state_dir, config.scope) as state:
                 state.set('rule', 'older')
             held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-        self.assertNotEqual(held['model_preview']['action'], 'enter')
+        self.assertEqual(held['status'], 'blocked')
+        self.assertIn('another rule', held['reason'])
+        self.assertNotIn('model_preview', held)
 
 
 if __name__ == '__main__':
