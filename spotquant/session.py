@@ -1,4 +1,4 @@
-"""One manually started read-only session. No order is submitted."""
+"""One bounded session: read-only by default, explicit owner Demo execution."""
 from __future__ import annotations
 
 import time
@@ -23,7 +23,7 @@ RECORDED_LIMITS = {
     'adverse_exit': 'next_open',
     'adverse_loss_capped': False,
     'path_convention': 'stop_from_prior_peak',
-    'execution': 'not_implemented',
+    'execution': 'shared_session_lifecycle; native Demo unverified; live blocked',
     'selection': 'full_sample',
     'sleeves': list(SLEEVES),
     'economic_targets_met': False,
@@ -36,7 +36,35 @@ def clear_stale(report: dict) -> None:
         report.pop(key, None)
 
 
-def cycle(venue, state: State, config) -> dict:
+def cycle(venue, state: State, config, *, execute=False) -> dict:
+    lifecycle = None
+    if execute:
+        from .execution import Lifecycle
+        lifecycle = Lifecycle(state, venue, config)
+    else:
+        import json
+        from .execution import allocation_owners
+        allocated = list(state.db.execute("SELECT payload,result FROM intents WHERE kind='p4'"))
+        state._execution_owners = (allocation_owners((json.loads(payload), json.loads(result))
+                                                    for payload, result in allocated) if allocated else None)
+    for _ in range(12 if execute else 1):
+        if lifecycle:
+            lifecycle.recover()
+            state._execution_owners = lifecycle.owners()
+        current = _cycle(venue, state, config, lifecycle=lifecycle)
+        if not lifecycle or not lifecycle.act(current['model_preview'], current['market_through'], current['actual']):
+            return dict(current, write_attempted=_writes(venue),
+                        status='offline_execution' if getattr(venue, 'offline', False) and execute else
+                        'demo_execution' if execute else 'read_only')
+    raise Unknown('bounded execution cycle exhausted; reconcile on the next cycle')
+
+
+def _writes(venue):
+    return bool(getattr(venue, 'write_attempted', False)
+                or len(getattr(venue, 'sent', ())) > getattr(venue, '_session_sent_start', 0))
+
+
+def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
     """Derive the whole observation in memory, then commit it once.
 
     A failed snapshot or preview leaves the previous checkpoint and positions
@@ -48,6 +76,11 @@ def cycle(venue, state: State, config) -> dict:
         raise Blocked('exchange adapter and configuration differ in capital limit')
     models, enabled, fresh = _load_models(state, venue)
     snapshot = venue.snapshot(config.account_uid)
+    actual_snapshot = snapshot
+    if lifecycle:
+        lifecycle.verify(snapshot)
+        # Confirmed owned STOP_LOSS orders reserve BTC, but do not consume the cash pool.
+        snapshot = dict(snapshot, open_orders=sum(row['type'] != 'STOP_LOSS' for row in snapshot['orders']))
     positions, follows, accounted, exit_through, _cursor = _fold(state, venue, models, snapshot)
     if fresh:
         for model in models.values():
@@ -67,7 +100,7 @@ def cycle(venue, state: State, config) -> dict:
     return {
         'status': 'read_only',
         'model_preview': decision,
-        'actual': _public_snapshot(snapshot),
+        'actual': _public_snapshot(actual_snapshot),
         'market_through': reference.last,
         'model_bull': {str(window): model.bull for window, model in models.items()},
         'entries_enabled': enabled,
@@ -79,8 +112,10 @@ def cycle(venue, state: State, config) -> dict:
     }
 
 
-def run(config, venue, *, monotonic=time.monotonic, wait=time.sleep, stopping=lambda: False):
-    """Observe until the deadline or Ctrl-C. Nothing is sent to the order API."""
+def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sleep, stopping=lambda: False):
+    """Run until the deadline or Ctrl-C; execution needs the explicit Demo gate."""
+    venue.write_attempted = False
+    venue._session_sent_start = len(getattr(venue, 'sent', ()))
     started = monotonic()
     deadline = started + config.session_seconds
     report = {
@@ -109,7 +144,7 @@ def run(config, venue, *, monotonic=time.monotonic, wait=time.sleep, stopping=la
                 report['cycles'] += 1
                 report['observation_current'] = False
                 try:
-                    current = cycle(venue, state, config)
+                    current = cycle(venue, state, config, execute=execute)
                     report.update(current)
                     report['observation_current'] = True
                     report.pop('reason', None)
@@ -145,10 +180,26 @@ def run(config, venue, *, monotonic=time.monotonic, wait=time.sleep, stopping=la
         finally:
             report['elapsed_seconds'] = max(0, monotonic() - started)
             report['pending_intents'] = len(state.pending())
-            report['write_attempted'] = False
+            if report['pending_intents']:
+                report.update(status='unknown', reason='Durable execution requires recovery', observation_current=False)
+                clear_stale(report)
+            import hashlib
+            from pathlib import Path
+            digest = hashlib.sha256()
+            for path in sorted(Path(__file__).parent.glob('*.py')):
+                digest.update(path.name.encode() + b'\0' + path.read_bytes() + b'\0')
+            report.update(execution_code_sha256=digest.hexdigest(), account_uid=config.account_uid,
+                          environment=config.environment, capital_limit_usdt=str(config.capital_limit),
+                          execution_enabled=execute, native_execution_verified=False)
+            report['write_attempted'] = _writes(venue)
             report['session_ended'] = True
             report['observation_current'] = False
             report['stops_while_down'] = 'this process does not amend a stop while it is stopped'
+            state.report(report)
+            try:
+                report['session_archive'] = state.archive(report)
+            except Unknown as exc:
+                report['archive_error'] = str(exc)
             state.report(report)
     return report
 
@@ -208,6 +259,7 @@ def _consume_bar(state, venue, models, open_ms, high, low, close):
     trades = _trades_for(state, venue, positions, follows, cursor)
     positions, follows, accounted, closed = apply_day(
         models, positions, follows, accounted, open_ms, trades, lambda: venue.completed_daily(None),
+        owners=getattr(state, '_execution_owners', None),
     )
     for window in closed:
         exit_through[str(window)] = models[window].last
@@ -223,7 +275,7 @@ def _consume_bar(state, venue, models, open_ms, high, low, close):
             'cap_high': model._view_cap_high(),
         }
     for window, item in positions.items():
-        if item is not None:
+        if item is not None and not item.get('dust'):
             positions[window] = advance(item, step_models[window], models[window])
     cursor, accounted = _cursor_after(trades, accounted, cursor)
     _stash(state, positions, follows, accounted, exit_through, cursor)
@@ -246,6 +298,7 @@ def _fold(state, venue, models, snapshot):
     for open_ms in later:
         positions, follows, accounted, closed = apply_day(
             models, positions, follows, accounted, open_ms, trades, lambda: venue.completed_daily(None),
+            owners=getattr(state, '_execution_owners', None),
         )
         for window in closed:
             exit_through[str(window)] = models[window].last
@@ -291,7 +344,9 @@ def _trades_for(state, venue, positions, follows, cursor):
         starts.append(int(cursor))
     if not starts:
         return []
-    trades = list(venue.trades(min(starts)))
+    trades = state.trades(venue, min(starts))
+    if cursor is not None:
+        trades = [trade for trade in trades if trade['time'] >= int(cursor)]
     seen = getattr(state, '_seen_trades', [])
     state._seen_trades = seen + trades
     return trades
@@ -343,7 +398,7 @@ def _follow_after(decision: dict, models: dict, positions: dict, follows: dict, 
         sleeve = decision['sleeves'].get(str(window), {})
         follow = follows.get(window)
         blocked = exit_through.get(str(window))
-        if positions[window] is not None:
+        if positions[window] is not None and not positions[window].get('dust'):
             out[window] = None
         elif blocked is not None and model.last is not None and model.last <= int(blocked):
             out[window] = None
@@ -362,6 +417,11 @@ def _follow_after(decision: dict, models: dict, positions: dict, follows: dict, 
 def _view(model: Model, position):
     if position is None:
         return model, D(0)
+    if position.get('dust'):
+        # The closed strategy is flat; every residual coin still stays owned.
+        view = Model.restore(model.checkpoint())
+        view._owned_dust = True
+        return view, D(position['qty'])
     view = Model.restore(model.checkpoint())
     view.entry = D(position['entry_fill'])
     view.position_peak = D(position['peak'])

@@ -1,0 +1,35 @@
+{
+  "format": 1,
+  "project": "spotquant",
+  "environment": "demo",
+  "account_uid": "",
+  "capital_limit_usdt": "",
+  "execution_code_sha256": "5ad9324a96df6eb72a1b1422cdb7bd3a8eca59d04b990770707d241a1620aee2",
+  "cases": {
+    "entry": {
+      "file": "entry.json",
+      "sha256": ""
+    },
+    "partial_protection": {
+      "file": "partial_protection.json",
+      "sha256": ""
+    },
+    "reduction": {
+      "file": "reduction.json",
+      "sha256": ""
+    },
+    "restart": {
+      "file": "restart.json",
+      "sha256": ""
+    },
+    "stopped_trigger": {
+      "file": "stopped_trigger.json",
+      "sha256": ""
+    },
+    "cancel_replace": {
+      "file": "cancel_replace.json",
+      "sha256": ""
+    }
+  },
+  "actual_observation_days": 0
+}

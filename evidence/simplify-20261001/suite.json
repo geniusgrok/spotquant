@@ -1,0 +1,204 @@
+{
+  "source": {
+    "git_head": "d80d74dcedc4e5437bc405822c478d4f7611fbc3",
+    "dirty": false,
+    "python_sources_sha256": "3374cf96decd5ef7b9bcb95eb38343824c56fe13e5cb162de5d8b7d18ec6d202"
+  },
+  "market_sha256": "3f6151860a87e8f82f315dc59581d6b73e4debf1ef5e3b86fb2e4d1ca987954e",
+  "baseline_reproduced": true,
+  "decision": {
+    "selected": "P4",
+    "eligible": [],
+    "rules_deleted": [],
+    "production_change_required": false
+  },
+  "results": {
+    "P4": {
+      "base": {
+        "final_cny": "490442.4950794574893094706194",
+        "cost_net_cagr": 0.7849236758519831,
+        "continuous_mdd": "0.3140065012898716870999525442",
+        "trades": 123,
+        "targets_met": false
+      },
+      "fee150": {
+        "final_cny": "470645.2147210423666439710972",
+        "cost_net_cagr": 0.7740110477168003,
+        "continuous_mdd": "0.3180909129575694878719798026",
+        "trades": 123,
+        "targets_met": false
+      },
+      "slip2": {
+        "final_cny": "480483.7695102073626488599101",
+        "cost_net_cagr": 0.7794820798778863,
+        "continuous_mdd": "0.3160507992618674050600022833",
+        "trades": 123,
+        "targets_met": false
+      },
+      "skip": {
+        "final_cny": "429610.3760779183950788762609",
+        "cost_net_cagr": 0.7500869264014827,
+        "continuous_mdd": "0.3262905909262027406996940253",
+        "trades": 117,
+        "targets_met": false
+      },
+      "outage": {
+        "final_cny": "290113.8247117275445199109425",
+        "cost_net_cagr": 0.6507534432558431,
+        "continuous_mdd": "0.3140065012898716870999525448",
+        "trades": 132,
+        "targets_met": false
+      }
+    },
+    "no-adverse": {
+      "base": {
+        "final_cny": "434479.9190763044619448276469",
+        "cost_net_cagr": 0.7530252144032088,
+        "continuous_mdd": "0.3447506635493801524240218093",
+        "trades": 123,
+        "targets_met": false
+      },
+      "fee150": {
+        "final_cny": "416945.9050380862656536158117",
+        "cost_net_cagr": 0.7423102633674752,
+        "continuous_mdd": "0.3471305794463932778144552130",
+        "trades": 123,
+        "targets_met": false
+      },
+      "slip2": {
+        "final_cny": "425659.7265477060922065323767",
+        "cost_net_cagr": 0.7476821975055408,
+        "continuous_mdd": "0.3459411440390401545278858311",
+        "trades": 123,
+        "targets_met": false
+      },
+      "skip": {
+        "final_cny": "380589.1277884353272088920974",
+        "cost_net_cagr": 0.7188110342672294,
+        "continuous_mdd": "0.3303700214923013272419342634",
+        "trades": 117,
+        "targets_met": false
+      },
+      "outage": {
+        "final_cny": "285523.0765947780373788562760",
+        "cost_net_cagr": 0.6468392019479268,
+        "continuous_mdd": "0.3447506635493801524240218085",
+        "trades": 131,
+        "targets_met": false
+      }
+    },
+    "no-blowoff": {
+      "base": {
+        "final_cny": "407527.9231368319817432291797",
+        "cost_net_cagr": 0.7363956832684084,
+        "continuous_mdd": "0.3140065012898716870999525435",
+        "trades": 123,
+        "targets_met": false
+      },
+      "fee150": {
+        "final_cny": "391077.5856779716741684238700",
+        "cost_net_cagr": 0.7257797445347813,
+        "continuous_mdd": "0.3180909129575694878719798023",
+        "trades": 123,
+        "targets_met": false
+      },
+      "slip2": {
+        "final_cny": "399089.9658326634284910875475",
+        "cost_net_cagr": 0.7309969144401098,
+        "continuous_mdd": "0.3160507992618674050600022836",
+        "trades": 123,
+        "targets_met": false
+      },
+      "skip": {
+        "final_cny": "356980.1272883228933872829219",
+        "cost_net_cagr": 0.7025060653629935,
+        "continuous_mdd": "0.3262905909262027406996940256",
+        "trades": 117,
+        "targets_met": false
+      },
+      "outage": {
+        "final_cny": "241066.9663502520792470504914",
+        "cost_net_cagr": 0.6058732324460487,
+        "continuous_mdd": "0.3140065012898716870999525438",
+        "trades": 132,
+        "targets_met": false
+      }
+    },
+    "no-reversal": {
+      "base": {
+        "final_cny": "224760.4455220887654849883458",
+        "cost_net_cagr": 0.5892199404106027,
+        "continuous_mdd": "0.3140065012898716870999525444",
+        "trades": 143,
+        "targets_met": false
+      },
+      "fee150": {
+        "final_cny": "214269.9793783613970797424093",
+        "cost_net_cagr": 0.577954200967743,
+        "continuous_mdd": "0.3180909129575694878719798031",
+        "trades": 143,
+        "targets_met": false
+      },
+      "slip2": {
+        "final_cny": "219471.9643119631223698918361",
+        "cost_net_cagr": 0.583597916630096,
+        "continuous_mdd": "0.3160507992618674050600022828",
+        "trades": 143,
+        "targets_met": false
+      },
+      "skip": {
+        "final_cny": "205451.6273321323036853133273",
+        "cost_net_cagr": 0.5681149143412871,
+        "continuous_mdd": "0.3262905909262027406996940252",
+        "trades": 134,
+        "targets_met": false
+      },
+      "outage": {
+        "final_cny": "224760.4455220887654849883458",
+        "cost_net_cagr": 0.5892199404106027,
+        "continuous_mdd": "0.3140065012898716870999525444",
+        "trades": 143,
+        "targets_met": false
+      }
+    },
+    "simple": {
+      "base": {
+        "final_cny": "183806.9600263829470714598800",
+        "cost_net_cagr": 0.542346803190541,
+        "continuous_mdd": "0.3447506635493801524240218092",
+        "trades": 142,
+        "targets_met": false
+      },
+      "fee150": {
+        "final_cny": "175287.9025324510796288402304",
+        "cost_net_cagr": 0.5314913043288474,
+        "continuous_mdd": "0.3471305794463932778144552122",
+        "trades": 142,
+        "targets_met": false
+      },
+      "slip2": {
+        "final_cny": "179439.5589721461990938274215",
+        "cost_net_cagr": 0.5368363876050852,
+        "continuous_mdd": "0.3459411440390401545278858313",
+        "trades": 142,
+        "targets_met": false
+      },
+      "skip": {
+        "final_cny": "167978.1895037406956369280375",
+        "cost_net_cagr": 0.5218127514334874,
+        "continuous_mdd": "0.3303700214923013272419342642",
+        "trades": 133,
+        "targets_met": false
+      },
+      "outage": {
+        "final_cny": "183806.9600263829470714598800",
+        "cost_net_cagr": 0.542346803190541,
+        "continuous_mdd": "0.3447506635493801524240218092",
+        "trades": 142,
+        "targets_met": false
+      }
+    }
+  },
+  "native_qualification": "NOT_QUALIFIED",
+  "out_of_sample": false
+}

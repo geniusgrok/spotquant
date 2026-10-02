@@ -171,10 +171,41 @@ class PreviewTests(unittest.TestCase):
 
     def test_the_capital_limit_caps_the_whole_pool(self):
         decision = portfolio(
-            {30: _model((10, 10, 10, 12)), 40: _model((10, 10, 10, 12))}, {}, _snap('1000'),
+            {30: _model((10, 10, 10, 12)), 40: _model((10, 10, 10, 12))}, {}, dict(_snap('1000'), avg_price=D(12)),
             entries_enabled=True, capital_limit=D('100'),
         )
         self.assertEqual(decision['orders'][0]['quoteOrderQty'], '100.00')
+
+    def test_consensus_default_increases_a_real_entry_with_a_bullish_holder(self):
+        views = {30: _model((10, 10, 10, 12)), 40: _model((10, 10, 10, 12)),
+                 50: _model((10, 10, 10, 9))}
+        owned = {30: D(0), 40: D(1), 50: D(0)}
+        snapshot = dict(_snap('100', '1'), avg_price=D(12))
+        baseline = portfolio(views, owned, snapshot, entries_enabled=True,
+                             capital_limit=None, consensus=False)
+        selected = portfolio(views, owned, snapshot, entries_enabled=True, capital_limit=None)
+        self.assertEqual(baseline['orders'][0]['quoteOrderQty'], '50.00')
+        self.assertEqual(selected['orders'][0]['quoteOrderQty'], '90.00')
+        self.assertEqual(D(selected['sleeves']['30']['order']['quoteOrderQty']), D(90))
+        capped = portfolio(views, owned, snapshot, entries_enabled=True, capital_limit=D(50))
+        self.assertEqual(D(capped['orders'][0]['quoteOrderQty']), D('38.00'))
+        self.assertEqual(selected['orders'][0]['sleeves'], [30])
+
+    def test_a_single_bullish_entry_does_not_invent_consensus(self):
+        views = {30: _model((10, 10, 10, 12)), 40: _model((10, 10, 10, 9)),
+                 50: _model((10, 10, 10, 9))}
+        snapshot = dict(_snap('100'), avg_price=D(12))
+        baseline = portfolio(views, {}, snapshot, entries_enabled=True, capital_limit=None, consensus=False)
+        self.assertEqual(portfolio(views, {}, snapshot, entries_enabled=True, capital_limit=None), baseline)
+        self.assertEqual(baseline['orders'][0]['quoteOrderQty'], '33.33')
+
+    def test_consensus_advisory_shares_sum_to_the_actual_pooled_buy(self):
+        views = {w: _model((10, 10, 10, 12)) for w in (30, 40, 50)}
+        selected = portfolio(views, {}, dict(_snap('100.01'), avg_price=D(12)),
+                             entries_enabled=True, capital_limit=None)
+        pooled = selected['orders'][0]
+        self.assertEqual(sum((D(selected['sleeves'][str(w)]['order']['quoteOrderQty'])
+                              for w in pooled['sleeves']), D(0)), D(pooled['quoteOrderQty']))
 
     def test_dust_on_three_sleeves_exits_together_and_does_not_buy_again(self):
         falling = _model((80000, 80000, 80000, 70000))

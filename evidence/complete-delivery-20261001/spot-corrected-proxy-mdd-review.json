@@ -1,0 +1,26 @@
+{
+  "consensus-base": {
+    "recomputed_mdd": "0.4120733483379037501201538135",
+    "reported_mdd": "0.4120733483379037501201538132",
+    "peak_loss_time_ms": 1727971200000,
+    "markers": 7502
+  },
+  "consensus-fee150": {
+    "recomputed_mdd": "0.4142212525279717792931851810",
+    "reported_mdd": "0.4142212525279717792931851810",
+    "peak_loss_time_ms": 1727971200000,
+    "markers": 7502
+  },
+  "consensus-slip2": {
+    "recomputed_mdd": "0.4145134897229151532610803110",
+    "reported_mdd": "0.4145134897229151532610803110",
+    "peak_loss_time_ms": 1727971200000,
+    "markers": 7502
+  },
+  "consensus-outage": {
+    "recomputed_mdd": "0.4120733483379037501201538135",
+    "reported_mdd": "0.4120733483379037501201538132",
+    "peak_loss_time_ms": 1727971200000,
+    "markers": 7502
+  }
+}

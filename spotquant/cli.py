@@ -1,10 +1,11 @@
-"""One Binance spot observation entrypoint. Unqualified execution stays blocked."""
+"""Binance spot read-only entrypoint and bounded owner-operated Demo check."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 from .binance import Binance
 from .config import load
@@ -19,14 +20,15 @@ CREDENTIALS = {
 }
 
 
-def connect(config):
-    """Read-only adapter. Demo credentials never go to the live host."""
+def connect(config, *, demo_execute=False):
+    """Default read-only adapter. Demo credentials go only to the Demo host."""
     names = CREDENTIALS[config.environment]
     key, secret = (os.environ.get(name, '') for name in names)
     if not key or not secret:
         raise Blocked(
             f'explicit Binance {config.environment} read credentials required ({names[0]}, {names[1]})')
-    return Binance(key=key, secret=secret, environment=config.environment, capital_limit=config.capital_limit)
+    return Binance(key=key, secret=secret, environment=config.environment, capital_limit=config.capital_limit,
+                   demo_execution_uid=config.account_uid if demo_execute else None)
 
 
 def _base_report(config) -> dict:
@@ -87,7 +89,7 @@ def observe(config_path) -> dict:
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog='spotquant',
-        description='Spotquant Binance BTCUSDT spot observation. Execution stays blocked.',
+        description='BTCUSDT spot observation and owner Demo check. Live execution stays blocked.',
     )
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ('status', 'run'):
@@ -96,12 +98,33 @@ def main(argv=None):
         if name == 'run':
             command.add_argument('--execute', action='store_true',
                                  help='Blocked. Native qualification stays NOT_QUALIFIED.')
+    exported = commands.add_parser('snapshot', help='Fresh read-only account JSON for research.operations combine')
+    exported.add_argument('--config', default='config.json')
+    exported.add_argument('--out', type=Path, required=True)
+    demo = commands.add_parser('demo-check', help='Owner-operated bounded Demo execution; does not qualify live')
+    demo.add_argument('--config', required=True)
+    demo.add_argument('--execute', action='store_true')
+    demo.add_argument('--authorize-uid', help='Repeat the dedicated Demo account UID for this invocation')
     args = parser.parse_args(argv)
     try:
         if args.command == 'run' and args.execute:
             # Before config, credentials, and network.
             raise Blocked('Native qualification is NOT_QUALIFIED; execution unavailable')
-        if args.command == 'status':
+        if args.command == 'snapshot':
+            from .snapshot import export
+            config = load(args.config)
+            report = dict(export(config, connect(config)), status='read_only')
+            with args.out.open('x') as stream:
+                json.dump(report, stream, indent=2)
+                stream.write('\n')
+        elif args.command == 'demo-check':
+            config = load(args.config)
+            if config.environment != 'demo' or config.capital_limit is None:
+                raise Blocked('Demo validation requires Demo UID, separate persistent state and capital ceiling')
+            if args.execute and args.authorize_uid != config.account_uid:
+                raise Blocked('Demo execution requires matching --authorize-uid')
+            report = run(config, connect(config, demo_execute=args.execute), execute=args.execute)
+        elif args.command == 'status':
             report = observe(args.config)
         else:
             config = load(args.config)

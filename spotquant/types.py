@@ -17,6 +17,10 @@ class Unknown(RuntimeError):
     """An observation is incomplete. Do not treat it as success or as an empty account."""
 
 
+class NotSent(Unknown):
+    """The adapter proves this order never reached its write transport."""
+
+
 def number(value: Any, name: str = 'number', *, positive: bool = False, nonnegative: bool = False) -> D:
     try:
         result = D(str(value))

@@ -1,14 +1,17 @@
 # Project state
 
-Spotquant is a read-only Binance BTCUSDT spot research path. No futures and no leverage.
+BTC-only完整工程及历史研究已完成，长期入口为Coinquant合约与Spotquant现货，Starquant只留研究参考。工程默认采用P4共识；原100% CAGR/连续MDD<=30%目标仍NOT_MET，真实原生案例0、实际观察0自然日，NOT_QUALIFIED。
 
-- CLI: `python3 -m spotquant status|run`. `run --execute` is blocked before config, credentials, and network.
-- Default book P4: sleeves SMA 30, 40, and 50 on one USDT pool. Each sleeve: confirm 2, fresh cross, crash filter 0.50 on the inclusive 252-day highest close, a close at least 61% above the SMA, a crash reversal (11% down, then 7% up, still at least half under the inclusive 400-day highest close), a repair hold that ignores the SMA exit, the blow-off, and the 4% close until the close is back above the SMA and no more than 11% under that high, the 4% close, and a stop 28% under the running high. The stop is an amended `STOP_LOSS` price. An armed sleeve buys the free USDT plus the estimated proceeds of that open's exits, divided by the sleeves that hold nothing after those exits. The preview merges the sleeves of one open into one market buy and one market sell. The meter's peak starts at the fill open. An entry preview, and a hold with no recorded fill, anchor the stop on the completed close. A buy that follows the entry preview is recorded from account trades, sleeves of one signal day share it, and each sleeve's preview peak starts at the fill. A balance drop is recorded only when account sells leave exactly the coins of recorded sleeves. The 4% close sells the next open and does not cap the loss. A daily history that stops before the current UTC day is unknown. A failed observation keeps neither the model view nor `followed_position`. The observations table keeps the latest 1000 rows. Path marks use 00:00 UTC; the daily curve and the final mark use the end of that UTC day.
-- Meter: `python3 -m research.rebuild` on daily bars, CNY via DEXCHUS, 0.1% conversion each way, spot taker fee 0.1%. The default trial name is P4.
-- P4: final CNY 490,442, cost-net CAGR 78.49%, continuous MDD 31.40% on 2024-10-13. 123 closed trades, 42 net wins (43 gross), sleeves 40 and 50 still long. `targets_met` is false. The seeded skip stress prints 75.01% and 32.63%. The seeded 21-day buy skip contains no armed open. A fixed 21-day outage from 2020-03-01, which freezes signal exits and stop tightening, prints 65.08% and 31.40%.
-- P3 (single SMA 40, the earlier default) remains the in-sample upper bound: final CNY 1,113,885, CAGR 101.67%, MDD 29.15% on 2020-03-16, 37 trades. P2 remains 75.19% and 33.10%. P1 remains 58.06% and 52.77%.
-- ETHUSDT with the frozen rules: P4 71.00% and 42.75%, single SMA 40 76.31% and 43.42%. Forward ledger from 2026-09-20: no fill through 2026-09-27.
-- Economic qualification: `NOT_MET` on P4. Native qualification: `NOT_QUALIFIED`. Execute stays blocked for that native reason.
-- Evidence: `evidence/sleeves-20260929/` (P4, source `dd25cfa5d98de139356b0d91ec0c7d2132edfd5e`), `evidence/forward/`, and the unchanged `evidence/rebuild-20260928/` (P1, P2, P3, frontier).
+全部20现货与28合约候选/压力账户完整且资金/执行审计通过，七个固定经济对照、九个实际预算账户及两套各五配比固定总10k组合已完成，无追加、转账或再平衡。正常795会话、Spot固定outage789；日终共同曲线2454天。预算及组合仅测base，联合连续MDD及四场景压力未验证。
 
-Everything was chosen on the full sample. Do not move the window or lower the targets.
+现货consensus唯一通过冻结全部采用门槛，基础51.8503% CAGR/41.2073%连续代理MDD，原等份47.7781%/41.4842%。共识改造保持真实信号，仅将已有新BUY在至少两个实际看多分仓时提高到至少90%可用现金，受原资金上限约束。研究default显式冻结等份。默认源13deeb4的2592组执行等价性通过；当前150项离线检查通过，核心标准库依赖不变。
+
+现货原件clean2d1e5fe保留16有效行及4失败共识行，失败排除。全卖残币/晚终态事务回滚/同归属修复源1fca802只需重跑原4项，修复4项全部完整通过。组装清楚保留16旧源+4新源，不重标测量源；最终集合SHA439edad38e7a2af382597d204f35cd0a6372ca9da98cdcf4c964852329568e92。原等份与共识各2500/5000/7500真实预算均独立795会话；共识预算源7b4b44e/d863ef7。
+
+Coin原995全28保留，exclusive派生3213仅去除slow-trend4项恰在END的负资金费，原24项资金/成交/MDD不变。所有替代未通过冻结压力约束，incumbent保留119.2284%/44.1051%。3213实际2500/5000/7500预算全部完成；资金规模改变成交和权益反馈路径，不能缩放、用小本金CAGR替代10k目标或认定某配比未来最优。
+
+assessment.json明确绑定48项来源、五个实际输入文件SHA、Coin市场/协议/会话身份及终点派生。联合beta从实际合计USDT/CNY日收益回归，不平均策略beta；算术残差/HAC7区间仅描述全样本历史，没有策略选择调整或未来alpha证明。年度2026仅到9月19日；非零余额天数含残币，另列>=5USDT名义日数。Spot OHLC路径/Coin分钟与量上界皆历史代理，不是盘口或原生执行。
+
+当前原生零模板为spot-*-consensus和perp-*-current。recovery-drill-consensus保留纯合成SQLite及会话报告，只读恢复余额/IDs不变、external BTC Unknown；它不计原生案例或实际30自然日。六原生案例、账户核对、保护空窗及实际30日仍须由所有者真实事件完成；本轮没有读取交易所凭据、访问真实账户、发订单/转账/设置。
+
+交付证据、完整指标CSV与图表见evidence/complete-delivery-20261001/ALPHA_BETA.md、RESULT.md、manifest.json；复现及所有者步骤见research/complete-delivery-GUIDE.md。源/资金/默认改造的独立审查记录随证据保留。最终CI与正常集成记录以Spot PR8、Coin PR56及Star PR12的公开状态为准，不再有运行中研究进程。本次用户已经授权全部工程与正常PR集成，无需重复确认；不得据此启动真实账户写入。
