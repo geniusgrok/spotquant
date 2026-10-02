@@ -98,11 +98,38 @@ def verify_source(source, kind):
     archive = subprocess.run(['git', 'archive', head, 'research', kind.replace('perp', 'coin') + 'quant'],
                              cwd=repo, check=True, capture_output=True).stdout
     digest = hashlib.sha256()
+    files = {}
     with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
         for member in sorted(tree.getmembers(), key=lambda m: m.name):
-            if member.isfile() and member.name.endswith('.py'):
-                digest.update(member.name.encode() + b'\0' + tree.extractfile(member).read() + b'\0')
+            if member.isfile() and (member.name.endswith('.py') or member.name in
+                    ('research/alpha_beta_spec.json', 'research/alpha-beta-PROTOCOL.md')):
+                content = tree.extractfile(member).read()
+                files[member.name] = hashlib.sha256(content).hexdigest()
+                if member.name.endswith('.py'):
+                    digest.update(member.name.encode() + b'\0' + content + b'\0')
     require(digest.hexdigest() == source.get('python_sources_sha256'), 'source digest differs from committed tree')
+    return files
+
+
+def verify_execution_equivalence(frozen, current, kind, spec_sha256, protocol_sha256):
+    """Only the Spot assessor may evolve independently of measured execution.
+
+    Both *full* historical source digests are proved first. Comparison of all
+    other tracked runtime/research Python paths is exact, including additions
+    and deletions. There is no caller-configurable exclusion or source override.
+    """
+    measured, executing = verify_source(frozen, kind), verify_source(current, kind)
+    for path, expected in (('research/alpha_beta_spec.json', spec_sha256),
+                           ('research/alpha-beta-PROTOCOL.md', protocol_sha256)):
+        require(measured.get(path) == executing.get(path) == expected,
+                'forward committed spec/protocol mismatch')
+    if kind == 'spot':
+        assessor = 'research/alpha_assessment.py'
+        require(assessor in measured and assessor in executing, 'tracked assessor missing from source proof')
+        measured = {k: v for k, v in measured.items() if k != assessor}
+        executing = {k: v for k, v in executing.items() if k != assessor}
+    require(measured == executing, 'forward execution source not equivalent outside the Spot assessor')
+    return checksum(measured)
 
 
 def environment(schedule_path, fx_path, market_root):
@@ -341,10 +368,68 @@ def monetary_fingerprint(row, kind):
     return checksum({k: evidence[k] for k in ('financial', 'fills', 'daily')})
 
 
+def coin_fill_relations(events):
+    """Resolve only recorded client/write and order/fill identity relations.
+
+    Repeated or unknown write attempts do not prove fills. An actual fill may
+    use their unique campaign relation; conflicting relations remain unknown.
+    Timestamps, proximity, active signals and trade side never assign campaigns.
+    """
+    writes, order_clients = {}, {}
+    for event in events:
+        client = event.get('identity') if event['event'] == 'write_attempt' else event.get('client_order_id')
+        if not client:
+            continue
+        require(isinstance(client, str), 'Coin client identity must be a string')
+        if event['event'] == 'write_attempt':
+            record = writes.setdefault(client, {'opportunities': set(), 'observations': 0})
+            record['observations'] += 1
+            opportunity = event.get('opportunity')
+            if opportunity is not None:
+                require(type(opportunity) is int, 'Coin opportunity identity must be an integer')
+                record['opportunities'].add(opportunity)
+        elif event['event'] == 'fill':
+            order = event.get('trade', event).get('orderId')
+            if order is not None:
+                order_clients.setdefault(str(order), set()).add(client)
+    relations = {}
+    for client, record in writes.items():
+        candidates = sorted(record['opportunities'])
+        relations[client] = {'client_order_id': client, 'opportunity_candidates': candidates,
+                             'write_observations': record['observations']}
+
+    def fill_link(event):
+        client = event.get('client_order_id')
+        order = event.get('trade', event).get('orderId')
+        clients = order_clients.get(str(order), set()) if order is not None else set()
+        origin = 'recorded_fill' if client else 'same_order_fill' if len(clients) == 1 else 'unknown'
+        if not client and len(clients) == 1:
+            client = next(iter(clients))
+        candidates = set(writes.get(client, {}).get('opportunities', ()))
+        direct = event.get('opportunity')
+        if direct is not None:
+            require(type(direct) is int, 'Coin fill opportunity identity must be an integer')
+            candidates.add(direct)
+        if len(clients) > 1:
+            status = 'unknown_conflicting_order_clients'
+        elif len(candidates) > 1:
+            status = 'unknown_conflicting_opportunities'
+        elif len(candidates) == 1:
+            status = 'recorded_fill_opportunity' if direct is not None else 'recorded_client_write_opportunity'
+        else:
+            status = 'unknown_no_recorded_opportunity'
+        return {'client_order_id': client, 'client_id_source': origin,
+                'opportunity': next(iter(candidates)) if not status.startswith('unknown_') else None,
+                'opportunity_link': status, 'opportunity_candidates': sorted(candidates),
+                'order_client_candidates': sorted(clients)}
+    return fill_link, list(relations.values())
+
+
 def diagnose(events, bars, kind):
     counts, reasons, exits, opportunities = Counter(), Counter(), Counter(), {}
     sizing, idle, ages, price_gaps = {}, [], [], []
     fills_by_opportunity, price_gap_links = {}, {}
+    fill_link, client_relations = coin_fill_relations(events) if kind == 'perp' else (None, [])
 
     def quantities(into, identity, values):
         key = json.dumps(identity, sort_keys=True)
@@ -367,9 +452,9 @@ def diagnose(events, bars, kind):
             fill = event.get('trade', event)
             filled['count'] += 1
             filled['quantity_btc'] += number(fill.get('qty', '0'))
+            provenance = fill_link(event) if fill_link else {'opportunity': event.get('opportunity', event.get('signal_ms'))}
             quantities(fills_by_opportunity,
-                       {'opportunity': event.get('opportunity', event.get('signal_ms')),
-                        'order_id': fill.get('order_id', fill.get('orderId')),
+                       {**provenance, 'order_id': fill.get('order_id', fill.get('orderId')),
                         'side': fill.get('side', 'BUY' if fill.get('buyer') else 'SELL'),
                         'exit_type': event.get('exit_type')},
                        {k: fill.get(k) for k in ('qty', 'quote', 'price', 'commission')})
@@ -447,6 +532,7 @@ def diagnose(events, bars, kind):
             'opportunity_age_ms': summary(ages), 'decision_vs_trigger_return': summary(price_gaps),
             'idle_cash_usdt': summary(idle), 'sizing_observations': list(sizing.values()), 'filled': dict(filled),
             'fill_size_observations': list(fills_by_opportunity.values()),
+            'client_write_opportunity_relations': client_relations,
             'decision_price_gap_observations': list(price_gap_links.values()),
             'size_summary_note': 'Counts/min/max/sums of actual recorded observations; repeated desired/accepted observations are not fills.',
             'opportunity_gate_observations': dict(actionability),
@@ -709,6 +795,8 @@ def assess(args):
     for kind in ('spot', 'perp'):
         expected = {n + '/' + s for n in SPEC[kind + '_candidates'] for s in SPEC[kind + '_scenarios']}
         bundles[kind] = consume(getattr(args, kind), kind, env, bars, fx, usd_returns, cny_returns, expected=expected)
+    execution_equivalence = verify_execution_equivalence(bundles['spot']['metadata']['source'], analysis_source,
+                                                       'spot', env['spec_sha256'], env['protocol_sha256'])
     calibrated, training = calibration_document(bundles, usd_returns, fx)
     if args.calibration_out:
         write_new(args.calibration_out, calibrated)
@@ -717,6 +805,7 @@ def assess(args):
         require(calibration == calibrated, 'calibration differs from deterministic training or bound raw inputs')
     report = {'format': 1, 'spec_sha256': env['spec_sha256'], 'protocol_sha256': env['protocol_sha256'],
               'analysis_source': analysis_source, 'input_environment': env,
+              'analysis_execution_equivalence_sha256': execution_equivalence,
               'training': training, 'calibration_sha256': calibration_hash,
               'baseline_verification': {}, 'selection': {}, 'risk': {}, 'risk_baseline_controls': {},
               'sensitivity': [], 'inputs': {}, 'accounts': {}, 'pending': [],
@@ -873,8 +962,15 @@ def forward_binding(analysis, kind):
     require(report['spec_sha256'] == sha(SPEC_PATH) and report['protocol_sha256'] == sha(PROTOCOL_PATH), 'forward spec/protocol mismatch')
     current = current_source(kind)
     frozen = report['inputs'][kind]['metadata']['source']
-    require(current['python_sources_sha256'] == frozen['python_sources_sha256'], 'forward source not equivalent to frozen rules')
-    require(current_source('spot')['python_sources_sha256'] == report['analysis_source']['python_sources_sha256'], 'analysis executable source mismatch')
+    verify_execution_equivalence(frozen, current, kind, report['spec_sha256'], report['protocol_sha256'])
+    analysis_current = current if kind == 'spot' else current_source('spot')
+    if kind == 'perp':
+        verify_execution_equivalence(report['inputs']['spot']['metadata']['source'], analysis_current,
+                                     'spot', report['spec_sha256'], report['protocol_sha256'])
+    verify_source(report['analysis_source'], 'spot')
+    verify_source(analysis_current, 'spot')
+    require(analysis_current['python_sources_sha256'] == report['analysis_source']['python_sources_sha256'],
+            'analysis executable source mismatch (including assessor)')
     selected = report['selection'][kind]['selected_research_candidate']
     return {'analysis_sha256': digest, 'source': frozen, 'spec_sha256': report['spec_sha256'],
             'protocol_sha256': report['protocol_sha256'], 'kind': kind, 'rule': selected,
