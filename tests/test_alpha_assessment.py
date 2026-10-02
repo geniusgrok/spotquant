@@ -142,6 +142,146 @@ class AssessmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'row calibration'):
             consume()
 
+    def calibration_fixture(self):
+        from decimal import Decimal as D
+        curve = [{'day_ms': a.START_MS + i * a.DAY, 'equity_usdt': value}
+                 for i, value in enumerate([1000, 1010, 990, 1020])]
+        bundles = {}
+        for kind in ('spot', 'perp'):
+            accounts = {n + '/' + scenario: {'candidate': n, 'scenario': scenario, 'valid': True,
+                        'rejections': [], 'cagr': .1, 'mdd': .1, 'curve': copy.deepcopy(curve),
+                        'raw_bundle_sha256': kind[0] * 64}
+                        for n in a.SPEC[kind + '_candidates'] for scenario in a.SPEC[kind + '_scenarios']}
+            metadata = self.spot() if kind == 'spot' else self.perp()['inputs']
+            metadata.pop('results', None)
+            bundles[kind] = {'accounts': accounts, 'raw_sha256': kind[0] * 64, 'metadata': metadata}
+        fx = lambda timestamp: D(7)
+        returns = [.01, -.02, .03, -.01]
+        document, _ = a.calibration_document(bundles, returns, fx)
+        return bundles, document, returns, fx
+
+    def test_project_calibration_is_exact_complete_deterministic_subset(self):
+        bundles, full, returns, fx = self.calibration_fixture()
+        for kind in ('spot', 'perp'):
+            project, _ = a.calibration_document({kind: bundles[kind]}, returns, fx)
+            path = self.root / (kind + '-calibration.json.gz')
+            with gzip.open(path, 'wt') as stream:
+                json.dump(project, stream, indent=3)
+            self.assertEqual(a.load_project_calibration(path, full, kind), (project, a.sha(path)))
+            baseline, candidate = a.SPEC[kind + '_candidates'][:2]
+            other = a.SPEC[('perp' if kind == 'spot' else 'spot') + '_candidates'][0]
+            mutations = [lambda d: d['profiles'].pop(baseline),
+                         lambda d: d['profiles'].pop(candidate),
+                         lambda d: d['profiles'].update({other: full['profiles'][other]}),
+                         lambda d: d['profiles'][candidate].update(scale='.5'),
+                         lambda d: d['profiles'][candidate].update(base_bundle_sha256='0' * 64),
+                         lambda d: d['profiles'][candidate].update(baseline_candidate='wrong'),
+                         lambda d: d['profiles'][candidate].update(calibration_end_ms=a.CUTOFF + 1),
+                         lambda d: d['profiles'][candidate].update(effective_from_ms=a.CUTOFF + 1),
+                         lambda d: d['profiles'][candidate].update(training_end_day_exclusive='2023-01-01'),
+                         lambda d: d['profiles'][candidate].update(trusted=True),
+                         lambda d: d['profiles'][candidate].pop('scale'),
+                         lambda d: d.update(format=True), lambda d: d.update(format=1.0),
+                         lambda d: d.update(cutoff_ms=a.CUTOFF + 1),
+                         lambda d: d.update(spec_sha256='0' * 64),
+                         lambda d: d.update(trusted=True), lambda d: d.pop('format')]
+            for index, mutate in enumerate(mutations):
+                altered = copy.deepcopy(project)
+                mutate(altered)
+                with gzip.open(path, 'wt') as stream:
+                    json.dump(altered, stream)
+                with self.subTest(kind=kind, mutation=index), self.assertRaisesRegex(ValueError, 'project calibration differs'):
+                    a.load_project_calibration(path, full, kind)
+
+    def test_assessment_project_and_global_calibrations_keep_actual_raw_hashes(self):
+        from contextlib import ExitStack
+        from types import SimpleNamespace
+        bundles, full, returns, fx = self.calibration_fixture()
+        global_path = self.root / 'global.json'
+        global_path.write_text(json.dumps(full))
+        project_paths = {}
+        for kind in ('spot', 'perp'):
+            project, _ = a.calibration_document({kind: bundles[kind]}, returns, fx)
+            project_paths[kind] = self.root / (kind + '.json')
+            project_paths[kind].write_text(json.dumps(project, indent=2))
+        real_consume = a.consume
+        def consume(path, kind, *values, **kwargs):
+            if path in ('spot', 'perp'):
+                self.assertEqual(len(kwargs['expected']), 28 if kind == 'spot' else 20)
+                return copy.deepcopy(bundles[kind])
+            return real_consume(path, kind, *values, **kwargs)
+        def run(overrides, global_file=global_path, wrong_hash=False, final=False):
+            args = SimpleNamespace(schedule=None, fx=None, market=None, spot='spot', perp='perp',
+                calibration=global_file, calibration_out=None, baseline_spot=None, baseline_perp=None,
+                combo_spot=None, combo_perp=None, sensitivity_perp=[], csv=None, markdown=None, final=final,
+                out=self.root / 'report.json')
+            args.out.unlink(missing_ok=True)
+            for kind in ('spot', 'perp'):
+                override = project_paths[kind] if kind in overrides else None
+                setattr(args, 'risk_' + kind + '_calibration', override)
+                calibration, digest = a.read_json(override or global_path)
+                if wrong_hash and override:
+                    digest = a.sha(global_path)
+                body = self.spot() if kind == 'spot' else self.perp()
+                meta = body if kind == 'spot' else body['inputs']
+                meta['risk_calibration_sha256'] = digest
+                if kind == 'spot':
+                    body['results'] = {k: v for k, v in body['results'].items() if k.endswith('-base')}
+                    for row in body['results'].values():
+                        profile = calibration['profiles'][row['candidate']]
+                        row['risk_calibration'] = dict(profile, sha256=digest)
+                        row['research_identity'].update(calibration_sha256=digest, risk_scale=profile['scale'])
+                else:
+                    body['results'] = {n: {'base': rows['base']} for n, rows in body['results'].items()}
+                    meta['risk_profiles'] = {n: calibration['profiles'][n] for n in a.SPEC['perp_candidates']}
+                path = self.root / ('risk-' + kind + '.json')
+                path.write_text(json.dumps(body))
+                setattr(args, 'risk_' + kind, path)
+            with ExitStack() as stack:
+                for name, value in [('source_identity', self.source), ('environment', self.env), ('load_daily', []),
+                                    ('PriorFX', fx), ('market_returns_for', (returns, returns)),
+                                    ('passive_controls', {}), ('verify_source', {}),
+                                    ('verify_execution_equivalence', 'e' * 64)]:
+                    stack.enter_context(patch.object(a, name, return_value=value))
+                stack.enter_context(patch.object(a, 'consume', side_effect=consume))
+                return a.assess(args)
+        for overrides in ((), ('spot',), ('perp',), ('spot', 'perp')):
+            report = run(overrides)
+            self.assertEqual(report['calibration_sha256'], a.sha(global_path))
+            self.assertEqual(report['calibration_scope'], 'full_deterministic_document')
+            self.assertEqual(report['risk_obligation_count'], 10)
+            self.assertEqual(len(report['accounts']), 60)
+            self.assertFalse(report['rules_freeze_ready'])
+            self.assertFalse(report['all_measured_accounts_valid'])
+            self.assertEqual((report['native_cases'], report['actual_account_days']), (0, 0))
+            for kind in ('spot', 'perp'):
+                actual_path = project_paths[kind] if kind in overrides else global_path
+                self.assertEqual(report['risk_calibrations'][kind]['raw_sha256'], a.sha(actual_path))
+                self.assertEqual(report['risk_calibrations'][kind]['scope'],
+                                 kind + '_deterministic_subset' if kind in overrides else 'full_deterministic_document')
+                self.assertEqual(report['risk_calibrations'][kind]['profiles'],
+                                 sorted(a.read_json(actual_path)[0]['profiles']))
+                self.assertEqual(report['inputs']['risk_' + kind]['metadata']['risk_calibration_sha256'], a.sha(actual_path))
+        report = run(('spot', 'perp'), global_file=None)
+        self.assertIsNone(report['calibration_sha256'])
+        with self.assertRaisesRegex(ValueError, 'raw hash'):
+            run(('spot',), wrong_hash=True)
+        with self.assertRaisesRegex(ValueError, 'requires.*calibration'):
+            run(('spot',), global_file=None)
+        with self.assertRaisesRegex(ValueError, 'pending registered work'):
+            run(('spot', 'perp'), final=True)
+        global_path.write_text(json.dumps(a.read_json(project_paths['spot'])[0]))
+        with self.assertRaisesRegex(ValueError, 'calibration differs'):
+            run(('spot', 'perp'))
+
+    def test_cli_accepts_project_calibration_paths(self):
+        with patch.object(a, 'assess') as assess:
+            a.main(['--spot', 'spot.json', '--perp', 'perp.json', '--out', 'report.json',
+                    '--risk-spot-calibration', 'spot-cal.json', '--risk-perp-calibration', 'perp-cal.json'])
+        args = assess.call_args.args[0]
+        self.assertEqual(args.risk_spot_calibration, Path('spot-cal.json'))
+        self.assertEqual(args.risk_perp_calibration, Path('perp-cal.json'))
+
     def test_forward_assessor_only_equivalence_uses_committed_trees_and_full_analysis_identity(self):
         import subprocess
         repo = self.root / 'source-repo'

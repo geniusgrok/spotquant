@@ -718,6 +718,17 @@ def calibration_document(bundles, market_returns, fx):
     return {'format': 1, 'cutoff_ms': CUTOFF, 'spec_sha256': sha(SPEC_PATH), 'profiles': profiles}, diagnostics
 
 
+def load_project_calibration(path, calibrated, kind):
+    """Verify against the full assessment, retaining the original file identity."""
+    document, digest = read_json(path)
+    expected = dict(calibrated, profiles={name: profile for name, profile in calibrated['profiles'].items()
+                                         if name in SPEC[kind + '_candidates']})
+    # Canonical JSON also distinguishes True/1 and 1.0/1 at this input boundary.
+    require(checksum(document) == checksum(expected),
+            'project calibration differs from deterministic training or bound raw inputs: ' + kind)
+    return document, digest
+
+
 def risk_inventory(bundle, kind):
     """Inventory every registered direction before seeing any rerun outcome."""
     names = SPEC[kind + '_candidates']
@@ -814,10 +825,17 @@ def assess(args):
     calibration, calibration_hash = (read_json(args.calibration) if args.calibration else (None, None))
     if calibration is not None:
         require(calibration == calibrated, 'calibration differs from deterministic training or bound raw inputs')
+    risk_calibrations = {}
+    for kind in ('spot', 'perp'):
+        path = getattr(args, 'risk_' + kind + '_calibration', None)
+        risk_calibrations[kind] = (load_project_calibration(path, calibrated, kind) if path else
+                                   (calibration, calibration_hash))
     report = {'format': 1, 'spec_sha256': env['spec_sha256'], 'protocol_sha256': env['protocol_sha256'],
               'analysis_source': analysis_source, 'input_environment': env,
               'analysis_execution_equivalence_sha256': execution_equivalence,
               'training': training, 'calibration_sha256': calibration_hash,
+              'calibration_scope': 'full_deterministic_document' if calibration is not None else None,
+              'risk_calibrations': {},
               'baseline_verification': {}, 'selection': {}, 'risk': {}, 'risk_baseline_controls': {},
               'sensitivity': [], 'inputs': {}, 'accounts': {}, 'pending': [],
               'passive_controls': passive_controls(bars, fx), 'actual_account_days': 0, 'native_cases': 0,
@@ -858,10 +876,17 @@ def assess(args):
         report['risk'][kind] = inventory
         report['risk_baseline_controls'][kind] = control
         if risk_path:
-            require(calibration is not None, 'actual risk bundle requires --calibration exact file')
+            risk_calibration, risk_calibration_hash = risk_calibrations[kind]
+            require(risk_calibration is not None,
+                    'actual risk bundle requires --calibration or --risk-' + kind + '-calibration exact file')
             require(bool(needed), 'no legal risk profiles for an invalid unscaled baseline')
             risk = consume(risk_path, kind, env, bars, fx, usd_returns, cny_returns, reference=bundle,
-                           calibration=calibration, calibration_sha=calibration_hash, expected=needed)
+                           calibration=risk_calibration, calibration_sha=risk_calibration_hash, expected=needed)
+            report['risk_calibrations'][kind] = {
+                'raw_sha256': risk_calibration_hash,
+                'scope': kind + '_deterministic_subset' if getattr(args, 'risk_' + kind + '_calibration', None)
+                         else 'full_deterministic_document',
+                'profiles': sorted(risk_calibration['profiles'])}
             report['inputs']['risk_' + kind] = {k: v for k, v in risk.items() if k != 'accounts'}
             for key, account in risk['accounts'].items():
                 if account['candidate'] == baseline:
@@ -1049,7 +1074,8 @@ def main(argv=None):
     parser.add_argument('--spot', type=Path)
     parser.add_argument('--perp', type=Path)
     parser.add_argument('--out', type=Path)
-    for name in ('calibration-out', 'calibration', 'risk-spot', 'risk-perp', 'combo-spot', 'combo-perp',
+    for name in ('calibration-out', 'calibration', 'risk-spot', 'risk-perp',
+                 'risk-spot-calibration', 'risk-perp-calibration', 'combo-spot', 'combo-perp',
                  'baseline-spot', 'baseline-perp', 'csv', 'markdown'):
         parser.add_argument('--' + name, type=Path)
     parser.add_argument('--sensitivity-perp', type=Path, action='append', default=[])
