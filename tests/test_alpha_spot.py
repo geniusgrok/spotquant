@@ -259,6 +259,84 @@ class AlphaSpotTests(unittest.TestCase):
             run()
             self.assertGreater(len(venue.fills), fills)
 
+    def test_core_stop_renews_opportunity_and_restore_keeps_its_identity(self):
+        for candidate in ('core-permanent', 'core-slow'):
+            with self.subTest(candidate=candidate), tempfile.TemporaryDirectory() as directory:
+                venue = HistoricalVenue(bars([D(100)] * 400 + [D(101)] * 8),
+                                        ORIGIN + 401 * DAY, D(1000), lambda t: D(7))
+                config = Config('1', directory, 30, 5, 'demo', '5000000')
+                p = alpha.Policy(candidate, venue)
+                def run(policy):
+                    with alpha.configured(policy):
+                        report = session.run(config, venue, execute=True, monotonic=venue.monotonic, wait=venue.wait)
+                    self.assertTrue(all('session deadline' in e['reason'] for e in report['errors']), report['errors'])
+                    return [row['sleeves']['200']['opportunity'] for row in policy.journal if row['event'] == 'decision'][-1]
+                run(p)
+                venue.advance(ORIGIN + 402 * DAY)
+                initial = run(p)
+                self.assertIsNotNone(initial['id'])
+                venue.trigger('70')
+                stopped = venue.fills[-1]
+                self.assertFalse(stopped['buyer'])
+                self.assertIsNone(run(p)['id'])
+                count = len(venue.fills)
+                self.assertIsNone(run(p)['id'])
+                self.assertEqual(len(venue.fills), count)
+                venue.advance(ORIGIN + 403 * DAY)
+                # New Policy instance reconstructs the confirmed exit from persisted fills.
+                restored = alpha.Policy(candidate, venue)
+                renewed = run(restored)
+                self.assertGreater(len(venue.fills), count)
+                self.assertNotEqual(renewed['id'], initial['id'])
+                self.assertEqual(renewed['trigger_bar_ms'], stopped['time'] // DAY * DAY)
+                self.assertEqual(renewed['exit_order_id'], str(stopped['order_id']))
+                self.assertEqual(renewed['exit_fill_ms'], stopped['time'])
+                self.assertEqual(D(renewed['trigger_close']), D(101))
+                self.assertLess(renewed['age_ms'], 60000)
+                count = len(venue.fills)
+                repeat = run(restored)
+                checkpoint = run(alpha.Policy(candidate, venue))
+                for later in (repeat, checkpoint):
+                    self.assertEqual(later['id'], renewed['id'])
+                    self.assertEqual(later['trigger_bar_ms'], renewed['trigger_bar_ms'])
+                    self.assertEqual(later['exit_order_id'], renewed['exit_order_id'])
+                    self.assertGreaterEqual(later['age_ms'], renewed['age_ms'])
+                self.assertEqual(len(venue.fills), count)
+
+    def test_core_provenance_ignores_partial_exit_and_slow_waits_for_bull_signal(self):
+        venue = HistoricalVenue(bars(), ORIGIN + 402 * DAY, D(1000), lambda t: D(7))
+        view = SimpleNamespace(last=ORIGIN + 404 * DAY, bull=True, streak=2)
+        buy = {'owner': {'sleeves': [200], 'order': {'side': 'BUY'}}, 'order_id': '1',
+               'last_ms': ORIGIN + 401 * DAY, 'net_btc': D(2)}
+        partial = {'owner': {'sleeves': [200], 'order': {'side': 'SELL'}}, 'order_id': '2',
+                   'last_ms': ORIGIN + 402 * DAY, 'net_btc': D(-1)}
+        closed = dict(partial, net_btc=D('-1.999999'))
+        for candidate in ('core-permanent', 'core-slow'):
+            p = alpha.Policy(candidate, venue)
+            p.state = SimpleNamespace(get=lambda key: ORIGIN + 400 * DAY)
+            unchanged = p.opportunity(200, view, 'consensus', [buy, partial])
+            self.assertNotIn('exit_order_id', unchanged)
+            renewed = p.opportunity(200, view, 'consensus', [buy, closed])
+            expected = 403 if candidate == 'core-slow' else 402
+            self.assertEqual(renewed['trigger_bar_ms'], ORIGIN + expected * DAY)
+            self.assertEqual(renewed['exit_order_id'], '2')
+
+    def test_bundle_hashes_exact_registered_protocol_path(self):
+        registered = alpha.SPEC.with_name('alpha-beta-PROTOCOL.md')
+        legacy = alpha.SPEC.with_name('PROTOCOL.md')
+        self.assertNotEqual(alpha.digest(registered.read_bytes()), alpha.digest(legacy.read_bytes()))
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'result.json'
+            with patch.object(alpha, 'source_identity', return_value={'dirty': False}), \
+                    patch.object(alpha, 'load_daily', return_value=[]), \
+                    patch.object(alpha, 'file_digest', return_value='market'), \
+                    patch.object(alpha, 'measure', return_value={'complete': False}), \
+                    patch.object(alpha.complete, 'PriorFX', return_value=None), \
+                    patch.object(Path, 'read_text', return_value='{"primary":{"starts_ms":[]}}'), \
+                    patch.object(Path, 'read_bytes', autospec=True, side_effect=lambda path: b'registered' if path == registered else b'other'):
+                alpha.main(['--out', str(output), '--candidate', 'consensus', '--scenario', 'base'])
+            self.assertEqual(json.loads(output.read_text())['protocol_sha256'], alpha.digest(b'registered'))
+
     def test_core_checkpoint_identity_rejects_even_flat_account_mismatch(self):
         venue = HistoricalVenue(bars(), ORIGIN + 401 * DAY, D(1000), lambda t: D(7))
         with tempfile.TemporaryDirectory() as directory:

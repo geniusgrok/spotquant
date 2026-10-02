@@ -149,10 +149,12 @@ class Policy:
                 raise Unknown('unattributed research fill')
             key = str(row['order_id'])
             meta = signals.get(signal_key(owner['order']['side'], owner['signal_ms'], owner['sleeves']), {})
-            event = records.setdefault(key, {'owner': owner, 'qty': D(0), 'quote': D(0),
+            event = records.setdefault(key, {'owner': owner, 'order_id': key, 'qty': D(0), 'quote': D(0),
+                'net_btc': D(0),
                 'first_ms': row['time'], 'last_ms': row['time'], 'meta': meta})
             event['qty'] += row['qty']
             event['quote'] += row['quote']
+            event['net_btc'] += follow._base_delta(row)
             event['last_ms'] = max(event['last_ms'], row['time'])
         return list(records.values())
 
@@ -188,10 +190,24 @@ class Policy:
 
     def opportunity(self, window, view, mechanism, records):
         trigger = None
+        exit_link = {}
         if window == 200:
+            # Actual allocated net fills reconstruct the campaign, including BTC
+            # fees and retained dust. A partial sale does not create a new entry.
+            balance = D(0)
+            exit_boundary = 0
+            for record in sorted(records, key=lambda r: (r['last_ms'], int(r['order_id']))):
+                if record['owner']['sleeves'] != [200]:
+                    continue
+                prior = balance
+                balance += record['net_btc']
+                if record['owner']['order']['side'] == 'SELL' and prior >= BASE_STEP and balance < BASE_STEP:
+                    exit_boundary = record['last_ms'] // DAY * DAY
+                    exit_link = {'exit_order_id': record['order_id'], 'exit_fill_ms': record['last_ms']}
             if self.core_mode == 'core-permanent' or view.bull:
-                trigger = max(int(self.state.get('entries_after') or view.last) + DAY,
-                              view.last - max(0, view.streak - 1) * DAY) if self.core_mode == 'core-slow' else int(self.state.get('entries_after') or view.last) + DAY
+                trigger = max(int(self.state.get('entries_after') or view.last) + DAY, exit_boundary)
+                if self.core_mode == 'core-slow':
+                    trigger = max(trigger, view.last - max(0, view.streak - 1) * DAY)
         elif mechanism == 'target-participation':
             trigger = view.last
         elif view.cap_enter:
@@ -203,11 +219,11 @@ class Policy:
         elif view.enter:
             trigger = view.last - max(0, view.streak - view.confirm) * DAY
         if trigger is None or trigger > view.last:
-            return {'id': None, 'trigger_bar_ms': None, 'trigger_close': None, 'age_ms': None}
+            return {'id': None, 'trigger_bar_ms': None, 'trigger_close': None, 'age_ms': None, **exit_link}
         index = bisect.bisect_left(self.bar_times, trigger)
         close = self.venue.all_bars[index][4] if index < len(self.bar_times) and self.bar_times[index] == trigger else None
         return {'id': f'{self.candidate}:{window}:{trigger}', 'trigger_bar_ms': trigger,
-                'trigger_close': close, 'age_ms': self.venue.now_ms - trigger - DAY}
+                'trigger_close': close, 'age_ms': self.venue.now_ms - trigger - DAY, **exit_link}
 
     def __call__(self, views, owned, snapshot, **kwargs):
         original_views = views
@@ -529,7 +545,7 @@ def main(argv=None):
             for future in as_completed(pending):
                 record(*pending[future], future.result())
     report = {'format': 1, 'source': source, 'spec_sha256': digest(SPEC.read_bytes()),
-              'protocol_sha256': digest(Path('research/PROTOCOL.md').read_bytes()),
+              'protocol_sha256': digest(SPEC.with_name('alpha-beta-PROTOCOL.md').read_bytes()),
               'market_sha256': file_digest(market_root),
               'schedule_sha256': digest(schedule_path.read_bytes()), 'fx_sha256': digest(fx_path.read_bytes()),
               'risk_calibration_sha256': digest(args.risk_calibration.read_bytes()) if args.risk_calibration else None,
