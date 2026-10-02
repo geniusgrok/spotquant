@@ -230,19 +230,187 @@ class AssessmentTests(unittest.TestCase):
         self.assertFalse(a.selection(rows, 'perp')['decisions']['fresh-entry']['eligible'])
 
     def test_outage_uses_actual_filtered_789_and_complete_requires_archive(self):
-        schedule = json.loads((a.ROOT.parent / 'coinquant/research/session_schedule.json').read_text())
-        starts = schedule['primary']['starts_ms']
+        # Synthetic 795-start fixture; six starts lie in the registered outage.
+        starts = ([a.START_MS + i * a.DAY for i in range(50)] +
+                  [1583020800000 + i * a.DAY for i in range(6)] +
+                  [1584835200000 + i * a.DAY for i in range(739)])
         actual = [v for v in starts if not 1583020800000 <= v < 1584835200000]
         self.assertEqual(len(actual), 789)
         row = self.spot()['results']['consensus-base']
         row.update(complete=True, cagr=.1, mdd='.2', final_cny='11000', final_usdt='1500',
-                   sessions=[{'start_ms': s, 'execution_unresolved': False, 'archive_verified': True, 'elapsed_seconds': 300} for s in actual])
+                   client_events=[], sessions=[{'start_ms': s, 'ended_ms': s + 300000, 'status': 'offline_execution',
+                     'errors': [], 'execution_unresolved': False, 'archive_verified': True,
+                     'archive_backup_sha256': 'a' * 64, 'elapsed_seconds': 300.0} for s in actual])
         self.assertEqual(a.row_validity(row, 'spot', starts, '10000', 'outage'), [])
         with self.assertRaises(ValueError):
             a.row_validity(row, 'spot', starts, '10000', 'base')
         row['sessions'][0]['archive_verified'] = False
         with self.assertRaisesRegex(ValueError, 'archive'):
             a.row_validity(row, 'spot', starts, '10000', 'outage')
+
+    def evidence_row(self):
+        row = self.spot()['results']['consensus-base']
+        start = 1578636000000
+        identity = 'sq-original'
+        order = {'symbol': 'BTCUSDT', 'side': 'BUY', 'type': 'MARKET', 'quoteOrderQty': '100'}
+        row.update(complete=True, final_cny='10000', final_usdt='1400', cagr=0, mdd='.1', cash_usdt='1000', btc='.01',
+                   audit={'passed': True, 'fees_usdt': '.1', 'cash_from_fills': '1000', 'btc_from_fills': '.01', 'no_deposits': True},
+                   fills=[{'id': 1, 'order_id': 1, 'time': start + 2000, 'qty': '.01', 'quote': '100', 'price': '10000',
+                           'buyer': True, 'commission': '.00001', 'commission_asset': 'BTC'}], daily={},
+                   positions={'30': {'qty': '.01', 'first_ms': start + 2000, 'sell_applied': {}}},
+                   allocations=[[identity, json.dumps({'order': order, 'sleeves': [30], 'signal_ms': start - a.DAY}),
+                                 'settled', json.dumps(dict(order, id=identity, clientOrderId=identity, orderId=1, executedQty='.01'))]],
+                   filters={'blocked': 0, 'missing': 0}, session_error_count=1,
+                   client_events=[{'method': 'POST', 'client_id': identity, 'sent_ms': start + 1000,
+                                   'received_ms': start + 2000, 'order': order}],
+                   sessions=[{'start_ms': start, 'status': 'unknown', 'cycles': 45,
+                              'errors': [{'cycle': 45, 'reason': 'session deadline reached'}], 'pending_intents': 0,
+                              'elapsed_seconds': 300.1989998817444, 'ended_ms': 1578636300199,
+                              'archive_verified': True, 'archive_backup_sha256': 'a' * 64, 'execution_unresolved': False}])
+        return row
+
+    def test_original_read_completion_and_actual_write_deadlines_not_epsilon(self):
+        row = self.evidence_row()
+        a.verify_spot_timing(row)
+        start = row['sessions'][0]['start_ms']
+        # A write sent 1ms before deadline is allowed to finish 999ms afterward.
+        row['client_events'][0].update(sent_ms=start + 299999, received_ms=start + 300999)
+        row['sessions'][0].update(ended_ms=start + 300999, elapsed_seconds=(start + 300999) / 1000 - start / 1000)
+        a.verify_spot_timing(row)
+        row['client_events'][0].update(sent_ms=start + 300000, received_ms=start + 301000)
+        with self.assertRaisesRegex(ValueError, 'dispatch outside'):
+            a.verify_spot_timing(row)
+        row = self.evidence_row()
+        row['sessions'][0].update(ended_ms=start + 300200, elapsed_seconds=(start + 300200) / 1000 - start / 1000)
+        with self.assertRaisesRegex(ValueError, 'lacks an actual'):
+            a.verify_spot_timing(row)
+        row = self.evidence_row()
+        row['sessions'][0]['elapsed_seconds'] += .000001
+        with self.assertRaisesRegex(ValueError, 'elapsed clock'):
+            a.verify_spot_timing(row)
+        row = self.evidence_row()
+        row['client_events'][0]['received_ms'] += 1
+        with self.assertRaisesRegex(ValueError, 'latency'):
+            a.verify_spot_timing(row)
+
+    def test_full_baseline_evidence_detects_money_ownership_actions_and_clocks(self):
+        row = self.evidence_row()
+        expected = a.evidence_fingerprints(row, 'spot')
+        mutations = [lambda r: r['audit'].update(fees_usdt='99'),
+                     lambda r: r['sessions'][0].update(cycles=1),
+                     lambda r: r['sessions'][0].update(status='blocked'),
+                     lambda r: r['sessions'][0].update(ended_ms=0),
+                     lambda r: r.update(client_events=[]),
+                     lambda r: r['client_events'][0]['order'].update(quoteOrderQty='1'),
+                     lambda r: r.update(positions={}),
+                     lambda r: r['allocations'][0].__setitem__(2, 'unknown'),
+                     lambda r: r['fills'][0].update(qty='999')]
+        for mutate in mutations:
+            changed = copy.deepcopy(row)
+            mutate(changed)
+            self.assertNotEqual(expected, a.evidence_fingerprints(changed, 'spot'))
+        changed = json.loads(json.dumps(row).replace('sq-original', 'sq-renamed'))
+        changed['sessions'][0]['archive_backup_sha256'] = 'b' * 64
+        self.assertEqual(expected, a.evidence_fingerprints(changed, 'spot'))
+        changed['sessions'][0]['archive_verified'] = False
+        with self.assertRaisesRegex(ValueError, 'archive proof'):
+            a.evidence_fingerprints(changed, 'spot')
+
+    def test_original_reference_is_pinned_before_any_source_or_comparison_work(self):
+        fake = self.root / 'substitute.json'
+        fake.write_text(json.dumps({'plausible': 'substituted reference'}))
+        for kind in ('spot', 'perp'):
+            with self.assertRaisesRegex(ValueError, 'approved immutable'):
+                a.original_baseline(fake, kind, {}, self.env)
+        self.assertEqual(a.APPROVED_BASELINES['spot'], 'cf075b86ba5df590e078a7c626c53cb20937be955cfb6ad8d41eae19b78645e8')
+        self.assertEqual(a.APPROVED_BASELINES['perp'], '15dd7bfc242d52bf692663179cd1e3867418f8b55a4cad0894d253a8b296f00a')
+
+    def test_invalid_base_keeps_all_ten_obligations_with_no_fabricated_profile(self):
+        inventories = []
+        for kind in ('spot', 'perp'):
+            names = a.SPEC[kind + '_candidates']
+            accounts = {n + '/base': {'valid': True, 'rejections': [], 'raw_bundle_sha256': 'a' * 64} for n in names}
+            accounts[names[1] + '/base'].update(valid=False, rejections=['measurement_incomplete'])
+            inventory, needed, control = a.risk_inventory({'accounts': accounts}, kind)
+            inventories.extend(inventory)
+            self.assertEqual(inventory[names[1]]['status'], 'not_applicable_due_to_invalid_unscaled_base')
+            self.assertEqual(inventory[names[1]]['rejections'], ['measurement_incomplete'])
+            self.assertNotIn(names[1] + '/base', needed)
+            self.assertIn(names[0] + '/base', needed)
+            self.assertEqual(control['status'], 'pending_actual_unity_control')
+            accounts[names[0] + '/base'].update(valid=False, rejections=['audit_failed'])
+            blocked, _, _ = a.risk_inventory({'accounts': accounts}, kind)
+            self.assertEqual(blocked[names[2]]['status'], 'pending_valid_unscaled_baseline_for_calibration')
+        self.assertEqual(len(inventories), 10)
+        body = self.spot()
+        path = self.root / 'missing-profile.json'
+        path.write_text(json.dumps(body))
+        with patch.object(a, 'verify_source'), self.assertRaisesRegex(ValueError, 'no legal calibration profile'):
+            a.consume(path, 'spot', self.env, [], None, [], [], calibration={'profiles': {}})
+
+    def test_final_rejected_inventory_closes_work_without_claiming_validity(self):
+        from decimal import Decimal as D
+        from types import SimpleNamespace
+        from contextlib import ExitStack
+        baseline_files = {'spot': self.root / 'spot-original', 'perp': self.root / 'perp-original'}
+        bundles = {}
+        for kind in ('spot', 'perp'):
+            accounts = {n + '/' + scenario: {'candidate': n, 'scenario': scenario, 'valid': False,
+                        'rejections': ['measurement_incomplete'], 'cagr': None, 'mdd': None,
+                        'raw_bundle_sha256': 'a' * 64}
+                        for n in a.SPEC[kind + '_candidates'] for scenario in a.SPEC[kind + '_scenarios']}
+            bundles[kind] = {'accounts': accounts, 'raw_sha256': 'a' * 64, 'metadata': {'source': self.source}}
+        sensitivities = []
+        for index, (capital, offset) in enumerate([('9900', 0), ('10100', 0), ('10000', -60000), ('10000', 60000)]):
+            path = self.root / ('sensitivity-' + str(index) + '.json')
+            path.write_text(json.dumps({'inputs': {'initial_cny': capital, 'start_offset_ms': offset},
+                                        'results': {'incumbent': {'base': {}}}}))
+            sensitivities.append(path)
+        args = SimpleNamespace(schedule=None, fx=None, market=None, spot='spot', perp='perp',
+            calibration=None, calibration_out=self.root / 'calibration.json',
+            baseline_spot=baseline_files['spot'], baseline_perp=baseline_files['perp'],
+            combo_spot=None, combo_perp=None, risk_spot=None, risk_perp=None,
+            sensitivity_perp=sensitivities, out=self.root / 'final.json', csv=None, markdown=None, final=True)
+        def consume(path, kind, *args, **kwargs):
+            if path in ('spot', 'perp'):
+                return copy.deepcopy(bundles[kind])
+            return {'accounts': {'incumbent/base': copy.deepcopy(bundles['perp']['accounts']['incumbent/base'])},
+                    'metadata': {}, 'raw_sha256': 'b' * 64}
+        with ExitStack() as stack:
+            for name, value in [('source_identity', self.source), ('environment', self.env), ('load_daily', []),
+                                ('PriorFX', lambda timestamp: D(7)), ('market_returns_for', ([], [])),
+                                ('passive_controls', {}), ('original_baseline', {'passed': False})]:
+                stack.enter_context(patch.object(a, name, return_value=value))
+            stack.enter_context(patch.object(a, 'consume', side_effect=consume))
+            report = a.assess(args)
+        self.assertFalse(report['registered_work_pending'])
+        self.assertFalse(report['risk_accounts_pending'])
+        self.assertFalse(report['all_measured_accounts_valid'])
+        self.assertFalse(report['rules_freeze_ready'])
+        self.assertEqual(report['risk_obligation_count'], 10)
+        self.assertTrue(all(item['status'] == 'not_applicable_due_to_invalid_unscaled_base'
+                            for group in report['risk'].values() for item in group.values()))
+        self.assertEqual(json.loads(args.calibration_out.read_text())['profiles'], {})
+
+    def test_causal_sizes_are_actual_and_coin_trigger_gap_has_identity(self):
+        spot = [{'event': 'decision', 'opportunity_id': 'op1', 'constraints': [{'reason': 'cash'}],
+                 'desired_orders': [{'side': 'BUY', 'sleeves': [30], 'quoteOrderQty': '1000'}],
+                 'accepted_orders': [{'side': 'BUY', 'sleeves': [30], 'quoteOrderQty': '100'}]}]
+        old = a.diagnose(spot, [], 'spot')
+        spot[0]['desired_orders'][0]['quoteOrderQty'] = '999999'
+        spot[0]['accepted_orders'][0]['quoteOrderQty'] = '1'
+        new = a.diagnose(spot, [], 'spot')
+        self.assertNotEqual(old, new)
+        self.assertEqual(new['sizing_observations'][0]['values']['quoteOrderQty']['max'], '999999')
+        coin = [{'event': 'decision', 'opportunity': 123, 'trigger': {'close': '100'},
+                 'decision_mark': '120', 'reason': 'hold', 'constraint': 'target'},
+                {'event': 'entry_sizing', 'opportunity': 123, 'desired_btc': '2', 'accepted_btc': '1', 'constraint': 'cash'},
+                {'event': 'fill', 'trade': {'orderId': 1, 'side': 'BUY', 'qty': '.5', 'price': '120'}}]
+        result = a.diagnose(coin, [], 'perp')
+        self.assertEqual(result['decision_vs_trigger_return']['n'], 1)
+        self.assertAlmostEqual(result['decision_vs_trigger_return']['mean'], .2)
+        self.assertEqual(result['decision_price_gap_observations'][0]['identity']['opportunity'], 123)
+        self.assertEqual(result['fill_size_observations'][0]['values']['qty']['sum'], '0.5')
 
     def test_diagnostic_warmup_distinct_ids_future_tail_and_actual_fill(self):
         events = [{'event': 'opportunity', 'identity': 1, 'at_ms': a.START_MS - a.DAY, 'close': '100'},
