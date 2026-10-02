@@ -540,12 +540,16 @@ def diagnose(events, bars, kind):
             'diagnostic_only': 'Spot public daily closes at floored horizon; unavailable tails excluded. Post-run price observations; not executable fills, missed realized profit, or decision inputs.'}
 
 
-def financial(row, curve, bars, fx, market_returns, cny_returns, initial):
+def financial(row, curve, bars, fx, market_returns, cny_returns, initial, *, kind):
     usd_initial = float(D(str(initial)) / fx(START_MS) * D('.999'))
     cny_metrics, cny_r = daily_metrics([r['equity_cny'] for r in curve], initial)
     usd_metrics, usd_r = daily_metrics([r['equity_usdt'] for r in curve], usd_initial)
     usd_metrics['final_usdt'] = usd_metrics.pop('final_cny')
-    require(abs(cny_metrics['cagr'] - number(row['cagr'])) <= 1e-8, 'account CAGR differs from actual curve')
+    require(kind in ('spot', 'perp'), 'unknown account project kind')
+    # Match each original producer's year and exact registered account interval.
+    account_year_days = 365.25 if kind == 'spot' else 365.2425
+    account_cagr = (curve[-1]['equity_cny'] / initial) ** (account_year_days * DAY / (END_MS - START_MS)) - 1
+    require(abs(account_cagr - number(row['cagr'])) <= 1e-8, 'account CAGR differs from actual curve')
     require(number(row['mdd']) + 1e-8 >= cny_metrics['daily_mdd'], 'continuous MDD below closing curve MDD')
     # The original helper is retained for all identifiable ordinary account paths.
     down = [i for i, v in enumerate(market_returns) if v < 0]
@@ -562,8 +566,15 @@ def financial(row, curve, bars, fx, market_returns, cny_returns, initial):
         years[year] = years.get(year, 0.0) + math.log1p(ret)
     total = sum(years.values())
     start = next(i for i, r in enumerate(curve) if r['day_ms'] >= CUTOFF)
-    result.update(usdt_metrics=usd_metrics,
-                  validation_2022_plus={'usdt': daily_metrics([r['equity_usdt'] for r in curve[start:]], curve[start - 1]['equity_usdt'])[0],
+    validation_usdt = daily_metrics([r['equity_usdt'] for r in curve[start:]], curve[start - 1]['equity_usdt'])[0]
+    validation_usdt['final_usdt'] = validation_usdt.pop('final_cny')
+    result.update(usdt_metrics=usd_metrics, registered_account_cagr=number(row['cagr']),
+                  annualization={'account_kind': kind, 'account_year_days': account_year_days,
+                                 'account_start_ms': START_MS, 'account_end_exclusive_ms': END_MS,
+                                 'daily_metrics_cagr_year_days': 365.25,
+                                 'daily_volatility_year_days': 365.25,
+                                 'regression_arithmetic_year_days': 365.25},
+                  validation_2022_plus={'usdt': validation_usdt,
                                         'cny': daily_metrics([r['equity_cny'] for r in curve[start:]], curve[start - 1]['equity_cny'])[0],
                                         'regression': safe_regression(usd_r[start:], market_returns[start:])},
                   calendar_log_return=years,
@@ -639,7 +650,7 @@ def consume(path, kind, env, bars, fx, market_returns, cny_returns, *, expected=
         if not rejection:
             curve = canonical(row, bars, fx, float(capital), kind)
             evidence = evidence_fingerprints(row, kind)
-            item.update(financial=financial(row, curve, bars, fx, market_returns, cny_returns, float(capital)),
+            item.update(financial=financial(row, curve, bars, fx, market_returns, cny_returns, float(capital), kind=kind),
                         monetary_sha256=checksum({k: evidence[k] for k in ('financial', 'fills', 'daily')}),
                         evidence_sha256=evidence)
             # Only base curves are needed for calibration/actual rerun matching.

@@ -590,15 +590,54 @@ class AssessmentTests(unittest.TestCase):
         curve = a.canonical(row, bars, fx, 10000, 'spot')
         row['cagr'] = a.daily_metrics([r['equity_cny'] for r in curve], 10000)[0]['cagr']
         market, cny = a.market_returns_for(bars, fx)
-        result = a.financial(row, curve, bars, fx, market, cny, 10000)
+        result = a.financial(row, curve, bars, fx, market, cny, 10000, kind='spot')
         self.assertEqual(len(curve), (a.END_MS - a.START_MS) // a.DAY)
         self.assertEqual(result['usdt_btc_regression']['beta_btc'], 0)
         self.assertIn('validation_2022_plus', result)
+        for metrics in (result['usdt_metrics'], result['validation_2022_plus']['usdt']):
+            self.assertIn('final_usdt', metrics)
+            self.assertNotIn('final_cny', metrics)
+            self.assertEqual(metrics['final_usdt'], curve[-1]['equity_usdt'])
+        self.assertEqual(result['annualization']['account_year_days'], 365.25)
         self.assertEqual(result['fees_usdt'], '0')
         self.assertEqual(result['calendar_2026'], 'partial through 2026-09-19 UTC')
         row['cagr'] = 10
         with self.assertRaisesRegex(ValueError, 'CAGR differs'):
-            a.financial(row, curve, bars, fx, market, cny, 10000)
+            a.financial(row, curve, bars, fx, market, cny, 10000, kind='spot')
+
+    def test_coin_original_cagr_uses_registered_year_not_daily_normalization(self):
+        from decimal import Decimal as D
+        # Real preserved Coin base terminal money/CAGR; synthetic daily path, no replay.
+        final = 1951753.808294805
+        raw_cagr = 1.1922835553585416
+        days = (a.END_MS - a.START_MS) // a.DAY
+        curve = [{'day_ms': day, 'equity_cny': 10000 * (final / 10000) ** ((i + 1) / days),
+                  'equity_usdt': 10000 * (final / 10000) ** ((i + 1) / days) / 7 / .999}
+                 for i, day in enumerate(range(a.START_MS, a.END_MS, a.DAY))]
+        curve[-1]['equity_cny'] = final
+        row = {'cagr': raw_cagr, 'mdd': 0, 'audit': {'fees_usdt': '0'}}
+        def assess(kind='perp'):
+            return a.financial(row, curve, [], lambda stamp: D(7), [0] * days,
+                               [0] * days, 10000, kind=kind)
+        result = assess()
+        self.assertEqual(row['cagr'], raw_cagr)
+        self.assertEqual(result['registered_account_cagr'], raw_cagr)
+        self.assertAlmostEqual(result['metrics']['cagr'], 1.1923188914655962, places=14)
+        self.assertEqual(result['annualization'], {
+            'account_kind': 'perp', 'account_year_days': 365.2425,
+            'account_start_ms': a.START_MS, 'account_end_exclusive_ms': a.END_MS,
+            'daily_metrics_cagr_year_days': 365.25, 'daily_volatility_year_days': 365.25,
+            'regression_arithmetic_year_days': 365.25})
+        self.assertIn('final_usdt', result['validation_2022_plus']['usdt'])
+        self.assertNotIn('final_cny', result['validation_2022_plus']['usdt'])
+        with self.assertRaisesRegex(ValueError, 'CAGR differs'):
+            assess('spot')
+        with self.assertRaisesRegex(ValueError, 'unknown account project kind'):
+            assess('unknown')
+        for wrong in (result['metrics']['cagr'], raw_cagr + .01):
+            row['cagr'] = wrong
+            with self.assertRaisesRegex(ValueError, 'CAGR differs'):
+                assess()
 
     def test_forward_latest_only_atomic_integrity_future_and_source_mismatch(self):
         ledger = self.root / 'forward.json'
