@@ -174,6 +174,83 @@ class AdoptionTests(unittest.TestCase):
         adopted = measure('base', rows, starts, lambda t: D(7), limit=3)
         self.assertEqual(evidence_fingerprints(original, 'spot'), evidence_fingerprints(adopted, 'spot'))
 
+    def test_canonical_unscaled_and_file_calibrated_rows_enter_immutable99_consumer(self):
+        from pathlib import Path
+        import shutil
+        import subprocess
+        from research import alpha_assessment as assessor
+        from research.adoption_spot import CUTOFF, SPEC, measure
+        from test_alpha_spot import bars
+        # This consumer is byte-identical to analysis99; never stub its gates.
+        self.assertEqual(hashlib.sha256(Path(assessor.__file__).read_bytes()).hexdigest(),
+                         'a5bb0569f25e66b5aa660b0106d42c3ecffc7f30ebc5e2cf1b1216958ff43edf')
+        root = Path(__file__).resolve().parents[1]
+        rows = bars()
+        starts = [ORIGIN + i * DAY for i in (401, 402, 403)]
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            source_tree = work / 'source'
+            # Commit an exact test snapshot so dirty development trees and shallow
+            # CI checkouts both exercise real Git-archive source verification.
+            paths = sorted(p.relative_to(root) for folder in ('spotquant', 'research')
+                           for p in (root / folder).rglob('*.py'))
+            source_digest = hashlib.sha256()
+            for relative in paths:
+                content = (root / relative).read_bytes()
+                source_digest.update(str(relative).encode() + b'\0' + content + b'\0')
+                target = source_tree / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+            for path in (SPEC, assessor.PROTOCOL_PATH):
+                shutil.copyfile(path, source_tree / 'research' / path.name)
+            def git(*args):
+                return subprocess.check_output(['git', *args], cwd=source_tree, text=True).strip()
+            git('init', '-q')
+            git('add', '.')
+            git('-c', 'user.name=Offline test', '-c', 'user.email=offline@example.invalid',
+                '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Exact canonical test source')
+            source = dict(dirty=False, git_head=git('rev-parse', 'HEAD'),
+                          python_sources_sha256=source_digest.hexdigest())
+            env = dict(starts=starts, spec_sha256=assessor.sha(SPEC),
+                       protocol_sha256=assessor.sha(assessor.PROTOCOL_PATH),
+                       fx_sha256=hashlib.sha256(b'synthetic constant FX 7').hexdigest(),
+                       schedule_sha256=assessor.checksum(starts),
+                       market_sha256=assessor.checksum([[str(v) for v in row] for row in rows]))
+            profile = dict(scale='.5', effective_from_ms=CUTOFF, calibration_end_ms=CUTOFF,
+                           training_end_day_exclusive='2022-01-01', base_bundle_sha256='a' * 64,
+                           baseline_candidate='consensus')
+            calibration = dict(format=1, cutoff_ms=CUTOFF, spec_sha256=env['spec_sha256'],
+                               profiles={'atr-stop': profile})
+            cal_path = work / 'calibration.json'
+            cal_path.write_text(json.dumps(calibration))
+            for calibrated in (False, True):
+                with self.subTest(calibrated=calibrated):
+                    path = cal_path if calibrated else None
+                    cal_sha = assessor.sha(path) if path else None
+                    row = measure('base', rows, starts, lambda t: D(7), limit=3, calibration_path=path)
+                    self.assertTrue(row['audit']['passed'])
+                    self.assertEqual(row['execution_unresolved_sessions'], 0)
+                    self.assertTrue(all(s['archive_verified'] for s in row['sessions']))
+                    bundle = dict(format=1, source=source, risk_calibration_sha256=cal_sha,
+                                  results={'atr-stop-base': row},
+                                  **{k: v for k, v in env.items() if k.endswith('sha256')})
+                    raw = work / ('calibrated.json' if calibrated else 'unscaled.json')
+                    raw.write_text(json.dumps(bundle))
+                    # Only relocate the verified Git source repository; the immutable
+                    # metadata, source, identity, profile and validity gates all run.
+                    with patch.object(assessor, 'ROOT', source_tree):
+                        consumed = assessor.consume(raw, 'spot', env, rows, lambda t: D(7), [], [],
+                            expected={'atr-stop/base'}, calibration=calibration if calibrated else None,
+                            calibration_sha=cal_sha)
+                    account = consumed['accounts']['atr-stop/base']
+                    self.assertEqual(account['components'], ['atr-stop'])
+                    self.assertEqual(account['rejections'], ['measurement_incomplete'])
+                    self.assertFalse(account['valid'])
+                    self.assertEqual(row['research_identity']['calibration_sha256'], cal_sha)
+                    self.assertEqual(row['risk_calibration'], dict(profile, sha256=cal_sha)
+                                     if calibrated else {'scale': '1', 'sha256': None})
+                    self.assertEqual(row['research_identity']['execution'], 'canonical_shared_session')
+
     def test_canonical_meter_never_installs_research_decisions(self):
         from research import complete_spot
         self.assertTrue('canonical' in __import__('inspect').signature(complete_spot.measure).parameters)

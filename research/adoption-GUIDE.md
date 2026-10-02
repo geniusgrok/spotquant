@@ -6,7 +6,7 @@ The stored Model uses version 5 checkpoints with fourteen timestamped completed 
 
 Cycle entry rejects old rules, old or malformed checkpoints, research wrappers, wrong sleeve/rule parameters, missing checkpoints over durable state and incompatible pending allocations before Lifecycle recovery. It does not rewrite old state, remove orders or infer a flat account from a new directory. Migration or recovery with a frozen old executable is a separate controlled procedure.
 
-After the original financial chain has finished and this committed source is reviewed and frozen, the coordinator may run these five accounts serially with the original inputs:
+After the original Spot producers have finished and this committed source is reviewed and frozen, the coordinator may run these five accounts with the original inputs, strictly serially with at most one canonical process. Disjoint Coin producers may still run; global financial acceptance remains required before adoption:
 
 ```sh
 python3 -m research.adoption_spot --scenario base --out /tmp/adoption-base-NEW.json

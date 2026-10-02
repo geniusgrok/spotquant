@@ -18,7 +18,9 @@ def digest(data):
 def risk_identity(path=None):
     """Validate the registered profile and bind its exact file and profile bytes."""
     profile = calibration(path, 'atr-stop')
-    return dict(candidate='atr-stop', rule=RULE, cutoff_ms=CUTOFF, scale=profile['scale'],
+    return dict(candidate='atr-stop', components=['atr-stop'], spec_sha256=digest(SPEC.read_bytes()),
+                risk_scale=profile['scale'], core_mode=None, core_fraction='0',
+                rule=RULE, cutoff_ms=CUTOFF, scale=profile['scale'],
                 calibration_sha256=profile['sha256'], profile=profile,
                 profile_sha256=digest(json.dumps(profile, sort_keys=True).encode()))
 
