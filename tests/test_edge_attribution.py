@@ -63,6 +63,12 @@ class AttributionTests(unittest.TestCase):
         self.assertEqual(flat['retained_owned_btc'], '0.000001')
         self.assertFalse(flat['account_exactly_zero'])
 
+    def test_initialization_valuation_is_not_an_elapsed_flat_day(self):
+        account, rich = self.spot()
+        account['sessions'] = [{'start_ms': 50}]
+        result = a.spot_attribution(account, rich)
+        self.assertFalse(any(r['timestamp_ms'] == 50 for r in result['flat_daily']))
+
     def test_extended_other_and_tampered_rich_fill(self):
         for reason, expected in (('extended', 'extended'), ('emergency', 'other'), (None, 'unknown')):
             result = a.spot_attribution(*self.spot(reason=reason))

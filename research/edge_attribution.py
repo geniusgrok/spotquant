@@ -89,7 +89,9 @@ def spot_attribution(account, rich):
     fills = sorted(account['fills'], key=lambda f: (f['time'], f['id']))
     exits, flat_daily = [], []
     cursor = 0
-    daily = sorted(account['daily'].values(), key=lambda r: r['timestamp_ms'])
+    initial_ms = min((s['start_ms'] for s in account.get('sessions', [])), default=None)
+    daily = sorted((r for r in account['daily'].values() if r['timestamp_ms'] != initial_ms),
+                   key=lambda r: r['timestamp_ms'])
     for day in daily:
         # Spot raw daily timestamp is the actual end-of-day valuation boundary.
         while cursor < len(fills) and fills[cursor]['time'] <= day['timestamp_ms']:
@@ -180,6 +182,7 @@ def spot_attribution(account, rich):
             'flat_sleeve_day_counts': dict(Counter(x['classification'] for x in flat_daily)),
             'limitations': ['Flat is a closed tactical campaign; retained owned dust is not exact account zero.',
                             'Daily endpoints do not prove uninterrupted intraday flatness.',
+                            'The initialization valuation is excluded from elapsed daily endpoint counts.',
                             'Future endpoint price changes are opportunity diagnostics, never earned or realizable profit.',
                             'Missing ownership poisons affected sleeve attribution; missing exit reasons remain unknown.']}
 
