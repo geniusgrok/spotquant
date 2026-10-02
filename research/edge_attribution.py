@@ -232,16 +232,24 @@ def differences(left, right, prefix=''):
 TIMING_IDENTITIES = {'at_ms', 'age_ms', 'created_at_ms', 'identity', 'opportunity', 'trigger.identity',
                      'client_order_id', 'payload.newClientOrderId',
                      'trade.time', 'trade.orderId', 'trade.id'}
-OUTCOME_FIELDS = {'quantity_after', 'post_run_diagnostic_closes'}
+EVENT_OUTCOMES = {
+    'decision': {
+        'action': 'original_decide returns its action',
+        'reason': 'original_decide returns or raises a RECOVERABLE exception',
+        'quantity_after': 'original_decide returns its resulting snapshot',
+        'constraint': 'original_decide returns; engine.entry_constraint summarizes later entry sizing',
+        'error': 'original_decide raises a RECOVERABLE exception',
+    },
+    'opportunity': {'post_run_diagnostic_closes': 'the historical run completes'},
+}
 
 
-def divergence_category(event, fields, rows=()):
+def divergence_category(event, fields):
     if '' in fields:
         return 'event_availability_unknown'
-    actions = {r['raw'].get('action') for r in rows if r}
-    if fields & {'exit_type'} or (event == 'decision' and 'exit' in actions):
+    if fields & {'exit_type'}:
         return 'exit'
-    if event == 'topup_sizing' or 'topup' in actions:
+    if event == 'topup_sizing':
         return 'top_up'
     if fields & {'decision_mark', 'entry_estimate', 'bar_ms', 'trigger', 'trade.price', 'payload.price'}:
         return 'different_observations'
@@ -255,6 +263,8 @@ def divergence_category(event, fields, rows=()):
         return 'exit' if 'exit_type' in fields else 'fill_execution'
     if event == 'cycle_blocked':
         return 'timeout_or_blocked_observation'
+    if event == 'write_attempt' and 'payload.quantity' in fields:
+        return 'requested_size'
     return 'other_or_unknown'
 
 
@@ -299,22 +309,30 @@ def coin_comparison(original, shifted):
                 diff = differences(av['raw'] if av else None, bv['raw'] if bv else None)
                 if not diff:
                     continue
-                outcomes = {f for f in diff if f.split('.')[0] in OUTCOME_FIELDS}
+                provenance = EVENT_OUTCOMES.get(event, {})
+                outcomes = {f for f in diff if f.split('.')[0] in provenance}
                 operational = set(diff) - TIMING_IDENTITIES - outcomes
                 stamp = min(x['raw'].get('at_ms', context_time(alignment)) for x in (av, bv) if x)
                 detail = {'event': event, 'occurrence': occurrence, 'comparison_at_ms': stamp,
                           'left': av, 'right': bv, 'exact_differences': diff,
                           'timing_or_identifier_fields': sorted(set(diff) & TIMING_IDENTITIES),
                           'post_execution_or_future_diagnostic_fields': sorted(outcomes),
+                          'field_provenance': {f: {'populated_after': provenance[f.split('.')[0]],
+                              'available_at_ms': None,
+                              'limitation': 'Summary completion time is not recorded; the row timestamp predates this field.'}
+                              for f in sorted(outcomes)},
                           'operational_fields': sorted(operational)}
                 if first_exact is None or stamp < first_exact['comparison_at_ms']:
                     first_exact = detail
                 if operational:
-                    detail['category'] = divergence_category(event, operational, (av, bv))
+                    detail['category'] = divergence_category(event, operational)
                     detail['facets'] = sorted(set([detail['category']] +
                         (['sizing'] if event == 'entry_sizing' else []) +
+                        (['requested_size'] if event == 'write_attempt' and 'payload.quantity' in operational else []) +
                         (['different_observations'] if operational & {'decision_mark', 'entry_estimate', 'bar_ms', 'trade.price', 'payload.price'} else []) +
                         (['prior_account_state'] if operational & {'wallet_usdt', 'idle_cash_usdt', 'sizing_capital_usdt', 'quantity_before'} else [])))
+                    if 'requested_size' in detail['facets']:
+                        detail['upstream_cause'] = 'unknown'
                     stage_differences.append(detail)
                     break  # first operational difference per event stage, not every subsequent poll
         stage_differences.sort(key=lambda r: r['comparison_at_ms'])
@@ -363,8 +381,10 @@ def coin_comparison(original, shifted):
             'limitations': ['Exact comparisons retain all raw timestamps, identifiers and numeric values.',
                 'Event occurrences align within actual opportunities; differing poll counts limit later pairing.',
                 'Macro contexts pair only uniquely identical full recorded DFII10 context/direction; distinct creation IDs remain distinct.',
-                'Recorded decision quantity_after can summarize later execution; sizing/fill traces retain their timestamps.',
-                'Post-execution quantity_after and post-run horizon closes stay in exact differences but cannot identify a prior cause.',
+                'Decision action/reason/quantity_after/constraint/error are appended after original_decide returns or fails; their completion times are unavailable.',
+                'These decision summaries and post-run horizon closes stay in exact differences with provenance but cannot identify a prior cause.',
+                'Constraint differences are attributed at actual entry/top-up sizing timestamps, not the earlier decision-row timestamp.',
+                'Explicit write payload.quantity establishes a requested-size difference; its upstream cause remains unknown.',
                 'First account divergence means first among explicitly opportunity-owned rows; unowned observations remain separate.',
                 'A timing or price observation change is not by itself a bug.',
                 'Earlier equity differences can propagate; mixed observation/state changes are not causally isolated.',

@@ -139,10 +139,51 @@ class AttributionTests(unittest.TestCase):
         self.assertEqual(result['first_exact_difference']['event'], 'decision')
         self.assertEqual(result['first_operational_divergence']['event'], 'entry_sizing')
 
+    def test_decision_constraint_summary_is_attributed_at_actual_later_sizing(self):
+        for event in ('entry_sizing', 'topup_sizing'):
+            with self.subTest(event=event):
+                left, right = self.coin(), self.coin()
+                left['opportunity_ledger'][1]['constraint'] = 'target'
+                right['opportunity_ledger'][1]['constraint'] = 'liquidity_cap'
+                for body, constraint in ((left, 'target'), (right, 'liquidity_cap')):
+                    body['opportunity_ledger'][2].update(event=event, constraint=constraint)
+                result = a.coin_comparison(left, right)['opportunities'][0]
+                earlier = result['first_exact_difference']
+                self.assertEqual(earlier['event'], 'decision')
+                self.assertIn('constraint', earlier['exact_differences'])
+                self.assertNotIn('constraint', earlier['operational_fields'])
+                self.assertIsNone(earlier['field_provenance']['constraint']['available_at_ms'])
+                self.assertEqual(result['first_operational_divergence']['event'], event)
+                self.assertEqual(result['first_operational_divergence']['comparison_at_ms'], 120)
+                self.assertIn('constraint', result['first_operational_divergence']['operational_fields'])
+
+    def test_decision_action_reason_and_error_preserve_later_summary_provenance(self):
+        left, right = self.coin(), self.coin()
+        left['opportunity_ledger'][1].update(action='enter', reason='enter', quantity_after='1', constraint='target')
+        right['opportunity_ledger'][1].update(action='exit', reason='later request failed',
+                                             error='Unknown', quantity_after='0', constraint='liquidity_cap')
+        right['opportunity_ledger'][2]['constraint'] = 'liquidity_cap'
+        result = a.coin_comparison(left, right)['opportunities'][0]
+        earlier = result['first_exact_difference']
+        self.assertFalse(earlier['operational_fields'])
+        self.assertEqual(set(earlier['field_provenance']), {'action', 'reason', 'error', 'quantity_after', 'constraint'})
+        for provenance in earlier['field_provenance'].values():
+            self.assertIsNone(provenance['available_at_ms'])
+            self.assertIn('original_decide', provenance['populated_after'])
+        self.assertEqual(result['first_operational_divergence']['event'], 'entry_sizing')
+
+    def test_write_quantity_is_requested_size_with_unknown_upstream_cause(self):
+        left, right = self.coin(), self.coin()
+        right['opportunity_ledger'][3]['payload']['quantity'] = '.9'
+        result = a.coin_comparison(left, right)['opportunities'][0]['first_operational_divergence']
+        self.assertEqual(result['event'], 'write_attempt')
+        self.assertIn('requested_size', result['facets'])
+        self.assertEqual(result['upstream_cause'], 'unknown')
+        self.assertEqual(result['exact_differences']['payload.quantity']['right'], '.9')
+
     def test_topup_exit_timeout_and_unavailable_event_categories(self):
         self.assertEqual(a.divergence_category('topup_sizing', {'entry_estimate'}), 'top_up')
-        self.assertEqual(a.divergence_category('decision', {'action'},
-                         ({'raw': {'action': 'exit'}},)), 'exit')
+        self.assertEqual(a.divergence_category('fill', {'exit_type'}), 'exit')
         self.assertEqual(a.divergence_category('cycle_blocked', {'reason'}), 'timeout_or_blocked_observation')
         self.assertEqual(a.divergence_category('fill', {''}), 'event_availability_unknown')
 
