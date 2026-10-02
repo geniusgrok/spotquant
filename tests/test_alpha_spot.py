@@ -326,6 +326,9 @@ class AlphaSpotTests(unittest.TestCase):
         for key in ('final_cny', 'final_usdt', 'mdd', 'audit', 'cash_usdt', 'btc', 'fills', 'daily',
                     'positions', 'allocations', 'client_events', 'pending_intents'):
             self.assertEqual(baseline[key], result[key], key)
+        fill_events = [e for e in result['opportunity_ledger'] if e['event'] == 'fill']
+        self.assertTrue(fill_events)
+        self.assertTrue(all(e['mechanism'] == 'consensus' for e in fill_events))
         for a, b in zip(baseline['sessions'], result['sessions']):
             self.assertEqual({k: v for k, v in a.items() if k != 'archive_backup_sha256'},
                              {k: v for k, v in b.items() if k != 'archive_backup_sha256'})

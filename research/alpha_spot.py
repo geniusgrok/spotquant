@@ -213,7 +213,7 @@ class Policy:
         original_views = views
         views = {w: copy.copy(v) for w, v in views.items()}
         last = views[30].last
-        signals = dict(self.state.get('alpha_signals') or {}) if self.bound else {}
+        signals = dict(self.state.get('alpha_signals') or {}) if self.bound else dict(getattr(self, 'last_signals', {}))
         fills = cached_fills(self.state)
         owners = getattr(self.state, '_execution_owners', {}) or {}
         records = self.records(fills, owners, signals)
@@ -339,13 +339,13 @@ class Policy:
                         sleeve_order['quoteOrderQty'] = str(quote / len(order['sleeves']))
                 free -= quote
                 cap_remaining -= quote
+        for order in decision['orders']:
+            key = signal_key(order['side'], last, order['sleeves'])
+            signals.setdefault(key, {'mechanism': self.core_mode if order['sleeves'] == [200] else mechanism,
+                                     'exit_types': exit_types, 'reentry_sleeves': [w for w in order['sleeves'] if w in recovery],
+                                     'decision_ms': self.venue.now_ms,
+                                     'decision_price': str(snapshot['avg_price'])})
         if self.bound:
-            for order in decision['orders']:
-                key = signal_key(order['side'], last, order['sleeves'])
-                signals.setdefault(key, {'mechanism': self.core_mode if order['sleeves'] == [200] else mechanism,
-                                         'exit_types': exit_types, 'reentry_sleeves': [w for w in order['sleeves'] if w in recovery],
-                                         'decision_ms': self.venue.now_ms,
-                                         'decision_price': str(snapshot['avg_price'])})
             self.state._alpha_values = {'alpha_identity': self.identity, 'alpha_signals': signals}
         self.last_signals = signals
         decision['order'] = decision['orders'][0] if decision['orders'] else None
