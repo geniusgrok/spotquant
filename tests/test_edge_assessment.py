@@ -433,7 +433,8 @@ def complete_review_fixture():
             validation_2022_plus=dict(regression={'beta_btc': 0.}, usdt={'daily_volatility_annualized': 0.}))
         a = dict(kind=kind, candidate=name, scenario=scenario, capital=capital, offset=int(offset), risk=role == 'risk',
             components=e.components(kind, name), source=source, path=path, raw_sha256=digest, status='complete', reasons=[],
-            curve=points, metrics=m, monetary_audit={'passed': True}, row=dict(initial_cny=capital, audit={'passed': True}, fills=[], cagr=cny['cagr'], mdd=cny['daily_mdd']))
+            curve=points, metrics=m, monetary_audit={'passed': True}, row=dict(initial_cny=capital, audit={'passed': True}, fills=[], cagr=cny['cagr'], mdd=str(cny['daily_mdd'])))
+        a['gate_inputs'] = dict(raw_sha256=digest, values=e.gate_values(a))
         report['accounts'][key] = a
         meta = dict(source=source, fx_sha256='f' * 64, schedule_sha256='d' * 64, market_sha256='e' * 64,
                     spec_sha256=e.SPEC_HASH[kind], protocol_sha256=e.PROTOCOL_HASH[kind], feature_sha256=e.FEATURE_HASH,
@@ -508,6 +509,93 @@ class FinancialReviewCoverageTests(unittest.TestCase):
         path = self.proof()
         with patch.object(e, 'verify_source', return_value={}):
             self.assertEqual(e.verify_financial_review(path, self.report)['sha256'], e.sha(path))
+
+    def test_exact_negative_mdd_complete_proof_roundtrip(self):
+        self.report = complete_review_fixture()
+        accounts = self.report['accounts']
+        for scenario in e.STRESSES['spot']:
+            a = accounts[e.account_id('spot', e.BASE['spot'], scenario)]
+            a['gate_inputs']['values']['mdd'] = '0.31'
+            a['metrics']['continuous_mdd_from_account'] = .31
+        key = e.account_id('spot', 'exit-confirm')
+        accounts[key]['gate_inputs']['values']['mdd'] = '0.30000000000000001'
+        accounts[key]['metrics']['continuous_mdd_from_account'] = .3
+        market = [.01 if i % 2 else -.01 for i in range((e.END - e.START) // e.DAY)]
+        self.report['decisions']['spot'] = e.decisions_for(accounts, 'spot', e.ORDER['spot'], True, market, 999.)
+        decision = self.report['decisions']['spot']['exit-confirm']
+        self.assertFalse(decision['checks']['base_improvement'])
+        self.assertFalse(decision['eligible'])
+        self.expected = e.review_expectations(self.report)
+        self.assertEqual(self.expected['original_accounting'][key]['values']['money']['continuous_proxy_mdd'],
+                         '0.30000000000000001')
+        self.assertEqual(self.expected['adoption_gates']['spot:exit-confirm']['values']['gate_inputs'][key],
+                         accounts[key]['gate_inputs'])
+        self.inventory = e.old.checksum(e.inventory_binding(self.report))
+        self.prior = self.root / 'exact-negative-preliminary.json'
+        e.write_new(self.prior, self.report)
+        path = self.proof()
+        with patch.object(e, 'verify_source', return_value={}):
+            self.assertEqual(e.verify_financial_review(path, self.report)['sha256'], e.sha(path))
+            # A freshly hashed artifact still cannot substitute its rounded display value.
+            def rounded(category, records):
+                if category == 'adoption_gates':
+                    record = next(r for r in records if r['id'] == 'spot:exit-confirm')
+                    record['values']['gate_inputs'][key]['values']['mdd'] = '0.3'
+            with self.assertRaises(ValueError):
+                e.verify_financial_review(self.proof(rounded), self.report)
+
+    def test_actual_calibrated_and_coin_strict_mdd_exact_boundaries(self):
+        report = complete_review_fixture()
+        accounts = report['accounts']
+        market = [.01 if i % 2 else -.01 for i in range((e.END - e.START) // e.DAY)]
+        for kind in e.BASE:
+            name = e.ORDER[kind][0]
+            control = accounts[e.account_id(kind, e.BASE[kind], risk=True)]
+            actual = accounts[e.account_id(kind, name, risk=True)]
+            control['gate_inputs']['values']['mdd'] = '0.31'
+            control['metrics']['continuous_mdd_from_account'] = .31
+            for value, passed in [('0.30', True), ('0.30000000000000001', False)]:
+                with self.subTest(kind=kind, actual_mdd=value):
+                    actual['gate_inputs']['values']['mdd'] = value
+                    actual['metrics']['continuous_mdd_from_account'] = float(value)
+                    report['decisions'][kind] = e.decisions_for(accounts, kind, e.ORDER[kind], True, market, 999.)
+                    self.assertIs(report['decisions'][kind][name]['checks']['actual_validation'], passed)
+                    expected = e.review_expectations(report)
+                    self.assertEqual(expected['calibration_and_actual_risk']['actual:' + e.account_id(kind, name, risk=True)]
+                                     ['values']['validation']['continuous_proxy_mdd'], value)
+        name = e.ORDER['perp'][0]
+        account = accounts[e.account_id('perp', name)]
+        for value, passed in [('0.49999999999999999', True), ('0.50', False), ('0.50000000000000001', False)]:
+            with self.subTest(coin_strict_mdd=value):
+                account['gate_inputs']['values']['mdd'] = value
+                account['metrics']['continuous_mdd_from_account'] = float(value)
+                report['decisions']['perp'] = e.decisions_for(accounts, 'perp', e.ORDER['perp'], True, market, 999.)
+                self.assertIs(report['decisions']['perp'][name]['checks']['base:mdd'], passed)
+                e.review_expectations(report)
+
+    def test_exact_gate_input_schema_finite_and_raw_binding(self):
+        account = next(iter(self.report['accounts'].values()))
+        mutations = [lambda a: a.pop('gate_inputs'),
+            lambda a: a.update(gate_inputs=[]),
+            lambda a: a['gate_inputs'].update(raw_sha256='0' * 64),
+            lambda a: a['gate_inputs'].update(extra=0),
+            lambda a: a['gate_inputs']['values'].pop('es99'),
+            lambda a: a['gate_inputs']['values'].update(extra=0),
+            lambda a: a['gate_inputs']['values'].update(mdd=.3),
+            lambda a: a['gate_inputs']['values'].update(mdd='NaN'),
+            lambda a: a['gate_inputs']['values'].update(cagr=True),
+            lambda a: a['gate_inputs']['values'].update(worst_day=float('inf')),
+            lambda a: a['gate_inputs']['values'].update(underwater=0.)]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                changed = copy.deepcopy(account)
+                mutate(changed)
+                with self.assertRaises(ValueError):
+                    e.gate_values(changed)
+        changed = copy.deepcopy(account)
+        changed['row'] = dict(cagr=changed['gate_inputs']['values']['cagr'], mdd='0.30000000000000001')
+        with self.assertRaisesRegex(ValueError, 'differ from original'):
+            e.gate_values(changed)
 
     def test_missing_each_category_duplicate_unknown_failed_and_wrong_raw(self):
         mutations = []

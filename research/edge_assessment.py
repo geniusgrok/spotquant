@@ -707,6 +707,7 @@ def ingest(paths, env, bars, fx, market_returns, cny_returns, documents):
                         account['monetary_audit'] = monetary_audit(row, kind, fx)
                         account['curve'] = original_curve(row, bars, fx, kind)
                         account['metrics'] = curve_metrics(row, account['curve'], kind, bars, fx, market_returns, cny_returns)
+                        account['gate_inputs'] = dict(raw_sha256=digest, values=gate_values(account))
                 except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
                     account['status'] = 'rejected'
                     account['reasons'].append(str(exc))
@@ -715,9 +716,29 @@ def ingest(paths, env, bars, fx, market_returns, cny_returns, documents):
 
 
 def gate_values(account):
-    m = account['metrics']['metrics']
-    return dict(cagr=account['row']['cagr'], mdd=account['row']['mdd'], worst_day=m['worst_day'],
-                es99=m['daily_es99_loss'], underwater=m['longest_daily_underwater_days'])
+    """One exact raw-bound gate input contract for decisions and proof comparison."""
+    bound = account.get('gate_inputs')
+    if bound is not None:
+        require(type(bound) is dict, 'exact gate input binding type')
+    if 'row' in account:
+        m = account['metrics']['metrics']
+        values = dict(cagr=account['row']['cagr'], mdd=account['row']['mdd'], worst_day=m['worst_day'],
+                      es99=m['daily_es99_loss'], underwater=m['longest_daily_underwater_days'])
+        if bound is not None:
+            require(bound.get('values') == values, 'retained gate inputs differ from original row/statistics')
+    else:
+        require(type(bound) is dict, 'missing exact original gate inputs')
+        values = bound.get('values')
+    if bound is not None:
+        require(set(bound) == {'raw_sha256', 'values'} and bound['raw_sha256'] == account['raw_sha256'] and
+                old.hash_value(bound['raw_sha256']), 'exact gate raw binding mismatch')
+    require(type(values) is dict and set(values) == {'cagr', 'mdd', 'worst_day', 'es99', 'underwater'}, 'exact gate input fields')
+    require(type(values['mdd']) is str and 0 <= decimal(values['mdd']) <= 1 and
+            all(type(values[k]) in (int, float) for k in ('cagr', 'worst_day', 'es99')) and
+            type(values['underwater']) is int and values['underwater'] >= 0, 'exact gate input types/range')
+    for value in values.values():
+        decimal(value)
+    return values
 
 
 def decisions_for(accounts, kind, names, equality, market_returns, initial_usdt):
@@ -734,7 +755,7 @@ def decisions_for(accounts, kind, names, equality, market_returns, initial_usdt)
         outcome = adoption_gates(kind,
             {s: gate_values(accounts[account_id(kind, name, s)]) for s in STRESSES[kind]},
             {s: gate_values(accounts[account_id(kind, BASE[kind], s)]) for s in STRESSES[kind]},
-            achieved, actual['row']['mdd'], control['row']['mdd'], equality)
+            achieved, gate_values(actual)['mdd'], gate_values(control)['mdd'], equality)
         decisions[name] = dict(outcome, status='complete', achieved_risk=achieved)
     return decisions
 
@@ -803,10 +824,10 @@ def review_expectations(report):
             numeric({k: point[k] for k in ('equity_cny', 'equity_usdt', 'net_btc', 'price_usdt')})
         money = numeric(dict(initial_cny=account['capital'], final_cny=curve[-1]['equity_cny'],
             final_usdt=curve[-1]['equity_usdt'], fees_usdt=m['fees_usdt'], funding_paid_usdt=m['funding_paid_usdt'],
-            fill_count=m['fill_count'], continuous_proxy_mdd=m['continuous_mdd_from_account'],
+            fill_count=m['fill_count'], continuous_proxy_mdd=gate_values(account)['mdd'],
             cny_cagr=m['registered_account_cagr'], usdt_cagr=m['registered_account_usdt_cagr']))
         require(account['monetary_audit']['passed'] is True, 'review monetary audit failed')
-        add('original_accounting', key, {key: digest}, money=money,
+        add('original_accounting', key, {key: digest}, money=money, gate_inputs=account['gate_inputs'],
             daily_days=len(curve), daily_curve_sha256=old.checksum(curve),
             ledger_reconstruction_sha256=old.checksum(account['monetary_audit']),
             daily_cny_metrics=numeric(m['metrics']), daily_usdt_metrics=numeric(m['usdt_metrics']))
@@ -872,7 +893,7 @@ def review_expectations(report):
             document_sha256=digest, profile=profile, validation=numeric(dict(
                 beta=validation['regression']['beta_btc'], volatility=validation['usdt']['daily_volatility_annualized'],
                 total_usdt_return=account['curve'][-1]['equity_usdt'] / prior['equity_usdt'] - 1,
-                continuous_proxy_mdd=account['metrics']['continuous_mdd_from_account'])))
+                continuous_proxy_mdd=gate_values(account)['mdd'])))
     for kind in BASE:
         decisions = report['decisions'][kind]
         singles = {n: decisions[n] for n in ORDER[kind]}
@@ -885,13 +906,7 @@ def review_expectations(report):
             require(decision['status'] == 'complete' and type(decision['eligible']) is bool and
                     all(type(v) is bool for v in decision['checks'].values()), 'review gate result incomplete')
             def values(candidate):
-                output = {}
-                for scenario in STRESSES[kind]:
-                    a = accounts[account_id(kind, candidate, scenario)]['metrics']
-                    output[scenario] = dict(cagr=a['registered_account_cagr'], mdd=a['continuous_mdd_from_account'],
-                        worst_day=a['metrics']['worst_day'], es99=a['metrics']['daily_es99_loss'],
-                        underwater=a['metrics']['longest_daily_underwater_days'])
-                return output
+                return {s: gate_values(accounts[account_id(kind, candidate, s)]) for s in STRESSES[kind]}
             actual = accounts[account_id(kind, name, risk=True)]
             control = accounts[account_id(kind, BASE[kind], risk=True)]
             achieved = decision['achieved_risk']
@@ -908,11 +923,12 @@ def review_expectations(report):
                     achieved['achieved_match'] is matched and
                     achieved['validation_total_usdt_return_gain'] == ratios[0] - ratios[1], 'review actual risk bands/gain inconsistent')
             derived = adoption_gates(kind, values(name), values(BASE[kind]), decision['achieved_risk'],
-                actual['metrics']['continuous_mdd_from_account'], control['metrics']['continuous_mdd_from_account'], True)
-            require(all(decision[k] == v for k, v in derived.items()), 'review gates inconsistent with actual metrics')
+                gate_values(actual)['mdd'], gate_values(control)['mdd'], True)
+            require(all(decision[k] == v for k, v in derived.items()), 'review gates inconsistent with exact original inputs')
             keys = [account_id(kind, n, s) for n in (BASE[kind], name) for s in STRESSES[kind]]
             keys += [account_id(kind, n, risk=True) for n in (BASE[kind], name)]
-            add('adoption_gates', kind + ':' + name, {k: accounts[k]['raw_sha256'] for k in keys}, result=decision)
+            add('adoption_gates', kind + ':' + name, {k: accounts[k]['raw_sha256'] for k in keys},
+                gate_inputs={k: accounts[k]['gate_inputs'] for k in keys}, result=decision)
         selected = combo_name(kind, parts) if parts and decisions[combo_name(kind, parts)]['eligible'] else best
         require(report['selected'][kind] == selected, 'review registered ranking/selection mismatch')
         ranked = sorted((n for n in ORDER[kind] if singles[n]['eligible']), key=lambda n: (-decimal(singles[n]['worst_stress_cagr']), ORDER[kind].index(n)))
