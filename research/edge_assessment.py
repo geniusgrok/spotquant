@@ -733,9 +733,9 @@ def gate_values(account):
         require(set(bound) == {'raw_sha256', 'values'} and bound['raw_sha256'] == account['raw_sha256'] and
                 old.hash_value(bound['raw_sha256']), 'exact gate raw binding mismatch')
     require(type(values) is dict and set(values) == {'cagr', 'mdd', 'worst_day', 'es99', 'underwater'}, 'exact gate input fields')
-    require(type(values['mdd']) is str and 0 <= decimal(values['mdd']) <= 1 and
+    require(type(values['mdd']) is str and
             all(type(values[k]) in (int, float) for k in ('cagr', 'worst_day', 'es99')) and
-            type(values['underwater']) is int and values['underwater'] >= 0, 'exact gate input types/range')
+            type(values['underwater']) is int and values['underwater'] >= 0, 'exact gate input types')
     for value in values.values():
         decimal(value)
     return values

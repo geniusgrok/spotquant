@@ -596,6 +596,10 @@ class FinancialReviewCoverageTests(unittest.TestCase):
         changed['row'] = dict(cagr=changed['gate_inputs']['values']['cagr'], mdd='0.30000000000000001')
         with self.assertRaisesRegex(ValueError, 'differ from original'):
             e.gate_values(changed)
+        # This schema checks exact finite inputs; only the existing gates decide economics.
+        changed = copy.deepcopy(account)
+        changed['gate_inputs']['values']['mdd'] = '1.01'
+        self.assertEqual(e.gate_values(changed)['mdd'], '1.01')
 
     def test_missing_each_category_duplicate_unknown_failed_and_wrong_raw(self):
         mutations = []
