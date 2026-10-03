@@ -507,7 +507,7 @@ class FinancialReviewCoverageTests(unittest.TestCase):
             adoption_gates=8, actual_budget_aggregation=3))
         self.assertTrue(all(not d['eligible'] for decisions in self.report['decisions'].values() for d in decisions.values()))
         path = self.proof()
-        with patch.object(e, 'verify_source', return_value={}):
+        with patch.object(e, '_verify_recorded_source', return_value={}):
             self.assertEqual(e.verify_financial_review(path, self.report)['sha256'], e.sha(path))
 
     def test_exact_negative_mdd_complete_proof_roundtrip(self):
@@ -534,7 +534,7 @@ class FinancialReviewCoverageTests(unittest.TestCase):
         self.prior = self.root / 'exact-negative-preliminary.json'
         e.write_new(self.prior, self.report)
         path = self.proof()
-        with patch.object(e, 'verify_source', return_value={}):
+        with patch.object(e, '_verify_recorded_source', return_value={}):
             self.assertEqual(e.verify_financial_review(path, self.report)['sha256'], e.sha(path))
             # A freshly hashed artifact still cannot substitute its rounded display value.
             def rounded(category, records):
@@ -614,7 +614,7 @@ class FinancialReviewCoverageTests(unittest.TestCase):
             ('budget_value', lambda category, rows: rows[0]['values'].update(daily_equity_exposure_sha256='0' * 64) if category == 'actual_budget_aggregation' else None),
             ('false_eligibility', lambda category, rows: rows[0]['values']['result'].update(eligible=True) if category == 'adoption_gates' else None),
         ])
-        with patch.object(e, 'verify_source', return_value={}):
+        with patch.object(e, '_verify_recorded_source', return_value={}):
             for name, mutation in mutations:
                 with self.subTest(name=name), self.assertRaises(ValueError):
                     e.verify_financial_review(self.proof(mutation), self.report)
@@ -625,19 +625,19 @@ class FinancialReviewCoverageTests(unittest.TestCase):
                 e.verify_review_value(actual, 1.)
         path = self.proof()
         changed = dict(self.report, inputs=dict(self.report['inputs'], foreign='a' * 64))
-        with patch.object(e, 'verify_source', return_value={}), self.assertRaisesRegex(ValueError, 'inventory'):
+        with patch.object(e, '_verify_recorded_source', return_value={}), self.assertRaisesRegex(ValueError, 'inventory'):
             e.verify_financial_review(path, changed)
         changed = dict(self.report, calibration_diagnostics={})
-        with patch.object(e, 'verify_source', return_value={}), self.assertRaisesRegex(ValueError, 'inventory'):
+        with patch.object(e, '_verify_recorded_source', return_value={}), self.assertRaisesRegex(ValueError, 'inventory'):
             e.verify_financial_review(path, changed)
         # Budget outcomes themselves, not only original raw identities, are bound.
         changed = dict(self.report, portfolios={})
-        with patch.object(e, 'verify_source', return_value={}), self.assertRaisesRegex(ValueError, 'inventory'):
+        with patch.object(e, '_verify_recorded_source', return_value={}), self.assertRaisesRegex(ValueError, 'inventory'):
             e.verify_financial_review(path, changed)
         text = self.prior.read_text()
         try:
             self.prior.write_text(text + ' ')
-            with patch.object(e, 'verify_source', return_value={}), self.assertRaisesRegex(ValueError, 'preliminary'):
+            with patch.object(e, '_verify_recorded_source', return_value={}), self.assertRaisesRegex(ValueError, 'preliminary'):
                 e.verify_financial_review(path, self.report)
         finally:
             self.prior.write_text(text)
