@@ -1,3 +1,5 @@
+> Historical ATR-only adoption (2026-10-02), kept under its original source identity. Current runtime/commands are documented in [edge-GUIDE.md](edge-GUIDE.md) and [canonical-crowding-GUIDE.md](canonical-crowding-GUIDE.md). Do not run this old meter/old calibration against the new execution rule. Current minimum-check policy supersedes routine fullsuite repetition below.
+
 # BTC consensus plus ATR-stop shared runtime
 
 The development default is the registered `atr-stop` over the existing SMA30/40/50 consensus book. The shared implementation is frozen at0c52c812301de3712f3637a1ce1b1241de0c40f1 / Python619570fb7baa586f28ad5de2a440d7752a536cc8f8ce7e357264612e65801537. Historical producers8ca/aced and immutable assessor99 retain their actual measured identities. Final64 accounts, the five canonical cases, original/fixed-control provenance, independent reviews and a separate adoption decision are preserved under evidence/alpha-beta-next-20261002. Later documentation/merge HEADs do not rewrite any raw source binding.

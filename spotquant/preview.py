@@ -5,7 +5,7 @@ import copy
 from decimal import Decimal as D
 
 from .model import DAY, Model, percent
-from .types import Unknown, floor_step
+from .types import Unknown, floor_step, serial
 
 MIN_NOTIONAL = D('5')
 QUOTE_STEP = D('0.01')
@@ -407,7 +407,7 @@ def decision_view(model, position, owners):
     return view
 
 
-def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capital_limit,
+def atr_decision(views, owned, snapshot, *, positions, owners, entries_enabled, capital_limit,
              allocation_scale=D(1)):
     """Canonical ATR book: actual protection, exits first, then bounded new allocation."""
     views = {w: decision_view(v, positions.get(w), owners) for w, v in views.items()}
@@ -449,5 +449,51 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
                 sleeve_order['quoteOrderQty'] = str(quote / len(order['sleeves']))
         free -= quote
         cap_remaining -= quote
+    out['order'] = out['orders'][0] if out['orders'] else None
+    return out
+
+
+def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capital_limit,
+             allocation_scale=D(1), crowding_source=None, decision_ms=None):
+    """Canonical ATR sizing followed once by the measured new-entry interaction."""
+    from .crowding import evaluate
+    out = atr_decision(views, owned, snapshot, positions=positions, owners=owners,
+                       entries_enabled=entries_enabled, capital_limit=capital_limit)
+    diagnostics = []
+    for order in list(out['orders']):
+        if order['side'] != 'BUY':
+            continue
+        factor, diagnostic = evaluate(crowding_source, views[30], decision_ms)
+        def held(w):
+            position = positions.get(w) or {}
+            closed_dust = (position.get('dust') is True and bool(position.get('sell_applied'))
+                           and getattr(views[w], '_owned_dust', False))
+            return D(owned[w]) >= BASE_STEP or (D(owned[w]) > 0 and not closed_dust)
+        if any(held(w) for w in order['sleeves']):
+            factor = D(0)
+            diagnostic['blocked_reason'] = 'held_sleeve_no_topup'
+        quote = floor_step(D(order['quoteOrderQty']) * factor * allocation_scale, QUOTE_STEP)
+        cause = diagnostic['blocked_reason']
+        if crowding_source is not None and hasattr(crowding_source, 'filters'):
+            crowding_source.filters['missing'] += int(cause == 'missing_causal_crowding_or_momentum')
+            crowding_source.filters['blocked'] += int(quote < MIN_NOTIONAL)
+        if quote < MIN_NOTIONAL:
+            out['orders'].remove(order)
+            for w in order['sleeves']:
+                out['sleeves'][str(w)].update(action='flat', order=None, protection=None)
+            quote = D(0)
+            cause = cause or 'below_minimum_after_rounding_or_risk_scale'
+        else:
+            order['quoteOrderQty'] = str(quote)
+            for w in order['sleeves']:
+                sleeve_order = out['sleeves'][str(w)].get('order')
+                if sleeve_order and sleeve_order['side'] == 'BUY':
+                    sleeve_order['quoteOrderQty'] = str(quote / len(order['sleeves']))
+        diagnostic.update(resulting_quote=quote, blocked_reason=cause, risk_scale=allocation_scale)
+        diagnostics.append(diagnostic)
+    protection_views = {w: decision_view(v, positions.get(w), owners) for w, v in views.items()}
+    out['protections'] = _merge_protections({w: out['sleeves'][str(w)] for w in views},
+                                           protection_views, snapshot, next(iter(protection_views.values())))
+    out['crowding'] = serial(diagnostics)
     out['order'] = out['orders'][0] if out['orders'] else None
     return out

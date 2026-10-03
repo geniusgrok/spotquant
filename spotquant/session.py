@@ -11,7 +11,7 @@ from .state import State
 from .types import Blocked, Unknown
 
 # A different rule is never recovered or silently re-anchored, even while flat.
-RULE = '2026-10-02-atr-stop'
+from .crowding import RULE
 
 # Dropped when a cycle fails so the previous success cannot be read as current.
 STALE_REPORT_FIELDS = (
@@ -25,6 +25,8 @@ RECORDED_LIMITS = {
     'path_convention': 'completed_ATR14_decision_stop_with_native_floor; static_follow_catchup',
     'execution': 'shared_session_lifecycle; native Demo unverified; live blocked',
     'selection': 'full_sample',
+    'new_entry_policy': RULE,
+    'public_features': 'settled funding lag8h/expiry8h; paired prior UTC daily closes lag60s; missing blocks new BUY only',
     'sleeves': list(SLEEVES),
     'economic_targets_met': False,
     'skip_stress_targets_met': False,
@@ -94,10 +96,12 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
     owned = {}
     for window, model in models.items():
         views[window], owned[window] = _view(model, positions[window])
+    crowding = venue.crowding_features() if hasattr(venue, 'crowding_features') else None
     decision = portfolio(
         views, owned, snapshot, entries_enabled=enabled, capital_limit=config.capital_limit,
         positions=positions, owners=getattr(state, '_execution_owners', None) or {},
-        allocation_scale=_allocation_scale(state, venue))
+        allocation_scale=_allocation_scale(state, venue),
+        crowding_source=crowding, decision_ms=int(venue.clock() * 1000))
     follows = _follow_after(decision, models, positions, follows, exit_through)
     reference = models[SLEEVES[0]]
     _commit(state, models, positions, follows, accounted, exit_through, fresh, reference.last)
@@ -215,6 +219,8 @@ def _guard_state(state):
         raise Blocked('state was written for another rule; a new directory is not a flat account')
     if not RULE.startswith('alpha-spot:') and state.get('alpha_identity') is not None:
         raise Blocked('research state is incompatible with the canonical rule')
+    if not RULE.startswith('edge-spot:') and state.get('edge_identity') is not None:
+        raise Blocked('edge research state is incompatible with the canonical rule')
     if saved is None:
         if (rule is not None or state.get('positions') is not None or state.get('follows') is not None
                 or state.db.execute('SELECT 1 FROM intents LIMIT 1').fetchone()):
@@ -304,7 +310,7 @@ def _allocation_scale(state, venue):
         raw = profile['profile']
         calibration_sha = profile['calibration_sha256']
         if (not getattr(venue, 'offline', False) or profile['rule'] != RULE
-                or profile['candidate'] != 'atr-stop' or profile['cutoff_ms'] != 1640995200000
+                or profile['candidate'] != 'crowding-interaction' or profile['cutoff_ms'] != 1640995200000
                 or not scale.is_finite() or not 0 <= scale <= 1
                 or (calibration_sha is None and (scale != 1 or raw != {'scale': '1', 'sha256': None}))
                 or (calibration_sha is not None and (type(calibration_sha) is not str

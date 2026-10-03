@@ -227,7 +227,7 @@ class Policy:
 
     def __call__(self, views, owned, snapshot, **kwargs):
         # Historical research owns its decision context; canonical context is explicit.
-        for key in ('positions', 'owners', 'allocation_scale'):
+        for key in ('positions', 'owners', 'allocation_scale', 'crowding_source', 'decision_ms'):
             kwargs.pop(key, None)
         original_views = views
         views = {w: copy.copy(v) for w, v in views.items()}

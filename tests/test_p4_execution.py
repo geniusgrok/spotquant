@@ -16,13 +16,17 @@ def run_day(config, venue):
 
 def venue_before_entry():
     prices = [D(100)] * 400 + [D(98)]
-    return P4Venue([(ORIGIN + i * DAY, p, p, p) for i, p in enumerate(prices)])
+    from crowding_fixtures import KnownFeatures
+    venue = P4Venue([(ORIGIN + i * DAY, p, p, p) for i, p in enumerate(prices)])
+    venue.now_ms += 60000
+    venue.crowding_features = KnownFeatures
+    return venue
 
 
 def add_day(venue, close, high=None):
     close = D(close)
     venue.bars.append((venue.bars[-1][0] + DAY, D(high or close), close, close))
-    venue.now_ms = venue.bars[-1][0] + DAY
+    venue.now_ms = venue.bars[-1][0] + DAY + 60000
     venue.price = close
 
 
@@ -215,6 +219,14 @@ class P4ExecutionTests(TestCase):
             run_day(config, venue)
             self.assertEqual(len(venue.sent), sent)
             add_day(venue, '103', '110')
+            report = run_day(config, venue)
+            self.assertEqual(report['errors'], [])
+            active = [row for row in venue.orders.values() if row['status'] == 'NEW']
+            self.assertEqual(len(active), 1)
+            # Basis availability puts the fill outside the first-minute window:
+            # the completed entry-day high cannot be treated as post-fill.
+            self.assertEqual(D(active[0]['stopPrice']), D('91.80'))
+            add_day(venue, '104', '110')
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
             active = [row for row in venue.orders.values() if row['status'] == 'NEW']

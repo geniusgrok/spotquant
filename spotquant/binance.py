@@ -85,6 +85,13 @@ class Binance:
         self.market_step = None
         self.max_notional = None
 
+    def crowding_features(self):
+        from .crowding import PublicFeatures
+        if not hasattr(self, '_crowding_source'):
+            self._crowding_source = PublicFeatures()
+        self._crowding_source.refresh(int(self.clock() * 1000), self._stop)
+        return self._crowding_source
+
     def clock(self) -> float:
         return self._clock()
 
