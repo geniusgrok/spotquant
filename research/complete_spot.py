@@ -55,7 +55,7 @@ class Policy:
 
     def __call__(self, views, owned, snapshot, **kwargs):
         # Historical research owns its decision context; canonical context is explicit.
-        for key in ('positions', 'owners', 'allocation_scale'):
+        for key in ('positions', 'owners', 'allocation_scale', 'crowding_source', 'decision_ms'):
             kwargs.pop(key, None)
         decision = portfolio(views, owned, snapshot, consensus=False, **kwargs)
         buys = [o for o in decision['orders'] if o['side'] == 'BUY']
@@ -148,8 +148,13 @@ def measure(candidate, scenario, bars, starts, fx, features, *, limit=None, init
                             slip=D('.001') if scenario == 'slip2' else D('.0005'),
                             stop_slip=D('.002') if scenario == 'slip2' else D('.001'))
     if canonical:
-        if candidate != 'atr-stop' or features:
-            raise ValueError('canonical replay is the shared ATR default without research features')
+        from research.edge_spot import FEATURE_SHA256
+        from research.edge_features import FeatureBook
+        if (candidate != 'crowding-interaction' or not isinstance(features, FeatureBook)
+                or features.sha256 != FEATURE_SHA256):
+            raise ValueError('canonical crowding replay requires the pinned causal FeatureBook')
+        features.filters = {'blocked': 0, 'missing': 0}
+        venue.crowding_features = lambda: features
         from research.adoption_spot import risk_identity
         venue._adoption_risk = risk_identity(calibration_path)
     elif calibration_path is not None:
@@ -197,7 +202,7 @@ def measure(candidate, scenario, bars, starts, fx, features, *, limit=None, init
                    'client_events': venue.client_events,
                    'session_error_count': sum(bool(r['errors']) for r in reports),
                    'execution_unresolved_sessions': unresolved, 'policy_pending': policy_pending,
-                   'filters': policy.filters if policy else {'blocked': 0, 'missing': 0}, 'positions': positions, 'allocations': allocations,
+                   'filters': policy.filters if policy else features.filters, 'positions': positions, 'allocations': allocations,
                    'pending_intents': pending, 'native_execution_verified': False})
     if canonical:
         identity = venue._adoption_risk

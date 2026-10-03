@@ -34,8 +34,9 @@ KIND = 'spot'
 PACKAGE = 'spotquant'
 INTERVAL = 86400000
 DAY = 86400000
-BASE = {'spot': 'atr-stop', 'perp': 'incumbent'}
-ADAPTER = 'canonical-incumbent-v1'
+BASE = {'spot': 'crowding-interaction', 'perp': 'incumbent'}
+ADAPTER = 'canonical-spot-crowding-v1' if KIND == 'spot' else 'canonical-incumbent-v1'
+COMPONENTS = ['crowding-interaction'] if KIND == 'spot' else []
 INITIALIZATION_MODES = ['history', 'deferred_market_warmup']
 MARKET_PENDING = 'fresh_public_market_pending'
 CATEGORIES = {'source_and_inputs', 'original_accounting', 'baseline_six_groups',
@@ -170,6 +171,34 @@ def inventory(report):
             'baseline_equality': report['baseline_equality']}
 
 
+def verify_spot_bridge(project, report):
+    """Bind all five independently reviewed actual accounts without relabeling source."""
+    require(project['candidate'] == 'crowding-interaction' and
+            project['adapter'] == 'canonical-spot-crowding-v1' and
+            project['components'] == ['crowding-interaction'] and number(project['scale']) == 1,
+            'unsupported canonical Spot selection')
+    cases = project.get('canonical_accounts', {})
+    require(set(cases) == {'base', 'fee150', 'slip2', 'outage', 'unity-risk-base'},
+            'exact five actual canonical accounts required')
+    originals = []
+    groups = {'financial', 'fills', 'daily', 'ownership', 'remaining_original_fields', 'operating'}
+    for label, case in cases.items():
+        scenario, stage = ('base', 'risk') if label == 'unity-risk-base' else (label, 'unscaled')
+        identity = f'spot|crowding-interaction|{scenario}|1E+4|0|{stage}'
+        account = report['accounts'][identity]
+        require(case['account_id'] == identity and account['status'] == 'complete' and
+                case['measured_source'] == account['source'] == project['measured_source'] and
+                case['original_raw_sha256'] == account['raw_sha256'] and
+                case['source'] == project['source'] and case['complete'] is True and
+                case['archives_verified'] is True and case['audit_passed'] is True and
+                set(case['evidence_groups']) == groups and all(v is True for v in case['evidence_groups'].values()) and
+                len(case['canonical_raw_sha256']) == 64 and len(case['command_receipt_sha256']) == 64,
+                'canonical five-account evidence binding mismatch')
+        originals.append(account['raw_sha256'])
+    require(set(project['original_accepted_result_sha256']) == set(originals),
+            'original measured SHA anchors differ')
+
+
 def export_binding(analysis, review, bridges, out):
     """Spot-only: run the approved full proof verifier, then freeze all proof bytes.
 
@@ -205,6 +234,7 @@ def export_binding(analysis, review, bridges, out):
         require(project['source'] == source(repo), 'canonical bridge current source mismatch')
         require(project['measured_source'] == report['accounts'][project['account_id']]['source'], 'bridge measured source mismatch')
         require(project['candidate'] == report['selected'][kind], 'bridge selected candidate mismatch')
+        if kind == 'spot': verify_spot_bridge(project, report)
         canonical, canonical_raw = read_bound(Path(bridges).parent / project['canonical_review']['path'], project['canonical_review']['sha256'])
         require(canonical['format'] == 'btc-edge-canonical-forward-bridge-v1' and canonical['status'] == 'independently_reviewed', 'canonical review required')
         body['canonical_reviews'][kind] = base64.b64encode(canonical_raw).decode()
@@ -259,20 +289,21 @@ def validate_export(path, expected_hash, review_hash, root=ROOT):
             inventory(prior) == inventory(report) and
             sha(json.dumps(inventory(report), sort_keys=True).encode()) == proof['inventory_sha256'], 'preliminary/final inventory mismatch')
     bridge = bridges[KIND]
+    if KIND == 'spot': verify_spot_bridge(bridge, report)
     canonical_raw = decode(body['canonical_reviews'][KIND]); canonical = strict(canonical_raw)
     require(sha(canonical_raw) == bridge['canonical_review']['sha256'] and
             canonical['format'] == 'btc-edge-canonical-forward-bridge-v1' and canonical['status'] == 'independently_reviewed' and
             canonical['project'] == KIND and canonical['bridge'] == {k: v for k, v in bridge.items() if k != 'canonical_review'},
             'canonical review bytes/source/rule binding mismatch')
     require(bridge['candidate'] == report['selected'][KIND] == BASE[KIND] and
-            bridge['adapter'] == ADAPTER and bridge['components'] == [] and bridge['scale'] == '1',
+            bridge['adapter'] == ADAPTER and bridge['components'] == COMPONENTS and number(bridge['scale']) == 1,
             'selected rule has no verified canonical forward adapter')
     require(bridge['canonical_review_sha256'] and len(bridge['canonical_review_sha256']) == 64 and
             bridge['original_accepted_result_sha256'] and all(len(x) == 64 for x in bridge['original_accepted_result_sha256']),
             'independent canonical/original result bridge missing')
     account = report['accounts'][bridge['account_id']]
     require(account['status'] == 'complete' and account['source'] == bridge['measured_source'] and
-            bridge['raw_sha256'] == account['raw_sha256'] and account['components'] == [], 'canonical account bridge mismatch')
+            bridge['raw_sha256'] == account['raw_sha256'] and account['components'] == COMPONENTS, 'canonical account bridge mismatch')
     current = source(root); assert_equivalent(bridge['source'], current, root)
     for key, name in [('spec_sha256', 'edge_spec.json'), ('protocol_sha256', 'edge-PROTOCOL.md')]:
         require(current['protected_files']['research/' + name] == report['contracts'][KIND][key], 'local contract differs from reviewed selection')
@@ -310,6 +341,17 @@ def endpoint(url, kind=KIND):
     if kind == 'perp' and url == DFII_URL: return 'dfii10'
     if url == FX_URL: return 'fx'
     if url == FX_METADATA_URL: return 'fx_metadata'
+    if kind == 'spot' and parsed.hostname == 'fapi.binance.com':
+        query = parse_qs(parsed.query)
+        require(parsed.path in ('/fapi/v1/klines', '/fapi/v1/fundingRate') and
+                set(query) <= {'symbol', 'interval', 'limit', 'startTime', 'endTime'} and
+                all(len(v) == 1 for v in query.values()) and query.get('symbol') == ['BTCUSDT'],
+                'only public BTC settled funding/daily futures bars allowed')
+        if parsed.path.endswith('/klines'):
+            require(query.get('interval') == ['1d'], 'paired basis requires daily futures bars')
+            return 'futures_bars'
+        require('interval' not in query, 'funding has no interval parameter')
+        return 'crowding_funding'
     host, prefix = ('api.binance.com', '/api/v3/') if kind == 'spot' else ('fapi.binance.com', '/fapi/v1/')
     require(parsed.hostname == host and parsed.path.startswith(prefix), 'wrong official market endpoint')
     name = parsed.path[len(prefix):]; query = parse_qs(parsed.query)
@@ -329,9 +371,16 @@ def acquire(url, directory):
     category = endpoint(url)
     if category == 'dfii10': return acquire_dfii(directory)
     request = now_ms()
-    with urlopen(url, timeout=20) as response:
-        require(response.geturl() == url, 'public redirect unsupported')
-        raw = response.read(16000001)
+    error = None
+    try:
+        with urlopen(url, timeout=20) as response:
+            require(response.geturl() == url, 'public redirect unsupported')
+            raw = response.read(16000001)
+    except OSError as exc:
+        if KIND != 'spot' or category not in ('crowding_funding', 'futures_bars'): raise
+        error = type(exc).__name__
+        raw = exc.read(16000001) if hasattr(exc, 'read') else b''
+        http_status = getattr(exc, 'code', None)
     receipt = now_ms()
     require(0 <= receipt - request <= MAX_AGE and len(raw) <= 16000000, 'public observation timeout/oversize')
     digest = sha(raw); directory = Path(directory); directory.mkdir(parents=True, exist_ok=True)
@@ -339,6 +388,7 @@ def acquire(url, directory):
     new_file(path, raw)
     result = {'category': category, 'url': url, 'request_ms': request, 'receipt_ms': receipt,
               'sha256': digest, 'path': str(path.resolve())}
+    if error is not None: result.update(error=error, http_status=http_status)
     if category == 'fx': result['metadata'] = acquire(FX_METADATA_URL, directory)
     return result
 
@@ -422,6 +472,10 @@ def payload(receipt):
         payload(receipt['metadata'])
     else:
         require('metadata' not in receipt, 'unexpected nested receipt')
+    if 'error' in receipt:
+        require(KIND == 'spot' and receipt['category'] in ('crowding_funding', 'futures_bars') and
+                isinstance(receipt['error'], str) and receipt['error'] and
+                (receipt['http_status'] is None or type(receipt['http_status']) is int), 'invalid public failure receipt')
     return raw
 
 
@@ -924,6 +978,18 @@ def funding_entries(state, receipts, call):
     return [events[t] for t in sorted(events) if q], causes
 
 
+def crowding_from(receipts, call):
+    from spotquant.crowding import ObservedFeatures
+    categories = {'bars': 'spot_bars', 'futures_bars': 'futures_bars', 'crowding_funding': 'funding'}
+    observations = []
+    for receipt in receipts:
+        if receipt['category'] not in categories: continue
+        raw = payload(receipt)
+        observations.append(dict(receipt, category=categories[receipt['category']],
+                                 body=None if receipt.get('error') else strict(raw)))
+    return ObservedFeatures(observations)
+
+
 def spot_decide(state, bars, book, call, enabled):
     from spotquant.model import Model
     from spotquant.preview import decision
@@ -936,7 +1002,8 @@ def spot_decide(state, bars, book, call, enabled):
     snap = dict(btc=state['btc'], usdt_free=state['wallet'], avg_price=book.get('mark', bars[-1]['close']), open_orders=[])
     proposal = decision(models, owned, snap, positions={int(w): p for w, p in positions.items()},
                         owners=engine['owners'], entries_enabled=enabled,
-                        capital_limit=number(state['initial_wallet']))
+                        capital_limit=number(state['initial_wallet']), crowding_source=book.get('crowding_source'),
+                        decision_ms=call)
     money, simulated = [], []
     if book['missing'] or state['unresolved']:
         return proposal, money, [{'status': 'preview_only', 'reason': 'missing executable evidence or unresolved protection'}]
@@ -1108,6 +1175,7 @@ def apply_observation(state, receipts, call, recorded, declared_gap, current_sou
     new_bars = [b for b in bars if b['end'] > state['last_interval']]
     require(new_bars and new_bars[0]['start'] == state['last_interval'], 'complete causal bars required across declared gaps')
     book = book_from(receipts, call)
+    if KIND == 'spot': book['crowding_source'] = crowding_from(receipts, call)
     fx_rows = [r for r in receipts if r['category'] == 'fx']
     require(len(fx_rows) == 1, 'one current prior-date FX source required')
     fx = fx_from(fx_rows[0], call)

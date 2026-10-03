@@ -21,7 +21,7 @@ class ForwardTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.serial = 0
         self.origin = 1546300800000 if f.KIND == 'spot' else 1575158400000
-        self.initial = self.origin + (410 if f.KIND == 'spot' else 210) * f.INTERVAL + 10000
+        self.initial = self.origin + (410 if f.KIND == 'spot' else 210) * f.INTERVAL + (120000 if f.KIND == 'spot' else 10000)
         self.base = 'https://api.binance.com/api/v3/' if f.KIND == 'spot' else 'https://fapi.binance.com/fapi/v1/'
         self.binding = {'initialization_modes': list(f.INITIALIZATION_MODES), 'export_sha256': 'e' * 64, 'review_sha256': 'a' * 64, 'analysis_sha256': 'b' * 64,
                         'recorded_source': {}, 'current_source': {}, 'bridge': {}}
@@ -78,6 +78,11 @@ class ForwardTests(unittest.TestCase):
             bodies += [('premiumIndex?symbol=BTCUSDT', dict(symbol='BTCUSDT', markPrice=str(price), time=at)),
                        ('fundingRate?symbol=BTCUSDT', [])]
         result.extend(self.receipt(url, body, at) for url, body in bodies if f.endpoint(self.base + url) not in missing)
+        if f.KIND == 'spot':
+            for url, body in [('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1d', rows),
+                              ('https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT',
+                               [dict(symbol='BTCUSDT', fundingTime=at - 28800000, fundingRate='.0001')])]:
+                if f.endpoint(url) not in missing: result.append(self.receipt(url, body, at))
         return result
 
     def initialize(self):
@@ -859,11 +864,16 @@ class SourceAndExportTests(unittest.TestCase):
     def export(self):
         source = f.source(self.repo)
         report = dict(phase='final', status='complete_reviewed', pending=[], blocking=[],
-                      selected={f.KIND: f.BASE[f.KIND]}, accounts={'account': dict(status='complete', source={'measured': True}, raw_sha256='r' * 64, components=[], reasons=[])},
+                      selected={f.KIND: f.BASE[f.KIND]}, accounts={'account': dict(status='complete', source={'measured': True}, raw_sha256='r' * 64, components=f.COMPONENTS, reasons=[])},
                       contracts={f.KIND: dict(spec_sha256=source['protected_files']['research/edge_spec.json'], protocol_sha256=source['protected_files']['research/edge-PROTOCOL.md'])})
         for field in ('inputs', 'analysis_source', 'portfolios', 'input_envelopes', 'calibration_input_documents', 'calibration_diagnostics',
                       'environment', 'combinations', 'calibration_documents', 'decisions', 'baseline_equality'): report[field] = {}
         report['required_accounts'] = ['account']
+        if f.KIND == 'spot':
+            for label in ('base', 'fee150', 'slip2', 'outage', 'unity-risk-base'):
+                scenario, stage = ('base', 'risk') if label == 'unity-risk-base' else (label, 'unscaled')
+                key = f'spot|crowding-interaction|{scenario}|1E+4|0|{stage}'
+                report['accounts'][key] = copy.deepcopy(report['accounts']['account'])
         ihash = f.sha(json.dumps(f.inventory(report), sort_keys=True).encode())
         report['inventory_sha256'] = ihash
         prior = dict(report, phase='preliminary', status='complete_pending_independent_review')
@@ -878,8 +888,19 @@ class SourceAndExportTests(unittest.TestCase):
         proof = f.dump(dict(format='btc-edge-financial-review-v1', inventory_sha256=ihash, checks=checks,
                             preliminary=dict(path='prior.json', sha256=f.sha(prior_raw)), reviewer_source=source))
         report['financial_review'] = {'sha256': f.sha(proof)}
-        bridge = dict(candidate=f.BASE[f.KIND], adapter=f.ADAPTER, components=[], scale='1', source=source, account_id='account',
+        bridge = dict(candidate=f.BASE[f.KIND], adapter=f.ADAPTER, components=f.COMPONENTS, scale='1', source=source, account_id='account',
                       measured_source={'measured': True}, raw_sha256='r' * 64, canonical_review_sha256='c' * 64, original_accepted_result_sha256=['o' * 64])
+        if f.KIND == 'spot':
+            bridge['original_accepted_result_sha256'] = ['r' * 64]
+            bridge['canonical_accounts'] = {}
+            for label in ('base', 'fee150', 'slip2', 'outage', 'unity-risk-base'):
+                scenario, stage = ('base', 'risk') if label == 'unity-risk-base' else (label, 'unscaled')
+                bridge['canonical_accounts'][label] = dict(
+                    account_id=f'spot|crowding-interaction|{scenario}|1E+4|0|{stage}',
+                    measured_source={'measured': True}, original_raw_sha256='r' * 64, source=source,
+                    complete=True, archives_verified=True, audit_passed=True,
+                    canonical_raw_sha256='a' * 64, command_receipt_sha256='b' * 64,
+                    evidence_groups={k: True for k in ('financial', 'fills', 'daily', 'ownership', 'remaining_original_fields', 'operating')})
         canonical_raw = f.dump(dict(format='btc-edge-canonical-forward-bridge-v1', status='independently_reviewed', project=f.KIND, bridge=bridge))
         bridge['canonical_review'] = dict(path='canonical.json', sha256=f.sha(canonical_raw))
         raw, braw = f.dump(report), f.dump({f.KIND: bridge})

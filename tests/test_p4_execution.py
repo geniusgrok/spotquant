@@ -16,13 +16,17 @@ def run_day(config, venue):
 
 def venue_before_entry():
     prices = [D(100)] * 400 + [D(98)]
-    return P4Venue([(ORIGIN + i * DAY, p, p, p) for i, p in enumerate(prices)])
+    from crowding_fixtures import KnownFeatures
+    venue = P4Venue([(ORIGIN + i * DAY, p, p, p) for i, p in enumerate(prices)])
+    venue.now_ms += 60000
+    venue.crowding_features = KnownFeatures
+    return venue
 
 
 def add_day(venue, close, high=None):
     close = D(close)
     venue.bars.append((venue.bars[-1][0] + DAY, D(high or close), close, close))
-    venue.now_ms = venue.bars[-1][0] + DAY
+    venue.now_ms = venue.bars[-1][0] + DAY + 60000
     venue.price = close
 
 

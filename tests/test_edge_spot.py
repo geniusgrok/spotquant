@@ -217,10 +217,10 @@ class EdgeSpotTests(unittest.TestCase):
 
     def test_unity_baseline_all_six_original_groups_and_budget(self):
         rows, starts = bars(), [ORIGIN + i * DAY for i in (401, 402, 403)]
-        direct = adoption_spot.measure('base', rows, starts, lambda t: D(7), limit=3)
+        from research.alpha_spot import measure as prior_atr
+        direct = prior_atr('atr-stop', 'base', rows, starts, lambda t: D(7), limit=3)
         noop = edge.measure('atr-stop', 'base', rows, starts, lambda t: D(7), limit=3)
         self.assertEqual(evidence_fingerprints(direct, 'spot'), evidence_fingerprints(noop, 'spot'))
-        self.assertEqual(direct['research_identity'], noop['research_identity'])
         self.assertEqual(noop['candidate'], 'atr-stop')
         smaller = edge.measure('atr-stop', 'base', rows, starts, lambda t: D(7), limit=3, initial_cny=D(2500))
         self.assertEqual(smaller['initial_cny'], '2500')

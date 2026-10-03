@@ -19,6 +19,10 @@ class Clock:
 
 
 class Venue:
+    def crowding_features(self):
+        from crowding_fixtures import KnownFeatures
+        return KnownFeatures()
+
     def __init__(self, bars):
         self.bars = list(bars)
         self.environment = 'live'

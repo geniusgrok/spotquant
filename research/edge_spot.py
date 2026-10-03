@@ -14,6 +14,7 @@ from research.edge_features import FeatureBook
 from research.market import file_digest, load_daily
 from research.rebuild import END_MS, source_identity
 from spotquant import execution, follow, model, preview, session
+from spotquant.crowding import evaluate
 from spotquant.model import DAY, Model
 from spotquant.state import State
 from spotquant.types import Blocked, floor_step, serial
@@ -164,6 +165,8 @@ class Policy:
         self.journal, self.signals = [], {}
 
     def __call__(self, views, owned, snapshot, **kwargs):
+        kwargs.pop('crowding_source', None)
+        kwargs.pop('decision_ms', None)
         last = next(iter(views.values())).last
         diagnostics = []
         positions, owners = kwargs['positions'], kwargs['owners']
@@ -198,7 +201,7 @@ class Policy:
             if control:
                 old_view = preview.decision_view
                 preview.decision_view = self.static_view_bound
-            decision = preview.decision(working, owned, snapshot, **dict(kwargs, allocation_scale=D(1)))
+            decision = preview.atr_decision(working, owned, snapshot, **dict(kwargs, allocation_scale=D(1)))
         finally:
             preview._position_decision = original
             if control:
@@ -242,23 +245,12 @@ class Policy:
                                         slip_reserve_fraction=self.venue.slip + self.venue.stop_slip,
                                         quote=quote, blocked_reason=cause, gap_loss_capped=False))
             if 'crowding-interaction' in self.parts and cause is None:
-                inputs = []
-                values = []
-                for name in ('funding', 'basis'):
-                    value = self.features.value(name, self.venue.now_ms) if self.features else None
-                    values.append(value)
-                    inputs.append(copy.deepcopy(self.features.last_lookup) if self.features else dict(name=name, cause='missing_feature_book', value=None, now_ms=self.venue.now_ms))
-                closes = list(views[30].closes)
-                momentum = dict(current_completed_bar_ms=last, current_close=views[30].close,
-                                prior_completed_bar_ms=last - 5 * DAY if len(closes) >= 6 else None,
-                                prior_close=closes[-6] if len(closes) >= 6 else None,
-                                causal_completed=last + DAY <= self.venue.now_ms)
-                if any(v is None for v in values) or len(closes) < 6 or last + DAY > self.venue.now_ms:
-                    quote, cause = D(0), 'missing_causal_crowding_or_momentum'
+                factor, diagnostic = evaluate(self.features, views[30], self.venue.now_ms)
+                quote *= factor
+                cause = diagnostic['blocked_reason']
+                if cause:
                     self.filters['missing'] += 1
-                elif values[0] > D('.0003') and values[1] > D('.01') and closes[-1] <= closes[-6]:
-                    quote /= 2
-                diagnostics.append(dict(mechanism='crowding-interaction', inputs=inputs, momentum=momentum, quote=quote, blocked_reason=cause))
+                diagnostics.append(dict(diagnostic, quote=quote))
             quote *= scale
             final = resize(decision, order, quote)
             if final < preview.MIN_NOTIONAL:
@@ -351,9 +343,8 @@ def measure(candidate, scenario, bars, starts, fx, features=None, *, limit=None,
     if candidate == 'atr-stop':
         if D(risk['scale']) != 1:
             raise ValueError('edge baseline must remain unity')
-        # New edge profiles never enter the old alpha calibration validator.
-        return complete.measure('atr-stop', scenario, bars, starts, fx, {}, limit=limit,
-                                initial_cny=initial_cny, canonical=True)
+        # This historical baseline stays ATR-only on the prepared new source.
+        # Frozen source/raw identities remain required for original measurements.
     policies = []
     old_policy, old_configured = complete.Policy, complete.configured
     def make_policy(c, venue, unused):
