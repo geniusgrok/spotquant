@@ -205,3 +205,18 @@ class CanonicalCrowdingTests(unittest.TestCase):
             source.refresh(self.now + 60000, lambda: True)
             opener.assert_not_called()
             self.assertIsNone(source.value('funding', self.now + 60000))
+
+    def test_old_atr_canonical_calibration_and_forward_adapter_rejected(self):
+        from research.alpha_spot import CUTOFF, SPEC, digest
+        old_profile = dict(scale='.5', effective_from_ms=CUTOFF, calibration_end_ms=CUTOFF,
+                           training_end_day_exclusive='2022-01-01', base_bundle_sha256='a' * 64,
+                           baseline_candidate='consensus')
+        old_document = dict(format=1, cutoff_ms=CUTOFF, spec_sha256=digest(SPEC.read_bytes()),
+                            profiles={'atr-stop': old_profile})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'old-atr-calibration.json'
+            path.write_text(json.dumps(old_document))
+            with self.assertRaises(ValueError): adoption_spot.risk_identity(path)
+        with self.assertRaisesRegex(ValueError, 'unsupported canonical Spot selection'):
+            f.verify_spot_bridge(dict(candidate='atr-stop', adapter='canonical-incumbent-v1',
+                                     components=[], scale='1'), {})
