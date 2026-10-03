@@ -1,6 +1,6 @@
-# Conditional canonical Spot crowding preparation
+# Adopted canonical Spot crowding development rule
 
-This isolated proposal is not final adoption or native qualification. Original financial review and five actual source-bound account comparisons are required before integration/export/initialization. The registered economics and edge specs remain unchanged. Main and the frozen original sources are separate.
+Independent financial review of71 original accounts and all5 source-bound canonical comparisons passed. This development adoption does not establish native qualification. The registered economics/edge specs and original measured sources remain unchanged. Current result and operation are in edge-RESULT.md/edge-GUIDE.md; the full independent proof and source identities are retained in evidence/btc-edge-20261003.
 
 The prepared rule is `2026-10-03-atr-stop-crowding-interaction-v1`. It preserves SMA30/40/50, completed ATR protection, installed stop floors, fill ownership, finite sessions, recovery and original cash/rounding rules. Only genuine new BUY spend changes: halve once when settled funding >.0003 AND paired prior UTC daily futures/Spot trade-close basis >.01 AND completed close <= the close five completed days earlier. Missing required causal data blocks that BUY. Safety sells, held quantities and protection remain independent of these inputs. The historical adapter calls the same predicate after the ATR-only decision helper, preventing a second half-size application.
 
