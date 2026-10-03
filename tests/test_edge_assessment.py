@@ -408,7 +408,7 @@ class EnvelopeAndPhaseTests(unittest.TestCase):
 def complete_review_fixture():
     """Complete 68-account synthetic all-flat study: all mechanisms correctly lose."""
     source = dict(git_head='a' * 40, dirty=False, python_sources_sha256='b' * 64)
-    report = dict(inputs={}, analysis_source=source, contracts={k: dict(spec_sha256=e.SPEC_HASH[k], protocol_sha256=e.PROTOCOL_HASH[k]) for k in e.BASE},
+    report = dict(inputs={}, environment={}, analysis_source=source, contracts={k: dict(spec_sha256=e.SPEC_HASH[k], protocol_sha256=e.PROTOCOL_HASH[k]) for k in e.BASE},
         accounts={}, input_envelopes={}, required_accounts=sorted(e.required_matrix()), selected=dict(e.BASE),
         combinations={}, calibration_documents={}, calibration_diagnostics={}, calibration_input_documents={'spot': {}, 'perp': {}},
         decisions={}, baseline_equality={}, portfolios={}, phase='preliminary', status='complete_pending_independent_review', pending=[], blocking=[])
@@ -533,6 +533,9 @@ class FinancialReviewCoverageTests(unittest.TestCase):
                 e.verify_review_value(actual, 1.)
         path = self.proof()
         changed = dict(self.report, inputs=dict(self.report['inputs'], foreign='a' * 64))
+        with patch.object(e, 'verify_source', return_value={}), self.assertRaisesRegex(ValueError, 'inventory'):
+            e.verify_financial_review(path, changed)
+        changed = dict(self.report, calibration_diagnostics={})
         with patch.object(e, 'verify_source', return_value={}), self.assertRaisesRegex(ValueError, 'inventory'):
             e.verify_financial_review(path, changed)
         # Budget outcomes themselves, not only original raw identities, are bound.

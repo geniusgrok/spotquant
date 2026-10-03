@@ -749,6 +749,9 @@ def inventory_binding(report):
             'portfolio_evidence_sha256': old.checksum(report['portfolios']),
             'input_envelopes_sha256': old.checksum(report['input_envelopes']),
             'calibration_input_documents': report['calibration_input_documents'],
+            'calibration_diagnostics_sha256': old.checksum(report['calibration_diagnostics']),
+            'environment_sha256': old.checksum(report['environment']),
+            'combinations': report['combinations'],
             'required_accounts': report['required_accounts'], 'selected': report['selected'],
             'calibration_documents': report['calibration_documents'],
             'decisions': report['decisions'], 'baseline_equality': report['baseline_equality']}
