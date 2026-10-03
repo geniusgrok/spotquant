@@ -140,7 +140,7 @@ def existing_risk(owned, snapshot, positions, owners):
             continue
         covered = sum((q for q, _ in coverage[w]), D(0))
         # Unprotected rounding dust is risk too, conservatively charged at full mark.
-        if covered + preview.BASE_STEP < qty or covered > qty + preview.BASE_STEP:
+        if covered == 0 or covered + preview.BASE_STEP < qty or covered > qty + preview.BASE_STEP:
             raise ValueError('missing or excessive allocated protection')
         risk += sum((q * max(D(0), mark - stop) for q, stop in coverage[w]), D(0))
         risk += max(D(0), qty - covered) * mark

@@ -145,6 +145,9 @@ class EdgeSpotTests(unittest.TestCase):
                 edge.existing_risk(owned, snap(btc='3'), {30: position(), 40: position('2')}, altered)
         with self.assertRaises(ValueError):
             edge.existing_risk(owned, snap(btc='3.1'), {30: position(), 40: position('2')}, owners)
+        with self.assertRaises(ValueError):
+            edge.existing_risk({30: D('.000001'), 40: D(0), 50: D(0)}, snap(btc='.000001'),
+                               {30: dict(position('.000001'), dust=True, sell_applied={'2': '1'})}, {})
         owners['1']['order']['quantity'] = '2.99999'
         self.assertGreater(edge.existing_risk(owned, snap(btc='3'), {30: position(), 40: position('2')}, owners), D('29.9999'))
 
