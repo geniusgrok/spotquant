@@ -184,7 +184,7 @@ class EdgeSpotTests(unittest.TestCase):
     def test_crowding_strict_actual_clock_momentum_and_missing_safety(self):
         # Unit reader records use the real availability lookup, without fabricating an artifact.
         book = FeatureBook.__new__(FeatureBook)
-        now = ORIGIN + 402 * DAY + 120000
+        now = ORIGIN + 402 * DAY + 60000  # Prior UTC completion + basis publication lag.
         book.sha256 = 'a' * 64
         book.source = dict(raw_sha256='b' * 64, market_identities={})
         book.times = {'funding': [now], 'basis': [now]}
@@ -364,7 +364,7 @@ class EdgeSpotTests(unittest.TestCase):
                     model.Model, follow.Model, execution.decision_view, preview.decision_view, preview._position_decision,
                     complete_spot.Policy, complete_spot.configured)
         with self.assertRaises(RuntimeError):
-            with policy('protected-participation-25') as p, patch.object(preview, 'decision', side_effect=RuntimeError('decision failure')):
+            with policy('protected-participation-25') as p, patch.object(preview, 'atr_decision', side_effect=RuntimeError('decision failure')):
                 decide(p)
         self.assertEqual(original, (session.portfolio, session.State, session.Model, session.RULE, session._guard_state,
                                     model.Model, follow.Model, execution.decision_view, preview.decision_view, preview._position_decision,

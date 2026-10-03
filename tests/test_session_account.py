@@ -44,11 +44,13 @@ class SessionAccountTests(unittest.TestCase):
         self.assertEqual(venue.price, D(101))
 
     def test_actual_bounded_sessions_enter_protect_and_independently_audit(self):
+        from crowding_fixtures import KnownFeatures
         venue = HistoricalVenue(bars(), ORIGIN + 401 * DAY, D(1000), lambda t: D(7))
+        venue.crowding_features = KnownFeatures
         with tempfile.TemporaryDirectory() as directory:
             cfg = Config('1', directory, 10, 5, 'demo', '5000000')
             for day in (401, 402, 403):
-                venue.advance(ORIGIN + day * DAY)
+                venue.advance(ORIGIN + day * DAY + 60000)  # Causal basis is now published.
                 report = run(cfg, venue, execute=True, monotonic=venue.monotonic, wait=venue.wait)
                 self.assertEqual(report['errors'], [])
             self.assertGreater(venue.btc, 0)
