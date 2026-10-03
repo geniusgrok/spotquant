@@ -404,30 +404,193 @@ class EnvelopeAndPhaseTests(unittest.TestCase):
             self.assertIn('final requires matching independent financial-review proof', final['blocking'])
             self.assertEqual(final['native_qualification'], 'NOT_QUALIFIED')
 
-    def test_financial_review_exact_preliminary_and_inventory_binding(self):
-        report = dict(inputs={'original': 'a' * 64}, analysis_source={'dirty': False}, contracts={}, accounts={},
-            required_accounts=[], selected=e.BASE, calibration_documents={}, decisions={}, baseline_equality={},
-            phase='preliminary', status='complete_pending_independent_review', pending=[], blocking=[])
-        with tempfile.TemporaryDirectory() as tmp, patch.object(e, 'verify_source', return_value={}):
-            root = Path(tmp)
-            prior = root / 'preliminary.json'; e.write_new(prior, report)
-            binding = e.old.checksum(e.inventory_binding(report))
-            checks = {}
-            for category in ('source_and_inputs', 'original_accounting', 'baseline_six_groups',
-                             'calibration_and_actual_risk', 'adoption_gates', 'actual_budget_aggregation'):
-                path = root / (category + '.json')
-                e.write_new(path, dict(inventory_sha256=binding, category=category, recomputations={'case': 'result'}))
-                checks[category] = dict(passed=True, artifact=dict(path=path.name, sha256=e.sha(path)))
-            proof = dict(format='btc-edge-financial-review-v1', preliminary=dict(path=prior.name, sha256=e.sha(prior)),
-                         inventory_sha256=binding, reviewer_source={'dirty': False}, checks=checks)
-            path = root / 'review.json'; e.write_new(path, proof)
-            self.assertEqual(e.verify_financial_review(path, report)['sha256'], e.sha(path))
-            changed = copy.deepcopy(report); changed['inputs']['original'] = 'b' * 64
-            with self.assertRaisesRegex(ValueError, 'inventory'):
-                e.verify_financial_review(path, changed)
-            prior.write_text(prior.read_text() + ' ')
-            with self.assertRaisesRegex(ValueError, 'preliminary'):
-                e.verify_financial_review(path, report)
+
+def complete_review_fixture():
+    """Complete 68-account synthetic all-flat study: all mechanisms correctly lose."""
+    source = dict(git_head='a' * 40, dirty=False, python_sources_sha256='b' * 64)
+    report = dict(inputs={}, analysis_source=source, contracts={k: dict(spec_sha256=e.SPEC_HASH[k], protocol_sha256=e.PROTOCOL_HASH[k]) for k in e.BASE},
+        accounts={}, input_envelopes={}, required_accounts=sorted(e.required_matrix()), selected=dict(e.BASE),
+        combinations={}, calibration_documents={}, calibration_diagnostics={}, calibration_input_documents={'spot': {}, 'perp': {}},
+        decisions={}, baseline_equality={}, portfolios={}, phase='preliminary', status='complete_pending_independent_review', pending=[], blocking=[])
+    curves = {}
+    for capital in ('2500', '5000', '7500', '10000'):
+        initial_usdt = float(D(capital) / 10 * D('.999'))
+        curves[capital] = [dict(day_ms=d, equity_cny=initial_usdt * 10 * .999, equity_usdt=initial_usdt,
+            net_btc=0., price_usdt=10., gross_exposure_over_equity=0.) for d in range(e.START, e.END, e.DAY)]
+    market = [.01 if i % 2 else -.01 for i in range(len(curves['10000']))]
+    for key in report['required_accounts']:
+        kind, name, scenario, capital, offset, role = key.split('|')
+        capital = format(D(capital), 'f')
+        points = curves[capital]
+        digest = hashlib.sha256(key.encode()).hexdigest()
+        path = key + '.json'
+        cny, _ = e.daily_metrics([p['equity_cny'] for p in points], float(capital)); cny.pop('daily_es5_loss')
+        cny['daily_es99_loss'] = e.es99([-.001999] + [0.] * (len(points) - 1))
+        usd, _ = e.daily_metrics([p['equity_usdt'] for p in points], points[0]['equity_usdt']); usd.pop('daily_es5_loss')
+        usd['final_usdt'] = usd.pop('final_cny')
+        m = dict(metrics=cny, usdt_metrics=usd, registered_account_cagr=cny['cagr'], registered_account_usdt_cagr=0.,
+            continuous_mdd_from_account=cny['daily_mdd'], fees_usdt='0', funding_paid_usdt='0', fill_count=0,
+            validation_2022_plus=dict(regression={'beta_btc': 0.}, usdt={'daily_volatility_annualized': 0.}))
+        a = dict(kind=kind, candidate=name, scenario=scenario, capital=capital, offset=int(offset), risk=role == 'risk',
+            components=e.components(kind, name), source=source, path=path, raw_sha256=digest, status='complete', reasons=[],
+            curve=points, metrics=m, monetary_audit={'passed': True}, row=dict(initial_cny=capital, audit={'passed': True}, fills=[], cagr=cny['cagr'], mdd=cny['daily_mdd']))
+        report['accounts'][key] = a
+        meta = dict(source=source, fx_sha256='f' * 64, schedule_sha256='d' * 64, market_sha256='e' * 64,
+                    spec_sha256=e.SPEC_HASH[kind], protocol_sha256=e.PROTOCOL_HASH[kind], feature_sha256=e.FEATURE_HASH,
+                    feature_file_sha256=e.FEATURE_HASH, market_identity={'original': 'market'}, risk_calibration_sha256=None)
+        report['input_envelopes'][path] = meta if kind == 'spot' else dict(inputs=meta, edge=dict(meta))
+        report['inputs'][path] = digest
+    for kind in e.BASE:
+        doc, stats = e.calibration_document(report['accounts'], kind, market, 999.)
+        report['calibration_documents'][kind] = doc
+        report['calibration_diagnostics'][kind] = stats
+        digest = e.old.checksum(doc)
+        report['calibration_input_documents'][kind][digest] = doc
+        report['inputs'][kind + '-calibration.json'] = digest
+        for a in report['accounts'].values():
+            if a['kind'] == kind and a['risk']:
+                env = report['input_envelopes'][a['path']]
+                (env if kind == 'spot' else env['edge'])['risk_calibration_sha256'] = digest
+        fingerprints = {g: hashlib.sha256(g.encode()).hexdigest() for g in ('financial', 'fills', 'daily', 'ownership', 'operating', 'remaining_original_fields')}
+        comparisons = {}
+        for scenario in (*e.STRESSES[kind], 'actual_unity'):
+            key = e.account_id(kind, e.BASE[kind], 'base' if scenario == 'actual_unity' else scenario, risk=scenario == 'actual_unity')
+            reference = report['accounts'][e.account_id(kind, e.BASE[kind])]['raw_sha256'] if scenario == 'actual_unity' else hashlib.sha256((kind + scenario).encode()).hexdigest()
+            comparisons[scenario] = dict(passed=True, differences={}, reference=fingerprints, actual=fingerprints,
+                reference_raw_sha256=reference, actual_raw_sha256=report['accounts'][key]['raw_sha256'])
+        report['baseline_equality'][kind] = comparisons
+        report['decisions'][kind] = e.decisions_for(report['accounts'], kind, e.ORDER[kind], True, market, 999.)
+    portfolios = []
+    for pair in ((2500, 7500), (5000, 5000), (7500, 2500)):
+        accounts = [report['accounts'][e.account_id(k, e.BASE[k], capital=b)] for k, b in zip(e.BASE, pair)]
+        portfolios.append(e.aggregate_pair(*accounts, pair, market, lambda _: D(10)))
+    report['portfolios']['current_default'] = portfolios
+    for a in report['accounts'].values():
+        a.pop('row')
+    return report
+
+
+class FinancialReviewCoverageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.report = complete_review_fixture()
+        cls.expected = e.review_expectations(cls.report)
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.temp.name)
+        cls.prior = cls.root / 'preliminary.json'
+        e.write_new(cls.prior, cls.report)
+        cls.inventory = e.old.checksum(e.inventory_binding(cls.report))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    def proof(self, mutate=None):
+        checks = {}
+        for category, expected in self.expected.items():
+            records = copy.deepcopy(list(expected.values()))
+            if mutate:
+                mutate(category, records)
+            path = self.root / (category + '.json')
+            path.write_text(json.dumps(dict(inventory_sha256=self.inventory, category=category, recomputations=records), allow_nan=False))
+            checks[category] = dict(passed=True, artifact=dict(path=path.name, sha256=e.sha(path)))
+        proof = dict(format='btc-edge-financial-review-v1', preliminary=dict(path=self.prior.name, sha256=e.sha(self.prior)),
+                     inventory_sha256=self.inventory, reviewer_source=self.report['analysis_source'], checks=checks)
+        path = self.root / 'review.json'; path.write_text(json.dumps(proof))
+        return path
+
+    def test_complete_roundtrip_and_correct_negative_candidates(self):
+        self.assertEqual(len(self.report['accounts']), 68)
+        self.assertEqual({k: len(v) for k, v in self.expected.items()}, dict(source_and_inputs=136,
+            original_accounting=68, baseline_six_groups=10, calibration_and_actual_risk=16,
+            adoption_gates=8, actual_budget_aggregation=3))
+        self.assertTrue(all(not d['eligible'] for decisions in self.report['decisions'].values() for d in decisions.values()))
+        path = self.proof()
+        with patch.object(e, 'verify_source', return_value={}):
+            self.assertEqual(e.verify_financial_review(path, self.report)['sha256'], e.sha(path))
+
+    def test_missing_each_category_duplicate_unknown_failed_and_wrong_raw(self):
+        mutations = []
+        for target in self.expected:
+            mutations.append((target + ':missing', lambda category, rows, target=target: rows.pop() if category == target else None))
+        mutations.extend([
+            ('duplicate', lambda category, rows: rows.append(copy.deepcopy(rows[0])) if category == 'original_accounting' else None),
+            ('unknown', lambda category, rows: rows[0].update(id='NOT_AN_ACCOUNT') if category == 'original_accounting' else None),
+            ('failed', lambda category, rows: rows[0].update(matches=False) if category == 'original_accounting' else None),
+            ('null', lambda category, rows: rows[0].update(values=None) if category == 'original_accounting' else None),
+            ('wrong_raw', lambda category, rows: rows[0]['raw_bindings'].update({next(iter(rows[0]['raw_bindings'])): '0' * 64}) if category == 'original_accounting' else None),
+            ('budget_value', lambda category, rows: rows[0]['values'].update(daily_equity_exposure_sha256='0' * 64) if category == 'actual_budget_aggregation' else None),
+            ('false_eligibility', lambda category, rows: rows[0]['values']['result'].update(eligible=True) if category == 'adoption_gates' else None),
+        ])
+        with patch.object(e, 'verify_source', return_value={}):
+            for name, mutation in mutations:
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    e.verify_financial_review(self.proof(mutation), self.report)
+
+    def test_typed_finite_and_exact_evidence_binding(self):
+        for actual in (None, True, float('inf'), float('nan'), 'unknown'):
+            with self.assertRaises(ValueError):
+                e.verify_review_value(actual, 1.)
+        path = self.proof()
+        changed = dict(self.report, inputs=dict(self.report['inputs'], foreign='a' * 64))
+        with patch.object(e, 'verify_source', return_value={}), self.assertRaisesRegex(ValueError, 'inventory'):
+            e.verify_financial_review(path, changed)
+        # Budget outcomes themselves, not only original raw identities, are bound.
+        changed = dict(self.report, portfolios={})
+        with patch.object(e, 'verify_source', return_value={}), self.assertRaisesRegex(ValueError, 'inventory'):
+            e.verify_financial_review(path, changed)
+        text = self.prior.read_text()
+        try:
+            self.prior.write_text(text + ' ')
+            with patch.object(e, 'verify_source', return_value={}), self.assertRaisesRegex(ValueError, 'preliminary'):
+                e.verify_financial_review(path, self.report)
+        finally:
+            self.prior.write_text(text)
+
+
+class MissingDailyEvidenceTests(unittest.TestCase):
+    def spot(self, sell_time=None):
+        row = spot_row()
+        row.update(final_usdt='1009', final_cny='10079.91', cash_usdt='1009')
+        row['fills'] = [dict(id=1, time=e.START + e.DAY // 2, buyer=True, qty='1', price='10', quote='10', commission='0', commission_asset='USDT'),
+            dict(id=2, time=sell_time or e.START + e.DAY * 3 // 2, buyer=False, qty='1', price='20', quote='20', commission='0', commission_asset='USDT')]
+        row['daily'] = [dict(timestamp_ms=e.END, equity_usdt='1009', equity_cny='10079.91', cash_usdt='1009', btc='0', price_usdt='20')]
+        bars = [(d, D(10), D(20), D(10), D(20), D(1)) for d in range(e.START, e.END, e.DAY)]
+        return row, bars
+
+    def test_terminal_only_missing_held_day_rejected(self):
+        row, bars = self.spot()
+        with self.assertRaisesRegex(ValueError, 'missing daily snapshot'):
+            e.original_curve(row, bars, lambda _: D(10), 'spot')
+
+    def test_already_flat_but_unreflected_cash_change_rejected(self):
+        row, bars = self.spot(e.START + e.DAY * 3 // 4)
+        with self.assertRaisesRegex(ValueError, 'missing daily snapshot'):
+            e.original_curve(row, bars, lambda _: D(10), 'spot')
+
+    def test_genuine_eventless_flat_carry_and_verified_intraday_flat(self):
+        row, bars = self.spot()
+        row.update(fills=[], final_usdt='999', final_cny='9980.01', cash_usdt='999')
+        row['daily'][0].update(equity_usdt='999', equity_cny='9980.01', cash_usdt='999')
+        result = e.original_curve(row, bars, lambda _: D(10), 'spot')
+        self.assertEqual(len(result), (e.END - e.START) // e.DAY)
+        self.assertTrue(all(p['net_btc'] == 0 and p['equity_usdt'] == 999 for p in result))
+        # A real, already verified post-trade flat snapshot can begin a new carry.
+        row, bars = self.spot(e.START + e.DAY * 3 // 4)
+        row['daily'].insert(0, dict(row['daily'][0], timestamp_ms=e.START + e.DAY * 3 // 4 + 1))
+        result = e.original_curve(row, bars, lambda _: D(10), 'spot')
+        self.assertEqual(result[0]['equity_usdt'], 1009)
+
+    def test_perp_midnight_funding_before_same_stamp_fill_preserved(self):
+        row = dict(initial_cny='10000', trades=[dict(time=e.START + 1, qty='1', price='10', side='BUY'),
+            dict(time=e.START + e.DAY, qty='1', price='20', side='SELL')],
+            funding_ledger=[dict(time=e.START + e.DAY, incomeType='FUNDING_FEE', income='-1'),
+                            dict(time=e.START + e.DAY, incomeType='REALIZED_PNL', income='10')])
+        close = dict(stamp_ms=e.START + e.DAY, wallet_usdt='998', quantity_btc='1', mark_usdt='20', equity_usdt='1008', equity_cny='10069.92')
+        flat = dict(stamp_ms=e.START + e.DAY + 1, wallet_usdt='1008', quantity_btc='0', mark_usdt='20', equity_usdt='1008', equity_cny='10069.92')
+        e.audit_daily(row, [close, flat], 'perp', lambda _: D(10))
+        with self.assertRaisesRegex(ValueError, 'missing daily snapshot'):
+            e.audit_daily(row, [flat], 'perp', lambda _: D(10))
 
 if __name__ == '__main__':
     unittest.main()
