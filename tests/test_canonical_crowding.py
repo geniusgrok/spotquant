@@ -220,3 +220,76 @@ class CanonicalCrowdingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unsupported canonical Spot selection'):
             f.verify_spot_bridge(dict(candidate='atr-stop', adapter='canonical-incumbent-v1',
                                      components=[], scale='1'), {})
+
+    def malformed_receipts(self, directory, category, raw):
+        receipts = []
+        for index, observation in enumerate(self.observations()):
+            body = raw if observation['category'] == category else f.dump(observation['body'])
+            path = Path(directory) / str(index); path.write_bytes(body)
+            receipt = {k: v for k, v in observation.items() if k != 'body'}
+            receipt.update(path=str(path), category=f.endpoint(observation['url']), sha256=f.sha(body))
+            receipts.append(receipt)
+        return receipts
+
+    def test_malformed_crowding_missing_blocks_buy_but_safety_processing_continues(self):
+        class SafetyReached(Exception): pass
+        variants = (b'<html>temporarily unavailable</html>', b'{"value":NaN}',
+                    b'\xff', b'{"value":1,"value":2}')
+        for category, name in (('funding', 'funding'), ('futures_bars', 'basis')):
+            for raw in variants:
+                with self.subTest(category=category, raw=raw), tempfile.TemporaryDirectory() as directory:
+                    receipts = self.malformed_receipts(directory, category, raw)
+                    source = f.crowding_from(receipts, self.now)
+                    self.assertIsNone(source.value(name, self.now))
+                    missing = copy.deepcopy(source.last_lookup)
+                    self.assertIn('public_endpoint_', missing['cause'])
+                    self.assertIn(f.sha(raw), [p['sha256'] for p in missing['provenance']])
+                    self.assertEqual(self.decide(source)['orders'], [])
+                    # Native collection and forward replay use the same missing conversion.
+                    native = c.PublicFeatures()
+                    native.observations = [dict(r, **c.public_body(raw)) if r['category'] == category else r
+                                           for r in self.observations()]
+                    self.assertIsNone(native.value(name, self.now))
+                    self.assertEqual(native.last_lookup['cause'], missing['cause'])
+                    replay = f.crowding_from(receipts, self.now)
+                    self.assertIsNone(replay.value(name, self.now))
+                    self.assertEqual(replay.last_lookup, missing)
+                    # Real shared safety decision, with no State/Lifecycle/account setup.
+                    views = copy.deepcopy(self.views)
+                    views[30].note_entry(100, 100); views[30].bull = False
+                    owned = dict(self.owned)
+                    owned[30] = D(1)
+                    safety = preview.decision(views, owned, dict(self.snap, btc='1'),
+                        **dict(self.kw, positions={30: dict(qty='1', peak='100', first_ms=views[30].last)}),
+                        crowding_source=source, decision_ms=self.now)
+                    self.assertEqual([o['side'] for o in safety['orders']], ['SELL'])
+                    # Stop the pure mocked transition at the passive safety handler:
+                    # malformed features must not abort before it is reached.
+                    def receipt(url, content, suffix):
+                        path = Path(directory) / suffix; path.write_bytes(content)
+                        return dict(category=f.endpoint(url), url=url, path=str(path), sha256=f.sha(content),
+                                    request_ms=self.now - 20, receipt_ms=self.now - 10)
+                    fx = receipt(f.FX_URL, b'FX fixture', 'fx')
+                    fx['metadata'] = receipt(f.FX_METADATA_URL, b'FX metadata fixture', 'fx-metadata')
+                    latest = self.now // c.DAY * c.DAY
+                    state = dict(wallet='1000', btc='1', fees='0', funding='0', market_ready=True,
+                                 last_interval=latest - c.DAY, initialized_ms=latest - 2*c.DAY,
+                                 market_ready_at_ms=latest - 2*c.DAY)
+                    def safety_handler(state, book, call):
+                        self.assertIsNone(book['crowding_source'].value(name, call))
+                        raise SafetyReached
+                    with patch.object(f, 'book_from', return_value={}), patch.object(f, 'fx_from', return_value={}), \
+                            patch.object(f, 'passive_fills', side_effect=safety_handler) as passive:
+                        with self.assertRaises(SafetyReached):
+                            f.apply_observation(state, receipts + [fx], self.now, self.now, False, {})
+                        passive.assert_called_once()
+
+    def test_crowding_missing_conversion_keeps_receipt_integrity_and_spot_bars_strict(self):
+        with tempfile.TemporaryDirectory() as directory:
+            receipts = self.malformed_receipts(directory, 'funding', b'not-json')
+            corrupt = copy.deepcopy(receipts); corrupt[0]['sha256'] = '0' * 64
+            with self.assertRaisesRegex(ValueError, 'provenance'): f.crowding_from(corrupt, self.now)
+            corrupt = copy.deepcopy(receipts); corrupt[0]['url'] = c.PUBLIC_URLS['futures_bars']
+            with self.assertRaisesRegex(ValueError, 'provenance'): f.crowding_from(corrupt, self.now)
+            receipts = self.malformed_receipts(directory, 'spot_bars', b'not-json')
+            with self.assertRaises(ValueError): f.crowding_from(receipts, self.now)

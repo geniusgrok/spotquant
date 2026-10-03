@@ -96,13 +96,14 @@ class ObservedFeatures:
         try:
             selected = [r for r in self.observations if r['category'] in
                         (('funding',) if name == 'funding' else ('spot_bars', 'futures_bars'))]
+            provenance = [{k: r[k] for k in ('category', 'url', 'request_ms', 'receipt_ms', 'sha256')} for r in selected]
+            record.update(provenance=provenance, receipt_ms=max((r['receipt_ms'] for r in selected), default=0))
             for r in selected:
                 if (type(r['request_ms']) is not int or type(r['receipt_ms']) is not int
                         or not 0 <= r['receipt_ms'] - r['request_ms'] <= 60000
                         or not 0 <= now - r['receipt_ms'] <= 60000):
                     raise ValueError('stale/future public receipt')
                 if r.get('error'): raise ValueError('public_endpoint_' + r['error'])
-            provenance = [{k: r[k] for k in ('category', 'url', 'request_ms', 'receipt_ms', 'sha256')} for r in selected]
             if name == 'funding':
                 rows = {}
                 for r in selected:
@@ -140,7 +141,6 @@ class ObservedFeatures:
                 if set(paired) == {'spot_bars', 'futures_bars'}:
                     record.update(observation_ms=boundary, available_ms=boundary + BASIS_LAG,
                                   value=str(paired['futures_bars'] / paired['spot_bars'] - 1), cause=None)
-            record.update(provenance=provenance, receipt_ms=max((r['receipt_ms'] for r in selected), default=0))
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             record.update(value=None, cause='invalid_public_' + name + ':' + str(exc))
         value, cause = value_at(name, record, now)
@@ -157,6 +157,14 @@ def _read_public(raw):
         return result
     return json.loads(raw, object_pairs_hook=pairs,
                       parse_constant=lambda value: (_ for _ in ()).throw(ValueError('nonfinite public number')))
+
+
+def public_body(raw):
+    """Unavailable public JSON is a feature failure, with raw integrity checked by callers."""
+    try:
+        return dict(body=_read_public(raw))
+    except ValueError as exc:
+        return dict(body=None, error=type(exc).__name__)
 
 
 class PublicFeatures(ObservedFeatures):
@@ -177,7 +185,7 @@ class PublicFeatures(ObservedFeatures):
                         if response.geturl() != url: raise ValueError('redirect')
                         raw = response.read(1000001)
                     if len(raw) > 1000000: raise ValueError('oversized response')
-                    record.update(body=_read_public(raw), sha256=hashlib.sha256(raw).hexdigest())
+                    record.update(public_body(raw), sha256=hashlib.sha256(raw).hexdigest())
                 except (OSError, ValueError) as exc:
                     raw = str(type(exc).__name__).encode()
                     record.update(body=None, error=type(exc).__name__, sha256=hashlib.sha256(raw).hexdigest())

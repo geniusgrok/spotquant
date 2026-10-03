@@ -979,14 +979,17 @@ def funding_entries(state, receipts, call):
 
 
 def crowding_from(receipts, call):
-    from spotquant.crowding import ObservedFeatures
+    from spotquant.crowding import ObservedFeatures, public_body
     categories = {'bars': 'spot_bars', 'futures_bars': 'futures_bars', 'crowding_funding': 'funding'}
     observations = []
     for receipt in receipts:
         if receipt['category'] not in categories: continue
         raw = payload(receipt)
-        observations.append(dict(receipt, category=categories[receipt['category']],
-                                 body=None if receipt.get('error') else strict(raw)))
+        # Receipt/hash/endpoint failures above stay hard errors. Only the two
+        # crowding-only bodies may be missing; required Spot bars remain strict.
+        parsed = (dict(body=None) if receipt.get('error') else
+                  dict(body=strict(raw)) if receipt['category'] == 'bars' else public_body(raw))
+        observations.append(dict(receipt, category=categories[receipt['category']], **parsed))
     return ObservedFeatures(observations)
 
 
