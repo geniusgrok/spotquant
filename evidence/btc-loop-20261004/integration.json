@@ -1,0 +1,24 @@
+{
+  "format": "btc-loop-main-integration-v1",
+  "observed_at_shanghai": "2026-10-04T20:40:55.292544+08:00",
+  "repo": "geniusgrok/spotquant",
+  "pr": {
+    "mergeCommit": {
+      "oid": "d8c8eb73566e4b2b8f974e6ae7fb0abb5e03a49e"
+    },
+    "mergedAt": "2026-10-04T12:38:56Z",
+    "state": "MERGED",
+    "url": "https://github.com/geniusgrok/spotquant/pull/16"
+  },
+  "actual_integrated_main": "d8c8eb73566e4b2b8f974e6ae7fb0abb5e03a49e",
+  "local_fullsuite_source": "8191027aca105db8071d2935bf6a1f532ee5c642",
+  "python_bytes_modes_equal_to_tested": true,
+  "runtime_tree_equal_to_baseline": "e40edd7f1c3729cfe9007df073872f7f2daa20b0",
+  "remote_ci": "NOT_RUN_SKIP_CI",
+  "new_accounts": 0,
+  "new_sessions": 0,
+  "complete795": 0,
+  "large_vault_scans": 0,
+  "native_qualified": false,
+  "economic_default_adopted": false
+}
