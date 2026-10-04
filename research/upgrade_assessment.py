@@ -131,9 +131,40 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--features', type=Path, required=True)
+    parser.add_argument('--accepted-attribution', type=Path,
+                        help='Accepted final report: attribute all crowding rows only, without any screening/replay')
     args = parser.parse_args(argv)
     if args.out.exists():
         parser.error('exclusive output required')
+    if args.accepted_attribution:
+        report = json.loads(args.accepted_attribution.read_text())
+        if report['status'] != 'complete_reviewed':
+            raise ValueError('accepted final financial report required')
+        rows = {}
+        for key, item in report['accounts'].items():
+            if item['kind'] != 'spot' or item['candidate'] != 'crowding-interaction':
+                continue
+            raw = Path(item['path']).read_bytes()
+            if hashlib.sha256(raw).hexdigest() != item['raw_sha256'] or item['status'] != 'complete':
+                raise ValueError('accepted source row changed')
+            row = next(iter(json.loads(gzip.decompress(raw))['results'].values()))
+            rows[key] = dict(path=item['path'], raw_sha256=item['raw_sha256'],
+                             attribution=missing_attribution(row))
+        aggregate = Counter()
+        for item in rows.values():
+            aggregate.update(item['attribution']['causes'])
+        result = dict(source=source_identity(), accounts=rows,
+            accepted_report=str(args.accepted_attribution),
+            totals={name:sum(v['attribution'][name] for v in rows.values()) for name in
+                    ('blocked_proposals','actual_halving_proposals','unchanged_proposals')},
+            causes=dict(aggregate),
+            unique_blocked_completed_days=len({r['completed_bar_ms'] for v in rows.values()
+                for r in v['attribution']['blocked']}), financial_replay=False,
+            limitation='Counts span different real accounts and repeated poll proposals, not independent trades.')
+        with args.out.open('x') as stream:
+            json.dump(result,stream,ensure_ascii=False,indent=2,allow_nan=False)
+        print(json.dumps({k:result[k] for k in ('totals','causes','unique_blocked_completed_days')}))
+        return
     spot = next(iter(accepted('spot-crowding-interaction-base.json.gz')['results'].values()))
     missing = missing_attribution(spot)
     del spot
