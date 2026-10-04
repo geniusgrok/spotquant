@@ -37,7 +37,16 @@ def missing_attribution(row):
         for item in event.get('diagnostics', []):
             if item.get('mechanism') != 'crowding-interaction':
                 continue
-            factor = D(str(item['scale']))
+            inputs, momentum = item['inputs'], item['momentum']
+            # Original accepted journals predate the explicit scale field.
+            # Reconstruct the registered conjunction from its original causal inputs.
+            missing = (any(v.get('value') is None for v in inputs) or
+                       not momentum['causal_completed'] or momentum['prior_close'] is None)
+            values = {v['name']: v.get('value') for v in inputs}
+            half_condition = (not missing and D(values['funding']) > D('.0003') and
+                              D(values['basis']) > D('.01') and
+                              D(momentum['current_close']) <= D(momentum['prior_close']))
+            factor = D(0) if missing else D('.5') if half_condition else D(1)
             if factor == 0:
                 reasons = [str(v.get('cause')) for v in item['inputs'] if v.get('cause')]
                 causes.update(reasons)
@@ -101,6 +110,8 @@ def proxy_metrics(row, bars, fx):
     initial = float(D(10000)/fx(START_MS)*D('.999'))
     values = [v for _, v in daily]
     metrics, returns = daily_metrics(values, initial)
+    metrics['final_usdt'] = metrics.pop('final_cny')
+    metrics['usdt_cagr'] = metrics.pop('cagr')
     previous = price[START_MS-DAY]
     market = []
     for day, _ in daily:
