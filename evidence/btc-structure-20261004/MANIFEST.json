@@ -1,0 +1,116 @@
+{
+  "format": 1,
+  "scope": "this small research output packet only; no scan of original public vault or old economic matrices",
+  "files": [
+    {
+      "path": "SOURCE-REVIEW.json",
+      "bytes": 1194,
+      "sha256": "bf76d6845a477036d8565af99b3041356765b9cfefb124df13ebace35f80c875"
+    },
+    {
+      "path": "final-validation.json",
+      "bytes": 471,
+      "sha256": "2d5e595bd81a20cd19cffab2df1957bb93640c1dc7aba3aadba2f1d367df9d52"
+    },
+    {
+      "path": "final-validation.log",
+      "bytes": 91974,
+      "sha256": "175a0c32345deacb21f2ffed2680d2513d99fc5048dc74cf51313ce0b2f5db5e"
+    },
+    {
+      "path": "forward-perp-response.bin",
+      "bytes": 224,
+      "sha256": "79c1db471a4cdc1c8565b5dfc52e0ed2d29962738ee4d28597696fcd0920e348"
+    },
+    {
+      "path": "forward-readiness.json",
+      "bytes": 1199,
+      "sha256": "6004159584ca29cd8526345b1e2c214446cec5ebebf9154632ec7c3c635474dd"
+    },
+    {
+      "path": "forward-spot-response.bin",
+      "bytes": 224,
+      "sha256": "79c1db471a4cdc1c8565b5dfc52e0ed2d29962738ee4d28597696fcd0920e348"
+    },
+    {
+      "path": "original-public-input-preflight.json",
+      "bytes": 609,
+      "sha256": "5fbd63c4160b580a9847b146b841f14d2827a19a3f5a193cb0075565da16b4dd"
+    },
+    {
+      "path": "protection-focused-validation.json",
+      "bytes": 477,
+      "sha256": "d6319488a95196dd75e5b502c7fd01e680cf4a520a0305cecfac3362ef27493a"
+    },
+    {
+      "path": "protection-focused-validation.log",
+      "bytes": 301,
+      "sha256": "1cc104ea3cfb351a43fa1a55ba05b5d3428f4ebbaaa96721b96e23b24e088dc4"
+    },
+    {
+      "path": "screen/beta-diagnostics.json",
+      "bytes": 1734,
+      "sha256": "ea1f5551b19a77d9bc720afa663730f112d913ccb240a6fede1ebc03267fa709"
+    },
+    {
+      "path": "screen/resume-receipt.json",
+      "bytes": 749,
+      "sha256": "bc18dcc02969763387187a26c0491cba3f301431ed6ad2ca9d3a2ad3d56b68cb"
+    },
+    {
+      "path": "screen/summary.json",
+      "bytes": 4791,
+      "sha256": "3dd928f31e1113fd30641bf484b8a308f9a67500d4f306a8e424019263d8a3ec"
+    },
+    {
+      "path": "screen/window-0-baseline.json.gz",
+      "bytes": 10400,
+      "sha256": "f291c60300e8c2880666aa726ffe2d8fda2f55a31f3d57e5316ea3e93ef28d4c"
+    },
+    {
+      "path": "screen/window-0-candidate-recovered.json.gz",
+      "bytes": 12967,
+      "sha256": "aa80c991540e1c0c3db9d4fb8a7b963c2442710336d5343ef0b28376a0c65fe1"
+    },
+    {
+      "path": "screen/window-0-candidate.json.gz",
+      "bytes": 26543,
+      "sha256": "a94a569b1d58a30d946317f288b06330220f888789286d111ac4d9203e5caf76"
+    },
+    {
+      "path": "screen/window-1-baseline.json.gz",
+      "bytes": 10343,
+      "sha256": "1c5cea49102040b93a55b60410e29732c880fbf358ec4e3ae803babeed38ce83"
+    },
+    {
+      "path": "screen/window-1-candidate.json.gz",
+      "bytes": 48902,
+      "sha256": "7643727f91232cac8feca8e153642a13fdd9ba7d6db255d43524496e351f3787"
+    },
+    {
+      "path": "session_schedule.json",
+      "bytes": 46681,
+      "sha256": "c21b4fcfe3cb12fb062bb01d3c3591aa0ee8c65db9e9afde3c26b1bcdc2ac28e"
+    },
+    {
+      "path": "spot-screen-recovery-run.json",
+      "bytes": 876,
+      "sha256": "6fd3a8d6a3b1a5e2ab2b5aa55530043afe64d66cece0c871055b6d8f2e551212"
+    },
+    {
+      "path": "spot-screen-recovery-run.log",
+      "bytes": 3983,
+      "sha256": "ba8860fe7be2e20f4af59c0196cf3c2dc42845e0ba2889a5cd04d87e924dc11d"
+    },
+    {
+      "path": "spot-screen-run.json",
+      "bytes": 777,
+      "sha256": "f59887348bc1fb7d869b7027f82046e4a785e95008501857e2dd694ed4bd44a3"
+    },
+    {
+      "path": "spot-screen-run.log",
+      "bytes": 2142,
+      "sha256": "4ea05bee62708df4b5ab69fc16d2fbc3b075c7e30a41e4b0b357eeda53920905"
+    }
+  ]
+}

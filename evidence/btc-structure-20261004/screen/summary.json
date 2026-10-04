@@ -1,0 +1,129 @@
+{
+  "source": {
+    "git_head": "8d6a8ba8a614c5872a51c089577ec599fdf76fa6",
+    "dirty": false,
+    "python_sources_sha256": "75f1046ff633854f005cdfd9206895457458420a49747191a00ad2da8666d9ec"
+  },
+  "spec_sha256": "ddfc2cf73661395f135e32429cd96924ce9ff785df664bcd7ad16027b950a843",
+  "schedule_sha256": "f8fb73bebf142ddcc3ed4a3e6b12b4dd7abed1e27bcd8a4ff1c93aec4fe0b32a",
+  "fx_sha256": "67606315ea34c0301e0129ac8fc27056099986d9fbd58a552a07f140cdd05bb5",
+  "feature_sha256": "bf920626cc13653b8bbeafd171650cc1a76888e15aad0c20bbd1061fb41da512",
+  "rows": [
+    {
+      "window": [
+        "2020-03-01",
+        "2020-06-01"
+      ],
+      "baseline": {
+        "final_cny": "13005.26851037295418889556137",
+        "mdd": "0.1872912867364916946033559277",
+        "finished": true,
+        "audit": {
+          "passed": true,
+          "cash_from_fills": "90.0049217513190131254990055",
+          "btc_from_fills": "0.1835824634598936603908933019",
+          "fees_usdt": "2.950477496543786280555555500",
+          "no_deposits": true
+        },
+        "sessions": 27,
+        "fills": 4,
+        "component_fill_events": 0,
+        "execution_unresolved": 0,
+        "raw_file": "window-0-baseline.json.gz",
+        "raw_sha256": "f291c60300e8c2880666aa726ffe2d8fda2f55a31f3d57e5316ea3e93ef28d4c"
+      },
+      "candidate": {
+        "final_cny": "12312.50696352939207689145241",
+        "mdd": "0.1886840093560384152798579023",
+        "finished": true,
+        "audit": {
+          "passed": true,
+          "cash_from_fills": "72.0096236459616051442490050",
+          "btc_from_fills": "0.1752006168704026427803016961",
+          "fees_usdt": "3.128082042984869956249999983",
+          "no_deposits": true
+        },
+        "sessions": 27,
+        "fills": 7,
+        "component_fill_events": 3,
+        "execution_unresolved": 0,
+        "raw_file": "window-0-candidate-recovered.json.gz",
+        "raw_sha256": "aa80c991540e1c0c3db9d4fb8a7b963c2442710336d5343ef0b28376a0c65fe1"
+      },
+      "paired_log_wealth_gain": -0.054738973326622156,
+      "mdd_increase": 0.0013927226195467046
+    },
+    {
+      "window": [
+        "2021-04-01",
+        "2021-07-01"
+      ],
+      "baseline": {
+        "final_cny": "9551.860261761371266919411308",
+        "mdd": "0.1211337818028369984242918350",
+        "finished": true,
+        "audit": {
+          "passed": true,
+          "cash_from_fills": "1480.110386840251635190684674",
+          "btc_from_fills": "0.00001529274668767546813240144",
+          "fees_usdt": "3.937983196253017910416666683",
+          "no_deposits": true
+        },
+        "sessions": 24,
+        "fills": 4,
+        "component_fill_events": 0,
+        "execution_unresolved": 0,
+        "raw_file": "window-1-baseline.json.gz",
+        "raw_sha256": "1c5cea49102040b93a55b60410e29732c880fbf358ec4e3ae803babeed38ce83"
+      },
+      "candidate": {
+        "final_cny": "8740.941305866429819504336658",
+        "mdd": "0.1802887707837851880374531164",
+        "finished": true,
+        "audit": {
+          "passed": true,
+          "cash_from_fills": "1354.484604618113429834434675",
+          "btc_from_fills": "0.000013129153928330236699902480",
+          "fees_usdt": "4.445548479313940627777777712",
+          "no_deposits": true
+        },
+        "sessions": 24,
+        "fills": 10,
+        "component_fill_events": 6,
+        "execution_unresolved": 0,
+        "raw_file": "window-1-candidate.json.gz",
+        "raw_sha256": "7643727f91232cac8feca8e153642a13fdd9ba7d6db255d43524496e351f3787"
+      },
+      "paired_log_wealth_gain": -0.08871804256248372,
+      "mdd_increase": 0.05915498898094819
+    }
+  ],
+  "sum_paired_log_wealth_gain": -0.14345701588910587,
+  "component_fill_events": 9,
+  "decision": "SCREEN_REJECTED",
+  "resume_receipt": {
+    "producer_head": "58ce7192e2739e9ee13256440d2a0caff334066c",
+    "spec_sha256": "ddfc2cf73661395f135e32429cd96924ce9ff785df664bcd7ad16027b950a843",
+    "schedule_sha256": "f8fb73bebf142ddcc3ed4a3e6b12b4dd7abed1e27bcd8a4ff1c93aec4fe0b32a",
+    "fx_sha256": "67606315ea34c0301e0129ac8fc27056099986d9fbd58a552a07f140cdd05bb5",
+    "feature_sha256": "bf920626cc13653b8bbeafd171650cc1a76888e15aad0c20bbd1061fb41da512",
+    "accounts": {
+      "0/baseline": {
+        "file": "window-0-baseline.json.gz",
+        "sha256": "f291c60300e8c2880666aa726ffe2d8fda2f55a31f3d57e5316ea3e93ef28d4c"
+      },
+      "0/candidate": {
+        "file": "window-0-candidate-recovered.json.gz",
+        "sha256": "aa80c991540e1c0c3db9d4fb8a7b963c2442710336d5343ef0b28376a0c65fe1"
+      }
+    }
+  },
+  "reasons": [
+    "WINDOW_RISK_INCREASE_EXCEEDED",
+    "INSUFFICIENT_PAIRED_WEALTH_GAIN"
+  ],
+  "wall_seconds": 14.704702364979312,
+  "historical_screen_only": true,
+  "production_promoted": false,
+  "native_qualified": false
+}
