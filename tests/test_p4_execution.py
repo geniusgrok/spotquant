@@ -270,8 +270,3 @@ class P4ExecutionTests(TestCase):
             venue.cash += 1
             self.assertEqual(run_day(config, venue)['status'], 'unknown')
             self.assertEqual(venue.sent, [])
-
-
-# Historical entry/ATR/crowding scenarios, separate from the actual target-core default.
-from legacy_policy import legacy_policy
-setUpModule, tearDownModule = legacy_policy()

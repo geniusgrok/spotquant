@@ -293,8 +293,3 @@ class CanonicalCrowdingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'provenance'): f.crowding_from(corrupt, self.now)
             receipts = self.malformed_receipts(directory, 'spot_bars', b'not-json')
             with self.assertRaises(ValueError): f.crowding_from(receipts, self.now)
-
-
-# Historical entry/ATR/crowding scenarios, separate from the actual target-core default.
-from legacy_policy import legacy_policy
-setUpModule, tearDownModule = legacy_policy()
