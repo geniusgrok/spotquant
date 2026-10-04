@@ -6,6 +6,7 @@ import json
 import math
 from pathlib import Path
 import time
+import subprocess
 
 from research import complete_spot as complete, structure_spot as candidate
 from research.edge_features import FeatureBook
@@ -18,6 +19,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('market', 'fx', 'features', 'schedule', 'out'):
         p.add_argument('--'+name, type=Path, required=True)
+    p.add_argument('--resume-receipt', type=Path)
     args = p.parse_args(argv)
     source = source_identity()
     if source['dirty']:
@@ -32,6 +34,17 @@ def main(argv=None):
     features = FeatureBook(args.features, FEATURE_SHA256)
     started = time.monotonic()
     rows, rejected = [], []
+    resume = json.loads(args.resume_receipt.read_text()) if args.resume_receipt else None
+    if resume:
+        # Only output serialization changed. Preserve each old producer identity.
+        subprocess.run(['git', 'merge-base', '--is-ancestor', resume['producer_head'], source['git_head']], check=True)
+        changed = subprocess.check_output(['git', 'diff', '--name-only', resume['producer_head'], source['git_head'],
+            '--', 'spotquant', 'research', ':(exclude)research/structure_screen.py'], text=True)
+        if changed or resume['spec_sha256'] != hashlib.sha256(candidate.SPEC.read_bytes()).hexdigest():
+            raise ValueError('resume economic dependencies changed')
+        if (resume['schedule_sha256'] != schedule_sha or resume['feature_sha256'] != features.sha256
+                or resume['fx_sha256'] != hashlib.sha256(args.fx.read_bytes()).hexdigest()):
+            raise ValueError('resume inputs changed')
     args.out.mkdir(parents=True, exist_ok=True)
     original = complete.START_MS, complete.END_MS
     try:
@@ -44,14 +57,29 @@ def main(argv=None):
                 raise ValueError('empty registered session window')
             pair = {}
             for name in ('baseline', 'candidate'):
-                row = (complete.measure('crowding-interaction', 'base', bars, starts, fx, features, canonical=True)
-                       if name == 'baseline' else candidate.measure(bars, starts, fx, features))
+                reused = resume and str(index)+'/'+name in resume['accounts']
+                if reused:
+                    saved = resume['accounts'][str(index)+'/'+name]
+                    path = args.resume_receipt.parent/saved['file']
+                    if hashlib.sha256(path.read_bytes()).hexdigest() != saved['sha256']:
+                        raise ValueError('resume account bytes changed')
+                    with gzip.open(path, 'rt') as handle:
+                        row = json.load(handle)
+                    if [r['start_ms'] for r in row['sessions']] != starts:
+                        raise ValueError('resume session subset changed')
+                else:
+                    row = (complete.measure('crowding-interaction', 'base', bars, starts, fx, features, canonical=True)
+                           if name == 'baseline' else candidate.measure(bars, starts, fx, features))
                 # The legacy meter's completion flag here is only for this cold window.
-                row.update(window_account_finished=row.pop('complete'), complete=False, cagr=None,
+                row.update(window_account_finished=row['window_account_finished'] if reused else row.pop('complete'), complete=False, cagr=None,
                            meaning='finite real-session screening account, not original full-window qualification')
+                row = candidate.alpha.serial(row)
                 path = args.out/f'window-{index}-{name}.json.gz'
-                with gzip.open(path, 'wt') as handle:
-                    json.dump(row, handle, separators=(',', ':'))
+                if not reused:
+                    with gzip.open(path, 'wt') as handle:
+                        json.dump(row, handle, separators=(',', ':'))
+                else:
+                    path = args.resume_receipt.parent/saved['file']
                 core_events = 0
                 if name == 'candidate':
                     owners = candidate.alpha.execution.allocation_owners(
@@ -85,6 +113,7 @@ def main(argv=None):
         'schedule_sha256': schedule_sha, 'fx_sha256': hashlib.sha256(args.fx.read_bytes()).hexdigest(), 'feature_sha256': features.sha256,
         'rows': rows, 'sum_paired_log_wealth_gain': gain, 'component_fill_events': events,
         'decision': 'SCREEN_REJECTED' if rejected else 'FULL_MEASUREMENT_ENTRANT',
+        'resume_receipt': resume,
         'reasons': rejected, 'wall_seconds': time.monotonic()-started,
         'historical_screen_only': True, 'production_promoted': False, 'native_qualified': False}
     (args.out/'summary.json').write_text(json.dumps(result, indent=2)+'\n')
