@@ -23,17 +23,26 @@ class Policy(alpha.Policy):
         decision = super().__call__(views, owned, snapshot, **kwargs)
         # Core owns its existing SMA200/28% exit policy and 20% initial cash.
         # Only the tactical pool follows the current causal NEW BUY filter.
+        removed = False
         for order in list(decision['orders']):
             if order['side'] != 'BUY' or order['sleeves'] == [200]:
                 continue
             factor, diagnostic = evaluate(self.features, views[30], self.venue.now_ms)
             quote = resize(decision, order, D(order['quoteOrderQty']) * factor)
             if quote == 0:
+                removed = True
                 self.filters['blocked'] += 1
             if diagnostic['blocked_reason']:
                 self.filters['missing'] += 1
             self.journal.append(dict(event='tactical-crowding', **diagnostic,
                                      resulting_quote=str(quote)))
+        if removed:
+            # Remove cancelled entry protection while preserving held coins and
+            # keeping core protection ownership separate from the tactical pool.
+            tactical = {w: views[w] for w in alpha.TACTICAL}
+            decision['protections'] = alpha._merge_protections(
+                {w: decision['sleeves'][str(w)] for w in tactical}, tactical, snapshot, views[30]) + [
+                    p for p in decision['protections'] if p['sleeves'] == [200]]
         decision['order'] = decision['orders'][0] if decision['orders'] else None
         return decision
 
