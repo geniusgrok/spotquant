@@ -4,6 +4,8 @@ Repository: geniusgrok/spotquant. Use the personal / geniusgrok GitHub connectio
 
 ## Current mandate
 
+Latest user mandate (2026-10-04): replace actual strategy and risk cores, including main defaults. Interim economic deterioration is allowed. The core-spec.json preregistration and latest authorization supersede historical default-preservation/immediate-promotion restrictions below. Ownership, real money, causal clocks, manual bounded sessions, no unauthorized account writes, original evidence and old immutable forward consumers remain binding. Historical text below describes the incumbent, not a prohibition on this rebuild.
+
 One manually triggered Binance BTCUSDT spot system. Long or USDT cash; no borrow, short, futures or leverage. Two runtime repositories remain separate: Spotquant spot, Coinquant perpetual; Starquant historical reference/FX only.
 
 The development default is `2026-10-03-atr-stop-crowding-interaction-v1`, adopted after complete independent financial review and five canonical account comparisons. The exact registered interaction scales genuine new BUY spend once; missing causal public inputs block new risk only. This is a development adoption, with economic/native qualification still unmet. See research/canonical-crowding-GUIDE.md. Prior-rule durable states reject before recovery; no migration/reset is implied. Historical evidence retains its original source identity.
