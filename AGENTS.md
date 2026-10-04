@@ -29,3 +29,7 @@ Credentials: `SPOTQUANT_BINANCE_KEY` / `SPOTQUANT_BINANCE_SECRET` for live, `SPO
 ## Verification
 
 One CI workflow, Python 3.13, `contents: read`, timeout 10 minutes, no secrets, no market download, no full historical research. Runtime dependencies stay in the standard library.
+
+## Additional BTC research delivery (2026-10-04)
+
+All four new directions are closed: three fixed candidates screen-rejected, overlap budget already covered by single-position campaign ownership. See research/upgrade-RESULT.md and upgrade-GUIDE.md. No new795/full economic matrix or default adoption. Research source additions change whole-source identity; preserve original measured/forward bindings and use the original approved consumer commits for old ledgers. Do not observe old source-bound diaries from this new HEAD or reset/rebind them. Workspace minimum-verification rules apply: reuse accepted results, final fullsuite once per repo, affected failure recovery only.

@@ -22,6 +22,7 @@ INPUTS = {
     'spot-crowding-interaction-base.json.gz': '4c937ecf80f60d957486a752562c8ab8dfee4c06fa2e5b38b135cfb24ec38872',
     'perp-registered-16.json.gz': 'a071749cb6498a0e9612241bca23b57f8de9bae002b93fe189b7e1a3777a416d',
 }
+ACCEPTED_REPORT_SHA256 = '16ee432bd45c9783f9f38beb19aa7fef21ca3cc6305bee29469a371d388b2625'
 
 
 def accepted(name):
@@ -137,7 +138,10 @@ def main(argv=None):
     if args.out.exists():
         parser.error('exclusive output required')
     if args.accepted_attribution:
-        report = json.loads(args.accepted_attribution.read_text())
+        raw_report = args.accepted_attribution.read_bytes()
+        if hashlib.sha256(raw_report).hexdigest() != ACCEPTED_REPORT_SHA256:
+            raise ValueError('unregistered accepted final report')
+        report = json.loads(raw_report)
         if report['status'] != 'complete_reviewed':
             raise ValueError('accepted final financial report required')
         rows = {}
@@ -155,6 +159,7 @@ def main(argv=None):
             aggregate.update(item['attribution']['causes'])
         result = dict(source=source_identity(), accounts=rows,
             accepted_report=str(args.accepted_attribution),
+            accepted_report_sha256=ACCEPTED_REPORT_SHA256,
             totals={name:sum(v['attribution'][name] for v in rows.values()) for name in
                     ('blocked_proposals','actual_halving_proposals','unchanged_proposals')},
             causes=dict(aggregate),
