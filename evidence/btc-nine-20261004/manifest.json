@@ -160,6 +160,11 @@
       "path": "software/validation.json",
       "bytes": 386,
       "sha256": "ebde5935fa522eed747304d68a77441caa2aadaeb7bd828034c15ec9c72a1bc2"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 517,
+      "sha256": "e7309965538f2d19de7372ccf6b65aa6214778ac635ed1f1a52733ba290f8250"
     }
   ],
   "old_producers_preserved": true,
