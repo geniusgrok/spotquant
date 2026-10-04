@@ -6,12 +6,12 @@ from decimal import Decimal as D
 
 from .follow import advance, apply_day, day_open, unexplained
 from .model import DAY, SLEEVES, Model
-from .preview import MIN_NOTIONAL, decision as portfolio
+from .preview import MIN_NOTIONAL
+from .core import RULE, RULE as CORE_RULE, decision as portfolio
 from .state import State
 from .types import Blocked, Unknown
 
 # A different rule is never recovered or silently re-anchored, even while flat.
-from .crowding import RULE
 
 # Dropped when a cycle fails so the previous success cannot be read as current.
 STALE_REPORT_FIELDS = (
@@ -22,11 +22,11 @@ STALE_REPORT_FIELDS = (
 RECORDED_LIMITS = {
     'adverse_exit': 'next_open',
     'adverse_loss_capped': False,
-    'path_convention': 'completed_ATR14_decision_stop_with_native_floor; static_follow_catchup',
+    'path_convention': 'continuous_completed_daily_target; fill_owned_20pct_catastrophe_native_floor',
     'execution': 'shared_session_lifecycle; native Demo unverified; live blocked',
     'selection': 'full_sample',
     'new_entry_policy': RULE,
-    'public_features': 'settled funding lag8h/expiry8h; paired prior UTC daily closes lag60s; missing blocks new BUY only',
+    'public_features': 'completed daily price only; no funding/basis/macro entry veto',
     'sleeves': list(SLEEVES),
     'economic_targets_met': False,
     'skip_stress_targets_met': False,
@@ -40,7 +40,8 @@ def clear_stale(report: dict) -> None:
 
 def cycle(venue, state: State, config, *, execute=False) -> dict:
     _guard_state(state)
-    _allocation_scale(state, venue)
+    if RULE != CORE_RULE:
+        _allocation_scale(state, venue)
     lifecycle = None
     if execute:
         from .execution import Lifecycle
@@ -89,19 +90,24 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
     if fresh:
         for model in models.values():
             model.note_flat()
-        enabled = False
+        # A verified balance/fill reconciliation, rather than an old fresh-cross
+        # event, permits the current target. Empty state alone proves nothing.
+        enabled = RULE == CORE_RULE
     if _entries_blocked(models, exit_through):
         enabled = False
     views = {}
     owned = {}
     for window, model in models.items():
         views[window], owned[window] = _view(model, positions[window])
-    crowding = venue.crowding_features() if hasattr(venue, 'crowding_features') else None
+    options = {}
+    if RULE != CORE_RULE:
+        # Only explicitly scoped historical reproduction requests these inputs.
+        options = dict(crowding_source=venue.crowding_features() if hasattr(venue, 'crowding_features') else None,
+                       allocation_scale=_allocation_scale(state, venue))
     decision = portfolio(
         views, owned, snapshot, entries_enabled=enabled, capital_limit=config.capital_limit,
         positions=positions, owners=getattr(state, '_execution_owners', None) or {},
-        allocation_scale=_allocation_scale(state, venue),
-        crowding_source=crowding, decision_ms=int(venue.clock() * 1000))
+        decision_ms=int(venue.clock() * 1000), **options)
     follows = _follow_after(decision, models, positions, follows, exit_through)
     reference = models[SLEEVES[0]]
     _commit(state, models, positions, follows, accounted, exit_through, fresh, reference.last)
@@ -509,7 +515,8 @@ def _follow_after(decision: dict, models: dict, positions: dict, follows: dict, 
             if follow and follow.get('signal_ms') is not None:
                 out[window] = {'signal_ms': follow['signal_ms'], 'repair': bool(follow.get('repair'))}
             else:
-                out[window] = {'signal_ms': model.last, 'repair': bool(model.cap_enter)}
+                out[window] = {'signal_ms': model.last,
+                               'repair': False if decision.get('rule') == RULE else bool(model.cap_enter)}
         elif not (model.enter or model.cap_enter):
             out[window] = None
         else:

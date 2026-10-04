@@ -246,3 +246,8 @@ class AdoptionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# Historical entry/ATR/crowding scenarios, separate from the actual target-core default.
+from legacy_policy import legacy_policy
+setUpModule, tearDownModule = legacy_policy()

@@ -78,3 +78,8 @@ class SessionAccountTests(unittest.TestCase):
         self.assertEqual(venue.btc, 0)
         self.assertEqual(venue.orders['test-stop']['status'], 'FILLED')
         self.assertTrue(audit(venue)['passed'])
+
+
+# Historical entry/ATR/crowding scenarios, separate from the actual target-core default.
+from legacy_policy import legacy_policy
+setUpModule, tearDownModule = legacy_policy()
