@@ -41,7 +41,7 @@ class CoreTests(unittest.TestCase):
         snap.update(btc=D(0),open_orders=1)
         self.assertEqual(core.decision(views,{},snap,positions={},owners={},entries_enabled=True,capital_limit=None)['orders'],[])
 
-    def test_old_state_refuses_before_venue_reads(self):
+    def test_retired_core_refuses_before_venue_reads(self):
         with tempfile.TemporaryDirectory() as folder,State(folder,'binance:BTCUSDT:spot:demo:123') as state:
-            state.set('rule','2026-10-03-atr-stop-crowding-interaction-v1')
+            state.set('rule','btc-target-core-20261004-v1')
             with self.assertRaises(Blocked):session.cycle(object(),state,object(),execute=True)

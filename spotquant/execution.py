@@ -214,9 +214,7 @@ class Lifecycle:
             position = positions.get(str(window))
             if position and decision['sleeves'][str(window)]['action'] == 'exit':
                 view, qty = _view(Model.restore(self.state.get('models')[str(window)]), position)
-                from .core import RULE, protection_view
-                protector = protection_view if decision.get('rule') == RULE else decision_view
-                view = protector(view, position, getattr(self.state, '_execution_owners', None) or {})
+                view = decision_view(view, position, getattr(self.state, '_execution_owners', None) or {})
                 stop = _protection(view, qty, snapshot)
                 if D(stop['stopPrice']) >= D(snapshot['avg_price']):
                     raise Unknown('partial exit remainder has a crossed stop; explicit reduction needed')
