@@ -7,7 +7,7 @@ from decimal import Decimal as D
 from .follow import advance, apply_day, day_open, unexplained
 from .model import DAY, SLEEVES, Model
 from .preview import MIN_NOTIONAL
-from .core import RULE, decision as portfolio
+from .core import RULE, RULE as CORE_RULE, decision as portfolio
 from .state import State
 from .types import Blocked, Unknown
 
@@ -40,6 +40,8 @@ def clear_stale(report: dict) -> None:
 
 def cycle(venue, state: State, config, *, execute=False) -> dict:
     _guard_state(state)
+    if RULE != CORE_RULE:
+        _allocation_scale(state, venue)
     lifecycle = None
     if execute:
         from .execution import Lifecycle
@@ -90,17 +92,22 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
             model.note_flat()
         # A verified balance/fill reconciliation, rather than an old fresh-cross
         # event, permits the current target. Empty state alone proves nothing.
-        enabled = True
+        enabled = RULE == CORE_RULE
     if _entries_blocked(models, exit_through):
         enabled = False
     views = {}
     owned = {}
     for window, model in models.items():
         views[window], owned[window] = _view(model, positions[window])
+    options = {}
+    if RULE != CORE_RULE:
+        # Only explicitly scoped historical reproduction requests these inputs.
+        options = dict(crowding_source=venue.crowding_features() if hasattr(venue, 'crowding_features') else None,
+                       allocation_scale=_allocation_scale(state, venue))
     decision = portfolio(
         views, owned, snapshot, entries_enabled=enabled, capital_limit=config.capital_limit,
         positions=positions, owners=getattr(state, '_execution_owners', None) or {},
-        decision_ms=int(venue.clock() * 1000))
+        decision_ms=int(venue.clock() * 1000), **options)
     follows = _follow_after(decision, models, positions, follows, exit_through)
     reference = models[SLEEVES[0]]
     _commit(state, models, positions, follows, accounted, exit_through, fresh, reference.last)
