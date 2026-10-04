@@ -53,6 +53,10 @@ def model_for(candidate):
 
         def checkpoint(self):
             saved = super().checkpoint()
+            # A fill can reset need_reset between completed bars. Serialize the
+            # derived flag required by Model.restore without changing decisions.
+            saved['body']['enter'] = bool(self.streak >= self.confirm and self.crash_ok
+                                         and not (self.fresh and self.need_reset))
             saved['body']['participation'] = {
                 'candidate': candidate, 'last_exit_day': self.last_exit_day}
             saved['sha256'] = hashlib.sha256(json.dumps(saved['body'], sort_keys=True).encode()).hexdigest()
