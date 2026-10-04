@@ -1,0 +1,13 @@
+{
+  "format": "btc-nine-local-software-validation-v1",
+  "result": "PASS",
+  "tested_head": "aefcbd1bafe4c7f0efdc45ff64a0220e2a90f80c",
+  "tests": 378,
+  "skipped": 11,
+  "fullsuite_runs": 1,
+  "scoped_recovery_runs": 0,
+  "financial_replays_after_software": 0,
+  "ci": "INTENTIONALLY_SKIPPED_NOT_PASS",
+  "production_runtime_diff": "",
+  "original_financial_sources_preserved": true
+}
