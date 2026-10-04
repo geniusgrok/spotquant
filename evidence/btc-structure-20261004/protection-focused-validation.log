@@ -1,0 +1,6 @@
+test_blocked_entry_drops_only_its_protection_and_preserves_core_and_hold (test_structure_spot.ProtectionAfterCrowdingTests.test_blocked_entry_drops_only_its_protection_and_preserves_core_and_hold) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+OK
