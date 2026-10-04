@@ -1,8 +1,14 @@
 # PROJECT_STATE
 
-## Structural BTC research (2026-10-04)
+Updated: 2026-10-04T04:09:53.934082+00:00
 
-Spot implementation/financial screen CLOSED: fixed core-tactical SCREEN_REJECTED after2/4 windows by predeclared risk early stop.4 independent completed window accounts/102 actual finite sessions/9 core fills; no new795/full matrix/default adoption. Old core failures reused. First Decimal journal output failure retained; completed first-window financial fields recovered with lost journal disclosed, both accounts reused without replay; only remaining second-window pair executed. Source58ce719/8d6a8ba remain distinct. See research/structure-RESULT.md, structure-GUIDE.md and evidence/btc-structure-20261004. Final software PASS_COMPOSITE(full353/11skips +1 necessary protection case); normal GitHub integration remains pending; no extra economic run needed. Official public market HTTP451; old ledgers untouched/pending, nativecases0/accountdays0/NOT_QUALIFIED.
+## Completed structural BTC alpha/beta delivery (2026-10-04)
+
+User-authorized two-direction implementation and screening are CLOSED; normally merged PR12 https://github.com/geniusgrok/spotquant/pull/12 at00fef04971d688eeae491c53aa5104435d792ad4. Accepted feature/merge trees equal; original main and new isolated worktree fast-forwarded. This final closure changes documentation/evidence only with[skip ci], no repeated verification or finance. See research/structure-RESULT.md, structure-GUIDE.md and evidence/btc-structure-20261004 (MANIFEST plus separate GITHUB-INTEGRATION).
+
+Spot fixed20% SMA200 core + current ATR/crowding tactical rejected after2/4 preregistered windows by irreversible risk gate:2021 MDD12.1134%→18.0289%, beta.0824→.1573, both window returns fall.4 independent accounts/102 actual finite sessions/9 core fills. Original16s Decimal journal failure retained; completed financial fields recovered with opportunity journal loss explicitly disclosed; original first2 accounts reused, not replayed. Full353/11skips PASS once; post-review new protection removal guard has1 necessary targeted PASS, finalPASS_COMPOSITE; no second fullsuite. Measured blocked/missing0 excludes guard branch, preserve original58ce719/8d6a8ba bindings. No entrant/new795/default adoption.
+
+Prior complete core/conditional-short failures reused, not rerun as new. Whole research source changes do not rebind original measured economic evidence or old forward ledgers. Public Spot/perp fresh market endpoints actuallyHTTP451 this round; ledgers untouched/events0/accountdays0/nativecases0/pending. Use approved immutable old consumers Spotf1383f1/Coin762d75c only, no reset/migration/backfill/HOME/UID/lock bypass/private operations. Spot56.5981%/36.4122%, Coin119.2284%/44.1051% original full proxies remain; goalsNOT_MET/nativeNOT_QUALIFIED/prospectivefalse. No reliable new alpha/beta gain or ceiling claim. Engineering/integration complete with no running task; do not restart closed screens/795/tests. Future work requires a distinct registered mechanism with real decision value or genuinely new public forward intervals.
 
 ## Completed BTC alpha/beta upgrade (2026-10-04)
 

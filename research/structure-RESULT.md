@@ -20,3 +20,5 @@
 正式Spot默认56.5981%成本后CNY CAGR/36.4122%连续OHLC代理MDD；100%/≤30%目标仍NOT_MET。原完整经济/前向源码绑定保持原身份，新研究HEAD不能冒充原生产者。唯一最终全量软件验证与正常GitHub集成随证据交付，软件检查不证明盈利或原生执行。
 
 最终软件结果：Python3.13唯一全量353项/11跳过PASS（46c561f）。最终源码自审发现缺失输入挡新BUY后，保护汇总需同步去掉其计划保护；738ecdf只修正该分支，保留已持仓和独立核心保护，新增1项资金/保护反例单独PASS，没有再次全量。已测两候选窗口blocked/missing均0，经济测量不进入修正分支，因此旧绑定结果复用；不将它们改标成新来源。最终验证PASS_COMPOSITE，不宣称GitHub CI通过。
+
+正常集成完成：PR12 https://github.com/geniusgrok/spotquant/pull/12 合并00fef04971d688eeae491c53aa5104435d792ad4，接受特性树与合并树相等，原main/新隔离工作树安全快进。无强推、历史删除或新增测试。合并/本次收尾均[skip ci]，不是GitHub CI通过；闭环只改文档/证据，不重算财务。回执为evidence/btc-structure-20261004/GITHUB-INTEGRATION.json（独立于原MANIFEST的后续集成回执）。

@@ -1,0 +1,17 @@
+{
+  "repo": "geniusgrok/spotquant",
+  "pr_number": 12,
+  "pr_url": "https://github.com/geniusgrok/spotquant/pull/12",
+  "accepted_head": "e7366884992081faf811f6b21c29b88c21b75321",
+  "merge_sha": "00fef04971d688eeae491c53aa5104435d792ad4",
+  "merge_tree": "3a5c6b23a6f13bfc3df46889f8e6b6972a36624a",
+  "accepted_tree": "3a5c6b23a6f13bfc3df46889f8e6b6972a36624a",
+  "normal_merge": true,
+  "expected_head_merge": true,
+  "original_and_feature_fast_forwarded": true,
+  "force_or_history_deletion": false,
+  "ci": "intentionally skipped; not GitHub CI PASS",
+  "native_cases": 0,
+  "observed_account_days": 0,
+  "new_795_replay": 0
+}
