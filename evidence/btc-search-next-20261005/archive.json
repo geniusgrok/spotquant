@@ -1,0 +1,19 @@
+{
+  "format": "btc-search-next-static-evidence-v1",
+  "archive": "search-artifacts.zip",
+  "bytes": 1701694,
+  "sha256": "c9f9b30ab5f5a551a9a9bf5e9bd99ced3dc934b50d116eee1d9f5d59ff941cc3",
+  "git_blob_sha1": "d0181345fcfd325336ac5b26ea4f9cb051542f02",
+  "archived_original_files": 142,
+  "root": "/workspace/btc-search-next-20261005",
+  "coin_source": "abfec606a235ae88bf5e691965435ab6c50d1fd1",
+  "coin_python_sources_sha256": "509f579454f814ae329e8e3fcd01a0599465cf75cc29a5ca29b25249b0c861c2",
+  "spot_source": "66b8a68756affbaeb8a0dcf0fbb9bbd3b95ff0ed",
+  "defaults_changed": false,
+  "static_only": true,
+  "accepted_new_wallets": 6,
+  "blocked_wallets_preserved": 1,
+  "actual_completed_sessions": 178,
+  "new795": 0,
+  "limits": "Original public-print vault and project frozen Git runtime are source-bound external dependencies, not duplicated into this static archive. Includes unchanged prior outcome/helper bytes; do not rerun production merely for docs, archive or commit identity."
+}
