@@ -1,5 +1,4 @@
 """BTC new-entry policy and observed public inputs; no account or order access."""
-from copy import deepcopy
 from decimal import Decimal as D
 import hashlib
 import json
@@ -46,13 +45,12 @@ def value_at(name, record, now):
 
 
 def evaluate(source, view, now):
-    """Exact measured conjunction; missing causes block only a genuine new BUY."""
+    """Missing causal inputs block only a genuine new BUY."""
     inputs, values = [], []
     for name in ('funding', 'basis'):
         value = source.value(name, now) if source is not None else None
-        item = deepcopy(source.last_lookup) if source is not None else dict(
+        item = dict(source.last_lookup) if source is not None else dict(
             name=name, value=None, cause='missing_feature_source', now_ms=now)
-        # Both observed public and pinned historical adapters expose this contract.
         if value is not None:
             value, cause = value_at(name, item, now)
             if cause: item.update(value=None, cause=cause)
@@ -79,17 +77,15 @@ def _decimal(value):
     return result
 
 
-class ObservedFeatures:
-    """Build only from actually received settled rates and paired completed bars.
+class PublicFeatures:
+    """Settled rates and completed paired bars, cached for one minute.
 
-    Each observation supplies category, URL, request/receipt clocks, raw SHA and
-    parsed body. Forward retains the exact bytes; native reports their hashes.
-    A failed/malformed endpoint is explicit missing input, never a zero rate.
+    Failed or malformed public responses remain missing inputs.
     """
-    def __init__(self, observations):
-        self.observations = observations
+    def __init__(self, observations=None):
+        self.observations = [] if observations is None else observations
         self.last_lookup = None
-        self.filters = {'blocked': 0, 'missing': 0}
+        self.fetched = None
 
     def value(self, name, now):
         record = dict(name=name, value=None, cause='missing_public_' + name)
@@ -147,32 +143,6 @@ class ObservedFeatures:
         self.last_lookup = dict(record, now_ms=now, value=None if value is None else str(value), cause=cause)
         return value
 
-
-def _read_public(raw):
-    def pairs(items):
-        result = {}
-        for key, value in items:
-            if key in result: raise ValueError('duplicate public field')
-            result[key] = value
-        return result
-    return json.loads(raw, object_pairs_hook=pairs,
-                      parse_constant=lambda value: (_ for _ in ()).throw(ValueError('nonfinite public number')))
-
-
-def public_body(raw):
-    """Unavailable public JSON is a feature failure, with raw integrity checked by callers."""
-    try:
-        return dict(body=_read_public(raw))
-    except ValueError as exc:
-        return dict(body=None, error=type(exc).__name__)
-
-
-class PublicFeatures(ObservedFeatures):
-    """One small public snapshot per minute; no predicted premium or archive feed."""
-    def __init__(self):
-        super().__init__([])
-        self.fetched = None
-
     def refresh(self, now, stopping=None):
         if self.fetched is None or now - self.fetched >= 60000:
             observations = []
@@ -192,3 +162,23 @@ class PublicFeatures(ObservedFeatures):
                 record['receipt_ms'] = time.time_ns() // 1000000
                 observations.append(record)
             self.observations, self.fetched = observations, now
+
+
+def _read_public(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result: raise ValueError('duplicate public field')
+            result[key] = value
+        return result
+    def nonfinite(value):
+        raise ValueError('nonfinite public number')
+    return json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite)
+
+
+def public_body(raw):
+    """Unavailable public JSON is a feature failure, with raw integrity checked by callers."""
+    try:
+        return dict(body=_read_public(raw))
+    except ValueError as exc:
+        return dict(body=None, error=type(exc).__name__)

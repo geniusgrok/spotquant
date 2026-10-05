@@ -1,9 +1,7 @@
 from decimal import Decimal as D
-from pathlib import Path
 import tempfile
 import unittest
 
-from research.restore_check import check
 from spotquant.state import State
 from spotquant.types import Unknown
 
@@ -61,29 +59,3 @@ class DurableFillTests(unittest.TestCase):
             with self.assertRaises(Unknown):
                 state.trades(venue, 0)
 
-    def test_backup_reopens_read_only_and_detects_tampering(self):
-        with tempfile.TemporaryDirectory() as directory:
-            with State(directory, 'test') as state:
-                state.set('execution_anchor', {'cash': '100', 'btc': '0', 'at_ms': 1})
-                state.trades(Venue(), 0)
-                saved = state.archive({'session_started_at_ms': 1})
-                second = state.archive({'session_started_at_ms': 1})
-                self.assertNotEqual(saved['report'], second['report'])
-            proof = check(saved['report'])
-            self.assertTrue(proof['execution_anchor_preserved'])
-            self.assertFalse(proof['new_risk_authorized'])
-            with open(saved['backup'], 'ab') as stream:
-                stream.write(b'x')
-            with self.assertRaises(ValueError):
-                check(saved['report'])
-
-    def test_manifest_source_tampering_is_bound_to_backup(self):
-        import json
-        with tempfile.TemporaryDirectory() as directory, State(directory, 'test') as state:
-            saved = state.archive({'execution_code_sha256': 'a' * 64})
-            path = Path(saved['report'])
-            manifest = json.loads(path.read_text())
-            manifest['execution_code_sha256'] = 'b' * 64
-            path.write_text(json.dumps(manifest))
-            with self.assertRaises(ValueError):
-                check(path)

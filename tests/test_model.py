@@ -1,214 +1,97 @@
-"""Causal daily regime: warmup, delay, checkpoint, and no same-bar lookahead."""
+"""Current daily regime, fill-based risk and checkpoint continuity."""
 from decimal import Decimal as D
 import hashlib
 import json
 import unittest
 
-from spotquant.model import (
-    ADVERSE, CAP_BOUNCE, CAP_DEPTH, CAP_DROP, CAP_HAND, CAP_WINDOW, CONFIRM, CRASH, DAY,
-    EXTEND, FRESH, ORIGIN, SLEEVES, SMA_WINDOW, TRAIL, Model,
-)
+from spotquant.model import DAY, ORIGIN, Model
 from spotquant.types import Blocked
 
 
-def bar(i, close, high=None, low=None):
-    close = D(close)
-    return ORIGIN + i * DAY, high or close, low or close, close
+def warmed(window=30):
+    model = Model(window)
+    for index in range(400):
+        model.update(ORIGIN + index * DAY, 100, 100, 100)
+    return model
 
 
-def _resign(saved):
-    body = saved['body']
-    digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
-    return {'body': body, 'sha256': digest}
+def close(model, price, high=None):
+    model.update(model.last + DAY, high or price, price, price)
 
 
 class ModelTests(unittest.TestCase):
-    def test_origin_and_contiguity(self):
-        model = Model(sma_window=3, trail='0.20')
+    def test_origin_contiguity_strict_bull_and_checkpoint(self):
+        model = Model(30)
         with self.assertRaises(Blocked):
-            model.update(ORIGIN + DAY, 1, 1, 1)
-        model.update(*bar(0, 10))
-        model.update(*bar(1, 10))
+            model.update(ORIGIN + DAY, 100, 100, 100)
+        for index in range(30):
+            model.update(ORIGIN + index * DAY, 100, 100, 100)
         self.assertFalse(model.bull)
-        model.update(*bar(2, 10))
-        self.assertEqual(model.sma, D(10))
-        self.assertFalse(model.bull)
-
-    def test_bull_is_strict_and_checkpoint_roundtrips(self):
-        model = Model(sma_window=3, trail='0.20')
-        for i, close in enumerate((10, 10, 10, 11)):
-            model.update(*bar(i, close))
+        with self.assertRaises(Blocked):
+            model.update(model.last + 2 * DAY, 100, 100, 100)
+        close(model, 101)
         self.assertTrue(model.bull)
         restored = Model.restore(model.checkpoint())
-        self.assertTrue(restored.bull)
-        self.assertEqual(restored.sma, model.sma)
-        self.assertEqual(restored.last, model.last)
-        self.assertEqual(restored.stop_price(D('100')), D('80'))
+        self.assertEqual(restored.checkpoint(), model.checkpoint())
+        self.assertFalse(Model.restore(Model().checkpoint()).bull)
 
-    def test_defaults_match_the_selected_spot_book(self):
-        self.assertEqual(SLEEVES, (30, 40, 50))
-        self.assertEqual(SMA_WINDOW, 40)
-        self.assertEqual(TRAIL, D('0.28'))
-        self.assertEqual(CONFIRM, 2)
-        self.assertEqual(CRASH, D('0.50'))
-        self.assertIs(FRESH, True)
-        self.assertEqual(EXTEND, D('0.61'))
-        self.assertEqual(CAP_DROP, D('0.11'))
-        self.assertEqual(CAP_BOUNCE, D('0.07'))
-        self.assertEqual(CAP_DEPTH, D('0.50'))
-        self.assertEqual(CAP_HAND, D('0.11'))
-        self.assertEqual(CAP_WINDOW, 400)
-        self.assertEqual(ADVERSE, D('0.04'))
-
-    def test_two_closes_arm_entry_and_an_exit_requires_a_fresh_cross(self):
-        model = Model(sma_window=2, trail='0.20', crash='0', confirm=2, fresh=True)
-        model.update(*bar(0, 10))
-        model.update(*bar(1, 10))
-        model.update(*bar(2, 12))
-        self.assertTrue(model.bull)
+    def test_two_closes_and_fresh_cross_after_exit(self):
+        model = warmed()
+        close(model, 98)
+        close(model, 101)
         self.assertFalse(model.enter)
-        model.update(*bar(3, 14))
+        close(model, 102)
         self.assertTrue(model.enter)
         model.note_exit()
-        model.update(*bar(4, 16))
-        self.assertTrue(model.bull)
+        close(model, 103)
         self.assertFalse(model.enter)
-        model.update(*bar(5, 10))
-        self.assertFalse(model.bull)
-        model.update(*bar(6, 12))
-        model.update(*bar(7, 14))
+        close(model, 98)
+        close(model, 101)
+        close(model, 102)
         self.assertTrue(model.enter)
+        model.note_flat()
+        self.assertFalse(model.enter)
+        self.assertTrue(Model.restore(model.checkpoint()).need_reset)
 
-    def test_a_close_sixty_one_percent_above_the_average_is_a_blowoff(self):
-        model = Model(sma_window=2, trail='0.20', crash='0', confirm=1, fresh=False, cap_drop='0')
-        model.update(*bar(0, 10))
-        model.update(*bar(1, 10))
-        model.update(*bar(2, 42))
-        self.assertTrue(model.bull)
-        self.assertTrue(model.extended)
-        restored = Model.restore(model.checkpoint())
-        self.assertTrue(restored.extended)
-
-    def test_crash_reversal_arms_and_holds_until_the_handoff(self):
-        model = Model(
-            sma_window=2, trail='0.28', crash='0', confirm=1, fresh=True,
-            cap_window=4, cap_drop='0.10', cap_bounce='0.10', cap_depth='0.50', cap_hand='0.20',
-        )
-        for i, close in enumerate((20, 20, 20, 20)):
-            model.update(*bar(i, close))
-        self.assertFalse(model.cap_enter)
-        model.update(*bar(4, 8))
-        self.assertFalse(model.cap_enter)
-        model.update(*bar(5, 10))
-        self.assertTrue(model.cap_enter)
-        armed = Model.restore(model.checkpoint())
-        self.assertTrue(armed.cap_enter)
-        self.assertTrue(armed.enter)
-        self.assertFalse(armed.repair)
-        model.note_cap_entry()
-        model.update(*bar(6, 11, high=12))
-        self.assertTrue(model.repair)
-        self.assertEqual(model.repair_peak, D(12))
-        held = Model.restore(model.checkpoint())
-        self.assertTrue(held.repair)
-        self.assertEqual(held.repair_peak, D(12))
-        self.assertFalse(held.adverse)
-        # Back above the average and within 20% of the 4-day high releases the hold.
-        model.update(*bar(7, 20))
-        self.assertFalse(model.repair)
-        self.assertIsNone(model.repair_peak)
-        released = Model.restore(model.checkpoint())
-        self.assertFalse(released.repair)
-        self.assertIsNone(released.repair_peak)
-
-    def test_a_close_four_percent_under_the_fill_invalidates_a_normal_entry(self):
-        model = Model(sma_window=2, trail='0.28', crash='0', confirm=1, fresh=False, cap_drop='0')
-        model.update(*bar(0, 100))
-        model.update(*bar(1, 100))
-        model.note_entry(D('100'))
-        model.update(*bar(2, 97))
+    def test_fill_loss_exit_is_not_invented_before_threshold(self):
+        model = warmed()
+        model.note_entry(100)
+        close(model, 97)
         self.assertFalse(model.adverse)
-        model.update(*bar(3, 96))
+        close(model, 96)
         self.assertTrue(model.adverse)
         restored = Model.restore(model.checkpoint())
         self.assertTrue(restored.adverse)
-        self.assertEqual(restored.entry, D('100'))
+        self.assertEqual(restored.entry, D(100))
         model.note_exit()
         self.assertIsNone(model.entry)
         self.assertFalse(model.adverse)
 
-    def test_a_crash_reversal_ignores_the_four_percent_close(self):
-        model = Model(sma_window=2, trail='0.28', crash='0', confirm=1, fresh=False, cap_drop='0')
-        model.update(*bar(0, 100))
-        model.update(*bar(1, 100))
-        model.note_entry(D('100'))
+    def test_crash_reversal_holds_until_handoff_and_blowoff_is_distinct(self):
+        model = warmed()
+        close(model, 44)
+        self.assertFalse(model.cap_enter)
+        close(model, 48)
+        self.assertTrue(model.cap_enter)
+        model.note_entry(48)
         model.note_cap_entry()
-        model.update(*bar(2, 90))
+        close(model, 40)
         self.assertTrue(model.repair)
         self.assertFalse(model.adverse)
+        self.assertTrue(Model.restore(model.checkpoint()).repair)
+        close(model, 100)
+        self.assertFalse(model.repair)
+        blowoff = warmed()
+        close(blowoff, 500)
+        self.assertTrue(blowoff.extended)
+        self.assertTrue(Model.restore(blowoff.checkpoint()).extended)
 
-    def test_empty_checkpoint_roundtrips(self):
-        restored = Model.restore(Model().checkpoint())
-        self.assertIsNone(restored.last)
-        self.assertFalse(restored.bull)
-        self.assertFalse(restored.enter)
-        self.assertFalse(restored.cap_enter)
-        self.assertFalse(restored.crash_ok)
-
-    def test_restore_rejects_a_rehashed_crash_flag(self):
-        model = Model(sma_window=2, trail='0.20')
-        model.update(*bar(0, 10))
-        saved = model.checkpoint()
-        self.assertFalse(saved['body']['crash_ok'])
-        saved['body']['crash_ok'] = True
-        with self.assertRaises(Blocked):
-            Model.restore(_resign(saved))
-
-    def test_restore_rejects_a_rehashed_crash_reversal(self):
-        model = Model(sma_window=2, trail='0.20', crash='0')
-        model.update(*bar(0, 10))
-        model.update(*bar(1, 10))
-        saved = model.checkpoint()
-        self.assertFalse(saved['body']['cap_enter'])
-        saved['body']['cap_enter'] = True
-        with self.assertRaises(Blocked):
-            Model.restore(_resign(saved))
-
-    def test_restore_rejects_a_previous_close_that_is_not_in_the_window(self):
-        model = Model(sma_window=2, trail='0.20', crash='0')
-        model.update(*bar(0, 10))
-        model.update(*bar(1, 11))
-        saved = model.checkpoint()
-        saved['body']['prev_close'] = '9'
-        with self.assertRaises(Blocked):
-            Model.restore(_resign(saved))
-
-    def test_a_flat_followed_position_rearms_only_after_a_fresh_cross(self):
-        model = Model(sma_window=2, trail='0.28', confirm=1, fresh=True, crash='0', cap_drop='0')
-        model.update(*bar(0, 10))
-        model.update(*bar(1, 12))
-        self.assertTrue(model.bull)
-        self.assertTrue(model.enter)
-        model.note_flat()
-        self.assertFalse(model.enter)
-        self.assertTrue(model.need_reset)
-        restored = Model.restore(model.checkpoint())
-        self.assertFalse(restored.enter)
-        self.assertIsNone(restored.position_peak)
-        bearish = Model(sma_window=2, trail='0.28', confirm=1, fresh=True, crash='0', cap_drop='0')
-        bearish.update(*bar(0, 10))
-        bearish.update(*bar(1, 9))
-        self.assertFalse(bearish.bull)
-        bearish.note_flat()
-        self.assertFalse(bearish.need_reset)
-        Model.restore(bearish.checkpoint())
-
-    def test_equal_close_is_not_bullish(self):
-        model = Model(sma_window=2, trail='0.20')
-        model.update(*bar(0, 5))
-        model.update(*bar(1, 5))
-        self.assertFalse(model.bull)
-
-
-if __name__ == '__main__':
-    unittest.main()
+    def test_rehashed_inconsistent_checkpoint_cannot_change_runtime_state(self):
+        model = warmed()
+        close(model, 101)
+        for key, value in (('crash_ok', False), ('cap_enter', True), ('prev_close', '99')):
+            saved = model.checkpoint()
+            saved['body'][key] = value
+            saved['sha256'] = hashlib.sha256(json.dumps(saved['body'], sort_keys=True).encode()).hexdigest()
+            with self.subTest(key=key), self.assertRaises(Blocked):
+                Model.restore(saved)

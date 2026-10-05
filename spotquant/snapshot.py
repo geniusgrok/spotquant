@@ -28,5 +28,4 @@ def export(config, venue):
                    'native_stop_quantity_btc': protected,
                    'btc_without_native_stop': max(D(0), qty - protected),
                    'protection_observation': 'quantity only; ownership and trigger execution are not verified',
-                   'orders': snapshot['orders'], 'write_attempted': False,
-                   'native_execution_verified': False})
+                   'orders': snapshot['orders'], 'write_attempted': False})

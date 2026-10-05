@@ -2,7 +2,7 @@
 
 The database is a recovery aid, never an authority for balances. One persistent
 directory belongs to one spot account on one machine. This module does not
-submit orders. While execution is blocked, sessions do not insert order intents.
+submit orders. Explicit Demo execution records stable intents before dispatch.
 """
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-import uuid
 from decimal import Decimal as D
 from time import time
 
@@ -157,34 +156,6 @@ class State:
                     row[key] = D(row[key])
             rows.append(row)
         return rows
-
-    def archive(self, report: dict) -> dict:
-        """Immutable session report and consistent SQLite backup; no state reset."""
-        directory = self.directory / 'sessions'
-        directory.mkdir(mode=0o700, exist_ok=True)
-        name = str(report.get('session_started_at_ms', int(time() * 1000))) + '-' + uuid.uuid4().hex
-        backup = directory / (name + '.sqlite')
-        try:
-            report_bytes = json.dumps(serial(report), sort_keys=True, allow_nan=False).encode()
-            report_digest = hashlib.sha256(report_bytes).hexdigest()
-            self.set('last_archived_report_sha256', report_digest)
-            with sqlite3.connect(backup) as destination:
-                self.db.backup(destination)
-            with open(backup, 'rb') as stream:
-                os.fsync(stream.fileno())
-            digest = hashlib.sha256(backup.read_bytes()).hexdigest()
-            value = dict(report, state_identity=self.identity, backup_sha256=digest,
-                         backup_file=backup.name, archive_format=1,
-                         archived_report_sha256=report_digest)
-            path = directory / (name + '.json')
-            with path.open('x', encoding='utf-8') as stream:
-                json.dump(serial(value), stream, indent=2, allow_nan=False)
-                stream.write('\n')
-                stream.flush()
-                os.fsync(stream.fileno())
-            return {'report': str(path), 'backup': str(backup), 'backup_sha256': digest}
-        except (OSError, sqlite3.Error):
-            raise Unknown('session archive or consistent backup failed') from None
 
     def report(self, value: dict) -> None:
         """Persist the latest observation. Reports never contain credentials."""

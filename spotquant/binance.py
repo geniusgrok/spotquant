@@ -73,9 +73,6 @@ class Binance:
         self._offset_ms = None
         self._clock_retried = False
         self._stop = None
-        self.ask_multiplier_down = None
-        self.ask_multiplier_up = None
-        self.trailing_max_bips = None
         self.min_price = None
         self.max_price = None
         self.min_qty = None
@@ -94,9 +91,6 @@ class Binance:
 
     def clock(self) -> float:
         return self._clock()
-
-    def place_order(self, *args, **kwargs):
-        raise Blocked('spot execution is not qualified; no order request is sent')
 
     def query(self, identity):
         row = self._get('/api/v3/order', {'symbol': 'BTCUSDT', 'origClientOrderId': identity}, signed=True)
@@ -205,9 +199,6 @@ class Binance:
             'can_trade': account.get('canTrade') is True,
             'environment': self.environment,
             'avg_price': number(average['price'], 'avgPrice', positive=True),
-            'ask_multiplier_down': self.ask_multiplier_down,
-            'ask_multiplier_up': self.ask_multiplier_up,
-            'trailing_max_bips': self.trailing_max_bips,
             'min_price': self.min_price,
             'max_price': self.max_price,
             'min_qty': self.min_qty,
@@ -318,7 +309,7 @@ class Binance:
         market = filters.get('MARKET_LOT_SIZE') or {}
         if (number(lot.get('stepSize', '0'), 'step') != D('0.00001')
                 or number(price.get('tickSize', '0'), 'tick') != D('0.01')):
-            raise Blocked('BTCUSDT tick or step no longer matches the researched filters')
+            raise Blocked('BTCUSDT tick or step differs from supported order sizing')
         if 'minNotional' not in notional:
             raise Blocked('BTCUSDT minimum notional is missing')
         if number(notional['minNotional'], 'minNotional') != D('5'):
@@ -335,24 +326,7 @@ class Binance:
             self.max_notional = number(notional['maxNotional'], 'maxNotional', positive=True)
         types = symbol.get('orderTypes') or []
         if 'STOP_LOSS' not in types or 'MARKET' not in types:
-            raise Blocked('BTCUSDT spot cannot rest the researched market and stop orders')
-        trailing = filters.get('TRAILING_DELTA') or {}
-        try:
-            self.trailing_max_bips = int(trailing['maxTrailingBelowDelta'])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise Blocked('BTCUSDT trailingDelta bound is missing') from exc
-        if self.trailing_max_bips <= 0:
-            raise Blocked('BTCUSDT trailingDelta bound is missing')
-        band = filters.get('PERCENT_PRICE_BY_SIDE') or {}
-        try:
-            down = number(band['askMultiplierDown'], 'askMultiplierDown', positive=True)
-            up = number(band['askMultiplierUp'], 'askMultiplierUp', positive=True)
-        except (KeyError, Blocked) as exc:
-            raise Blocked('BTCUSDT percent price band is missing') from exc
-        if up < 1:
-            raise Blocked('BTCUSDT percent price band is invalid')
-        self.ask_multiplier_down = down
-        self.ask_multiplier_up = up
+            raise Blocked('BTCUSDT must support market orders and fixed stop protection')
 
     def _today_open(self) -> int:
         now = self._timestamp()

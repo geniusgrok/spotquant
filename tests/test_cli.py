@@ -19,7 +19,7 @@ class CliTests(unittest.TestCase):
         report = json.loads(stdout.getvalue())
         self.assertEqual(code, 2)
         self.assertEqual(report['status'], 'blocked')
-        self.assertIn('execution unavailable', report['reason'])
+        self.assertIn('execution is unavailable', report['reason'])
         self.assertNotIn('configuration', report['reason'])
 
     def test_status_persists_a_failed_observation(self):

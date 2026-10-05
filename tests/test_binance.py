@@ -26,20 +26,16 @@ def _filters():
                 {'filterType': 'PRICE_FILTER', 'tickSize': '0.01000000'},
                 {'filterType': 'LOT_SIZE', 'stepSize': '0.00001000', 'minQty': '0.00001000'},
                 {'filterType': 'NOTIONAL', 'minNotional': '5.00000000'},
-                {'filterType': 'TRAILING_DELTA', 'maxTrailingBelowDelta': 2000, 'maxTrailingAboveDelta': 2000},
-                {'filterType': 'PERCENT_PRICE_BY_SIDE', 'bidMultiplierUp': '1.2', 'bidMultiplierDown': '0.5',
-                 'askMultiplierUp': '2', 'askMultiplierDown': '0.8', 'avgPriceMins': 5},
             ],
         }],
     }
 
 
 class Script:
-    def __init__(self, uid='10001', trailing=2000):
+    def __init__(self, uid='10001'):
         self.urls = []
         self.methods = []
         self.uid = uid
-        self.trailing = trailing
         self.now = 1_700_000_000_000
 
     def __call__(self, method, url, headers):
@@ -54,7 +50,6 @@ class Script:
             return 200, json.dumps({'serverTime': self.now}).encode()
         if '/api/v3/exchangeInfo' in url:
             body = _filters()
-            body['symbols'][0]['filters'][3]['maxTrailingBelowDelta'] = self.trailing
             return 200, json.dumps(body).encode()
         if '/api/v3/account' in url:
             return 200, json.dumps({'uid': self.uid, 'canTrade': True, 'balances': [
@@ -106,7 +101,7 @@ class BinanceTests(unittest.TestCase):
         with self.assertRaises(Unknown):
             venue.snapshot('10001')
 
-    def test_demo_host_and_no_order_method(self):
+    def test_demo_host_and_read_only_submit_is_blocked(self):
         script = Script()
         venue = Binance(key=KEY, secret=SECRET, environment='demo', opener=script, clock=lambda: 1_700_000_000)
         venue.snapshot('10001')
@@ -114,7 +109,7 @@ class BinanceTests(unittest.TestCase):
         calls = []
         venue._opener = lambda *args: calls.append(args) or (_ for _ in ()).throw(AssertionError('network'))
         with self.assertRaises(Blocked):
-            venue.place_order(symbol='BTCUSDT')
+            venue.submit('sq-test', dict(symbol='BTCUSDT', side='BUY', type='MARKET', quoteOrderQty='10'))
         self.assertEqual(calls, [])
 
     def test_missing_stop_loss_blocks_before_the_account_call(self):
@@ -233,24 +228,6 @@ class BinanceTests(unittest.TestCase):
             with self.assertRaises(Blocked):
                 venue.snapshot('10001')
             self.assertFalse(any('/api/v3/account?' in url for url in script.urls))
-
-    def test_missing_percent_band_blocks_before_the_account_call(self):
-        script = Script()
-        body = _filters()
-        body['symbols'][0]['filters'] = [
-            item for item in body['symbols'][0]['filters'] if item['filterType'] != 'PERCENT_PRICE_BY_SIDE'
-        ]
-
-        def opener(method, url, headers):
-            if '/api/v3/exchangeInfo' in url:
-                script.urls.append(url)
-                return 200, json.dumps(body).encode()
-            return script(method, url, headers)
-
-        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener, clock=lambda: 1_700_000_000)
-        with self.assertRaises(Blocked):
-            venue.snapshot('10001')
-        self.assertFalse(any('/api/v3/account?' in url for url in script.urls))
 
 
 def self_now():

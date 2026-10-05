@@ -67,17 +67,17 @@ class GroupedCloseTests(TestCase):
                 positions, _, _, _ = self.apply(models, positions, follows, owners, self.trade(1, 60, fill))
                 self.assertFalse(positions[30].get('dust'))
 
-    def test_missing_readback_or_incomplete_legacy_application_never_widens_dust(self):
-        for legacy in (False, True):
+    def test_missing_readback_or_incomplete_application_never_widens_dust(self):
+        for incomplete in (False, True):
             models, positions, follows, owners = self.fixtures()
-            if legacy:
+            if incomplete:
                 # Original weights no longer equal the restored position, with no applied counter.
                 for p in positions.values():
                     p['qty'] = str(D(p['qty']) - D('.000001'))
             else:
                 owners['17'].pop('native_status')
                 owners['17'].pop('native_executed_qty')
-            if legacy:
+            if incomplete:
                 positions, _, _, _ = self.apply(models, positions, follows, owners, self.trade(1, 60, '.00004'))
                 self.assertFalse(positions[30].get('dust'))
             else:

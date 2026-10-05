@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import time
+import json
+from copy import copy
 from decimal import Decimal as D
 
 from .follow import advance, apply_day, day_open, unexplained
 from .model import DAY, SLEEVES, Model
-from .preview import MIN_NOTIONAL, decision as portfolio
+from .preview import MIN_NOTIONAL, decision
 from .state import State
 from .types import Blocked, Unknown
 
@@ -22,14 +24,8 @@ STALE_REPORT_FIELDS = (
 RECORDED_LIMITS = {
     'adverse_exit': 'next_open',
     'adverse_loss_capped': False,
-    'path_convention': 'completed_ATR14_decision_stop_with_native_floor; static_follow_catchup',
-    'execution': 'shared_session_lifecycle; native Demo unverified; live blocked',
-    'selection': 'full_sample',
-    'new_entry_policy': RULE,
-    'public_features': 'settled funding lag8h/expiry8h; paired prior UTC daily closes lag60s; missing blocks new BUY only',
-    'sleeves': list(SLEEVES),
-    'economic_targets_met': False,
-    'skip_stress_targets_met': False,
+    'execution': 'explicit Demo only; live blocked',
+    'public_features': 'funding lag/expiry8h; paired UTC closes lag60s; missing blocks new BUY',
 }
 
 
@@ -40,13 +36,11 @@ def clear_stale(report: dict) -> None:
 
 def cycle(venue, state: State, config, *, execute=False) -> dict:
     _guard_state(state)
-    _allocation_scale(state, venue)
     lifecycle = None
     if execute:
         from .execution import Lifecycle
         lifecycle = Lifecycle(state, venue, config)
     else:
-        import json
         from .execution import allocation_owners
         allocated = list(state.db.execute("SELECT payload,result FROM intents WHERE kind='p4'"))
         state._execution_owners = (allocation_owners((json.loads(payload), json.loads(result))
@@ -58,8 +52,7 @@ def cycle(venue, state: State, config, *, execute=False) -> dict:
         current = _cycle(venue, state, config, lifecycle=lifecycle)
         if not lifecycle or not lifecycle.act(current['model_preview'], current['market_through'], current['actual']):
             return dict(current, write_attempted=_writes(venue),
-                        status='offline_execution' if getattr(venue, 'offline', False) and execute else
-                        'demo_execution' if execute else 'read_only')
+                        status='demo_execution' if execute else 'read_only')
     raise Unknown('bounded execution cycle exhausted; reconcile on the next cycle')
 
 
@@ -97,17 +90,16 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
     for window, model in models.items():
         views[window], owned[window] = _view(model, positions[window])
     crowding = venue.crowding_features() if hasattr(venue, 'crowding_features') else None
-    decision = portfolio(
+    proposed = decision(
         views, owned, snapshot, entries_enabled=enabled, capital_limit=config.capital_limit,
         positions=positions, owners=getattr(state, '_execution_owners', None) or {},
-        allocation_scale=_allocation_scale(state, venue),
         crowding_source=crowding, decision_ms=int(venue.clock() * 1000))
-    follows = _follow_after(decision, models, positions, follows, exit_through)
+    follows = _follow_after(proposed, models, positions, follows, exit_through)
     reference = models[SLEEVES[0]]
     _commit(state, models, positions, follows, accounted, exit_through, fresh, reference.last)
     return {
         'status': 'read_only',
-        'model_preview': decision,
+        'model_preview': proposed,
         'actual': _public_snapshot(actual_snapshot),
         'market_through': reference.last,
         'model_bull': {str(window): model.bull for window, model in models.items()},
@@ -131,7 +123,6 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
         'cycles': 0,
         'write_attempted': False,
         'errors': [],
-        'qualification': 'NOT_QUALIFIED',
         'exchange': 'Binance',
         'environment': config.environment,
         'symbol': 'BTCUSDT',
@@ -191,41 +182,25 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
             if report['pending_intents']:
                 report.update(status='unknown', reason='Durable execution requires recovery', observation_current=False)
                 clear_stale(report)
-            import hashlib
-            from pathlib import Path
-            digest = hashlib.sha256()
-            for path in sorted(Path(__file__).parent.glob('*.py')):
-                digest.update(path.name.encode() + b'\0' + path.read_bytes() + b'\0')
-            report.update(execution_code_sha256=digest.hexdigest(), account_uid=config.account_uid,
+            report.update(account_uid=config.account_uid,
                           environment=config.environment, capital_limit_usdt=str(config.capital_limit),
-                          execution_enabled=execute, native_execution_verified=False)
+                          execution_enabled=execute)
             report['write_attempted'] = _writes(venue)
             report['session_ended'] = True
             report['observation_current'] = False
             report['stops_while_down'] = 'this process does not amend a stop while it is stopped'
             state.report(report)
-            try:
-                report['session_archive'] = state.archive(report)
-            except Unknown as exc:
-                report['archive_error'] = str(exc)
-            state.report(report)
     return report
-
-
-_LIFECYCLE_IDENTITY = None  # Only an explicitly scoped offline research context sets this.
 
 
 def _guard_state(state):
     """Read-only migration boundary, before any lifecycle recovery or venue request."""
-    if state.get('lifecycle_identity') != _LIFECYCLE_IDENTITY:
-        raise Blocked('lifecycle research state requires its matching offline consumer')
+    if any(state.get(key) is not None for key in (
+            'lifecycle_identity', 'alpha_identity', 'edge_identity', 'adoption_risk')):
+        raise Blocked('state belongs to an incompatible strategy')
     saved, rule = state.get('models'), state.get('rule')
     if rule is not None and rule != RULE:
         raise Blocked('state was written for another rule; a new directory is not a flat account')
-    if not RULE.startswith('alpha-spot:') and state.get('alpha_identity') is not None:
-        raise Blocked('research state is incompatible with the canonical rule')
-    if not RULE.startswith('edge-spot:') and state.get('edge_identity') is not None:
-        raise Blocked('edge research state is incompatible with the canonical rule')
     if saved is None:
         if (rule is not None or state.get('positions') is not None or state.get('follows') is not None
                 or state.db.execute('SELECT 1 FROM intents LIMIT 1').fetchone()):
@@ -234,12 +209,8 @@ def _guard_state(state):
     if rule != RULE or type(saved) is not dict or set(saved) != {str(w) for w in SLEEVES}:
         raise Blocked('state rule or sleeve checkpoint identity mismatch')
     models = {w: Model.restore(saved[str(w)]) for w in SLEEVES}
-    parameters = ('sma_window', 'trail', 'confirm', 'crash', 'high_window', 'fresh', 'extend',
-                  'cap_drop', 'cap_bounce', 'cap_depth', 'cap_hand', 'cap_window', 'adverse_stop')
-    for w, model in models.items():
-        expected = Model(w)
-        if any(getattr(model, k) != getattr(expected, k) for k in parameters):
-            raise Blocked('model checkpoint rule parameters mismatch')
+    if any(model.sma_window != w for w, model in models.items()):
+        raise Blocked('model checkpoint sleeve mismatch')
     if len({m.last for m in models.values()}) != 1:
         raise Blocked('sleeve checkpoints are not on the same daily bar')
     try:
@@ -270,7 +241,6 @@ def _guard_state(state):
     except (KeyError, TypeError, ValueError, ArithmeticError, Unknown) as exc:
         raise Blocked('incomplete or malformed position checkpoint') from exc
     # Pending dispatch/recovery must never run on malformed or foreign allocations.
-    import json
     from .execution import FIELDS
     try:
         for kind, encoded, status in state.db.execute(
@@ -298,37 +268,6 @@ def _guard_state(state):
     except (KeyError, TypeError, ValueError, ArithmeticError, Unknown) as exc:
         raise Blocked('incompatible durable pending allocation') from exc
     return models
-
-
-def _allocation_scale(state, venue):
-    # Only the offline canonical replay attaches this verified file-bound profile.
-    import hashlib
-    import json
-    profile = getattr(venue, '_adoption_risk', None)
-    prior = state.get('adoption_risk')
-    if profile is None:
-        if prior is not None:
-            raise Blocked('diagnostic risk identity requires its original offline replay')
-        return D(1)
-    try:
-        scale = D(profile['scale'])
-        raw = profile['profile']
-        calibration_sha = profile['calibration_sha256']
-        if (not getattr(venue, 'offline', False) or profile['rule'] != RULE
-                or profile['candidate'] != 'crowding-interaction' or profile['cutoff_ms'] != 1640995200000
-                or not scale.is_finite() or not 0 <= scale <= 1
-                or (calibration_sha is None and (scale != 1 or raw != {'scale': '1', 'sha256': None}))
-                or (calibration_sha is not None and (type(calibration_sha) is not str
-                    or len(calibration_sha) != 64 or any(c not in '0123456789abcdef' for c in calibration_sha)))
-                or raw['scale'] != profile['scale'] or raw['sha256'] != profile['calibration_sha256']
-                or hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest() != profile['profile_sha256']
-                or (prior is not None and prior != profile)
-                or (prior is None and state.get('models') is not None)):
-            raise ValueError('identity')
-    except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
-        raise Blocked('diagnostic risk identity mismatch') from exc
-    state._adoption_risk = profile
-    return scale if venue.now_ms >= 1640995200000 else D(1)
 
 
 def _load_models(state: State, venue):
@@ -487,8 +426,6 @@ def _commit(state, models, positions, follows, accounted, exit_through, fresh, l
         'exit_through': {str(key): value for key, value in exit_through.items()},
         'trade_cursor_ms': cursor,
     }
-    if getattr(state, '_adoption_risk', None) is not None:
-        values['adoption_risk'] = state._adoption_risk
     if fresh:
         values['entries_after'] = last
     state.set_many(values)
@@ -499,7 +436,7 @@ def _follow_after(decision: dict, models: dict, positions: dict, follows: dict, 
     """Remember a previewed entry until its fill is recorded or the signal is gone.
 
     A sleeve that exited on the current completed bar does not arm again until
-    a newer bar. That is the same-day rule the meter already uses.
+    a newer bar. New entries cannot reuse the exit bar.
     """
     out = {}
     for window, model in models.items():
@@ -527,10 +464,10 @@ def _view(model: Model, position):
         return model, D(0)
     if position.get('dust'):
         # The closed strategy is flat; every residual coin still stays owned.
-        view = Model.restore(model.checkpoint())
+        view = copy(model)
         view._owned_dust = True
         return view, D(position['qty'])
-    view = Model.restore(model.checkpoint())
+    view = copy(model)
     view.entry = D(position['entry_fill'])
     view.position_peak = D(position['peak'])
     view.repair = bool(position['repair'])

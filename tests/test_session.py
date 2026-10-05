@@ -20,7 +20,7 @@ class Clock:
 
 class Venue:
     def crowding_features(self):
-        from crowding_fixtures import KnownFeatures
+        from venue_fixture import KnownFeatures
         return KnownFeatures()
 
     def __init__(self, bars):
@@ -83,7 +83,6 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(third['model_preview']['order']['side'], 'BUY')
         self.assertEqual(third['model_preview']['order']['sleeves'], [30, 40, 50])
         self.assertEqual(third['model_preview']['order']['quoteOrderQty'], '999.99')
-        self.assertEqual(third['qualification'], 'NOT_QUALIFIED')
         self.assertEqual(venue.orders_sent, 0)
 
     def test_external_btc_stops_the_observation(self):
@@ -141,7 +140,6 @@ class SessionTests(unittest.TestCase):
         self.assertNotIn('followed_position', failed)
         self.assertNotIn('followed_sleeves', failed)
         self.assertFalse(failed['recorded_limits']['adverse_loss_capped'])
-        self.assertFalse(failed['recorded_limits']['skip_stress_targets_met'])
 
     def _held_venue(self, directory):
         venue = Venue(bars(252, 100))

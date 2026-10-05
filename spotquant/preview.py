@@ -16,7 +16,7 @@ PRICE_STEP = D('0.01')
 
 def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limit: D | None,
             owned_btc: D = D(0)) -> dict:
-    """Say what a qualified executor would submit. The caller must not submit it.
+    """Build a preview for the explicitly authorized executor. The caller must not submit it.
 
     ``owned_btc`` is coins this system has a confirmed fill for. Any other BTC
     at or above the minimum notional is external and blocks a new order.
@@ -151,7 +151,7 @@ def _exit(model: Model, owned: D, reason: str) -> dict:
 def _protection(model: Model, quantity: D | None, snapshot: dict) -> dict:
     # No recorded fill yet. The bullish-streak high can start before the buy,
     # so it is not the stop. A crash reversal is still a repair hold on the
-    # meter when the ordinary entry is also armed.
+    # book when the ordinary entry is also armed.
     trail = percent(model.trail)
     if quantity is None:
         peak = model.close
@@ -188,23 +188,12 @@ def _protection(model: Model, quantity: D | None, snapshot: dict) -> dict:
 
 
 def _annotate_venue(order: dict, model: Model, snapshot: dict) -> None:
-    """Say whether this STOP_LOSS can be rested. Do not add a limit price.
-
-    trailingDelta's maximum does not decide a fixed stopPrice. The sell band
-    applies to a limit price, which this order does not have.
-    """
+    """Check filters for the fixed STOP_LOSS price and owned quantity."""
     known = any(snapshot.get(key) is not None for key in (
-        'min_price', 'max_price', 'avg_price', 'min_qty', 'trailing_max_bips',
+        'min_price', 'max_price', 'avg_price', 'min_qty',
     ))
     if not known:
         return
-    trailing = snapshot.get('trailing_max_bips')
-    if trailing is not None:
-        bips = int((model.trail * D(10000)).to_integral_value())
-        order['trailing_placeable'] = bips <= int(trailing)
-        if not order['trailing_placeable']:
-            order['note'] += '. trailingDelta cannot express this distance; this order is a fixed stopPrice'
-    order['limit_placeable'] = None
     stop = D(order['stopPrice'])
     price_ok = True
     if snapshot.get('min_price') is not None and stop < D(snapshot['min_price']):
@@ -246,7 +235,7 @@ def _flat(reason: str) -> dict:
 
 
 def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool,
-              capital_limit: D | None, consensus: bool = True) -> dict:
+              capital_limit: D | None) -> dict:
     """The sleeves book. ``views`` maps a window to its model, ``owned`` to its recorded coins.
 
     An armed sleeve would spend the free USDT plus the proceeds of this open's exits, divided
@@ -311,7 +300,7 @@ def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool
             'note': 'sized on an estimate of free USDT; a real buy waits until the sell has filled',
         }
         orders.append(buy)
-    protections = _merge_protections(decisions, views, snapshot, reference)
+    protections = _merge_protections(decisions, views, snapshot)
     parts = []
     for label, group in (('exit', exits), ('enter', enters), ('hold', holds)):
         if group:
@@ -332,8 +321,7 @@ def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool
     if exits:
         out['loss_capped'] = False
         out['untradeable'] = not any(order['side'] == 'SELL' for order in orders)
-    if consensus:
-        consensus_allocation(out, views, snapshot, capital_limit)
+    consensus_allocation(out, views, snapshot, capital_limit)
     return out
 
 
@@ -360,7 +348,7 @@ def consensus_allocation(decision, views, snapshot, capital_limit):
                                        note='Advisory share of the pooled BUY allocation')
 
 
-def _merge_protections(decisions: dict, views: dict, snapshot: dict, reference: Model) -> list:
+def _merge_protections(decisions: dict, views: dict, snapshot: dict) -> list:
     """Same stop price and the same side can be one order. Different prices stay separate."""
     groups: dict[str, list] = {}
     order = []
@@ -407,9 +395,11 @@ def decision_view(model, position, owners):
     return view
 
 
-def atr_decision(views, owned, snapshot, *, positions, owners, entries_enabled, capital_limit,
-             allocation_scale=D(1)):
-    """Canonical ATR book: actual protection, exits first, then bounded new allocation."""
+def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capital_limit,
+             crowding_source=None, decision_ms=None):
+    """ATR protection, exits first, bounded consensus allocation, then crowding once."""
+    from .crowding import evaluate
+    price_views = views
     views = {w: decision_view(v, positions.get(w), owners) for w, v in views.items()}
     out = portfolio(views, owned, snapshot, entries_enabled=entries_enabled, capital_limit=capital_limit)
     forced = False
@@ -427,15 +417,13 @@ def atr_decision(views, owned, snapshot, *, positions, owners, entries_enabled, 
         if quantity * D(snapshot['avg_price']) >= MIN_NOTIONAL:
             out['orders'].append(dict(symbol='BTCUSDT', side='SELL', type='MARKET',
                                       quantity=str(quantity), sleeves=group))
-    out['protections'] = _merge_protections(
-        {w: out['sleeves'][str(w)] for w in views}, views, snapshot, next(iter(views.values())))
     sells = any(o['side'] == 'SELL' for o in out['orders'])
     free = D(snapshot['usdt_free'])
     cap_remaining = max(D(0), capital_limit - D(snapshot['btc']) * D(snapshot['avg_price'])) if capital_limit is not None else free
     for order in list(out['orders']):
         if order['side'] != 'BUY':
             continue
-        quote = floor_step(min(D(order['quoteOrderQty']), free, cap_remaining) * allocation_scale, QUOTE_STEP)
+        quote = floor_step(min(D(order['quoteOrderQty']), free, cap_remaining), QUOTE_STEP)
         if sells or quote < MIN_NOTIONAL:
             out['orders'].remove(order)
             for w in order['sleeves']:
@@ -449,21 +437,11 @@ def atr_decision(views, owned, snapshot, *, positions, owners, entries_enabled, 
                 sleeve_order['quoteOrderQty'] = str(quote / len(order['sleeves']))
         free -= quote
         cap_remaining -= quote
-    out['order'] = out['orders'][0] if out['orders'] else None
-    return out
-
-
-def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capital_limit,
-             allocation_scale=D(1), crowding_source=None, decision_ms=None):
-    """Canonical ATR sizing followed once by the measured new-entry interaction."""
-    from .crowding import evaluate
-    out = atr_decision(views, owned, snapshot, positions=positions, owners=owners,
-                       entries_enabled=entries_enabled, capital_limit=capital_limit)
     diagnostics = []
     for order in list(out['orders']):
         if order['side'] != 'BUY':
             continue
-        factor, diagnostic = evaluate(crowding_source, views[30], decision_ms)
+        factor, diagnostic = evaluate(crowding_source, price_views[30], decision_ms)
         def held(w):
             position = positions.get(w) or {}
             closed_dust = (position.get('dust') is True and bool(position.get('sell_applied'))
@@ -472,28 +450,23 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
         if any(held(w) for w in order['sleeves']):
             factor = D(0)
             diagnostic['blocked_reason'] = 'held_sleeve_no_topup'
-        quote = floor_step(D(order['quoteOrderQty']) * factor * allocation_scale, QUOTE_STEP)
+        quote = floor_step(D(order['quoteOrderQty']) * factor, QUOTE_STEP)
         cause = diagnostic['blocked_reason']
-        if crowding_source is not None and hasattr(crowding_source, 'filters'):
-            crowding_source.filters['missing'] += int(cause == 'missing_causal_crowding_or_momentum')
-            crowding_source.filters['blocked'] += int(quote < MIN_NOTIONAL)
         if quote < MIN_NOTIONAL:
             out['orders'].remove(order)
             for w in order['sleeves']:
                 out['sleeves'][str(w)].update(action='flat', order=None, protection=None)
             quote = D(0)
-            cause = cause or 'below_minimum_after_rounding_or_risk_scale'
+            cause = cause or 'below_minimum_after_rounding'
         else:
             order['quoteOrderQty'] = str(quote)
             for w in order['sleeves']:
                 sleeve_order = out['sleeves'][str(w)].get('order')
                 if sleeve_order and sleeve_order['side'] == 'BUY':
                     sleeve_order['quoteOrderQty'] = str(quote / len(order['sleeves']))
-        diagnostic.update(resulting_quote=quote, blocked_reason=cause, risk_scale=allocation_scale)
+        diagnostic.update(resulting_quote=quote, blocked_reason=cause)
         diagnostics.append(diagnostic)
-    protection_views = {w: decision_view(v, positions.get(w), owners) for w, v in views.items()}
-    out['protections'] = _merge_protections({w: out['sleeves'][str(w)] for w in views},
-                                           protection_views, snapshot, next(iter(protection_views.values())))
+    out['protections'] = _merge_protections({w: out['sleeves'][str(w)] for w in views}, views, snapshot)
     out['crowding'] = serial(diagnostics)
     out['order'] = out['orders'][0] if out['orders'] else None
     return out

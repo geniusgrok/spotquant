@@ -1,7 +1,6 @@
 """Shared outcomes and decimal helpers. No exchange I/O."""
 from __future__ import annotations
 
-from dataclasses import asdict
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from typing import Any
 
@@ -40,8 +39,6 @@ def floor_step(value: D, step: D) -> D:
 def serial(value: Any) -> Any:
     if isinstance(value, D):
         return format(value, 'f')
-    if hasattr(value, '__dataclass_fields__'):
-        return serial(asdict(value))
     if isinstance(value, dict):
         return {str(key): serial(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):

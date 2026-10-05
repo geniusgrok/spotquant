@@ -1,72 +1,10 @@
-# Spotquant engineering rules
+# 开发约定
 
-Repository: geniusgrok/spotquant. Use the personal / geniusgrok GitHub connection.
+当前项目：BTCUSDT 现货；SMA30 / 40 / 50 + ATR 止损 + 拥挤度入场调整。运行、配置和执行入口见 README.md；PROJECT_STATE.md 是当前任务状态的唯一记录。
 
-## Latest mandate — benefits versus harms (2026-10-05)
-User explicitly corrected adoption: lower wealth/return than the incumbent is not an automatic rejection; consider adoption when the material benefits clearly outweigh the harms. Use research/benefit-harm-policy.md as the current performance/adoption policy. This supersedes fixed performance vetoes and permanent family closure in replacement-spec/history-spec and earlier guidance, including the fixed 10% return/5% tolerance/20% MDD rules. Preserve original preregistrations, failed gates, negative evidence and source identities unchanged; label the new assessment as post-result user-authorized reconsideration, never an original gate PASS. Weigh magnitude, relevance and uncertainty rather than counting winning metrics. Comparable independently financed accounts, causal data, funds/order ownership, protection and complete honest evidence remain required; no private account actions or state migration/reset. Reuse all applicable evidence and do not rerun measurements/tests for a policy/document change. Default strategies remain unchanged until comparative net benefits are demonstrated.
-
-## Previous mandate — economic baseline restoration (2026-10-05)
-
-User approved restoring the prior default when material improvement is unproven. Restore SMA30/40/50 + ATR-stop + crowding / rule2026-10-03-atr-stop-crowding-interaction-v1 / scale1, anchored to 38e05f3b98b59595d00ec14eb7e7f27ab78e1b53. This supersedes the 2026-10-04 target-core adoption mandate and its install-anyway clause. Main strategy and risk remain replaceable, but a candidate must satisfy research/replacement-spec.json and comparable actual-account/stress evidence before adoption. Phase losses belong in candidate research, not an economically unsupported default. Preserve original negative evidence and producer identities. No private account actions, state migration/reset, schedule changes or new795 for rollback. Coin strategy identity/missing-checkpoint checks must precede recovery AND final cleanup; do not silently read target-core checkpoints as incumbent state.
-
-## Current mandate
-
-Latest user mandate (2026-10-04): replace actual strategy and risk cores, including main defaults. Interim economic deterioration is allowed. The core-spec.json preregistration and latest authorization supersede historical default-preservation/immediate-promotion restrictions below. Ownership, real money, causal clocks, manual bounded sessions, no unauthorized account writes, original evidence and old immutable forward consumers remain binding. Historical text below describes the incumbent, not a prohibition on this rebuild.
-
-One manually triggered Binance BTCUSDT spot system. Long or USDT cash; no borrow, short, futures or leverage. Two runtime repositories remain separate: Spotquant spot, Coinquant perpetual; Starquant historical reference/FX only.
-
-The development default is `2026-10-03-atr-stop-crowding-interaction-v1`, adopted after complete independent financial review and five canonical account comparisons. The exact registered interaction scales genuine new BUY spend once; missing causal public inputs block new risk only. This is a development adoption, with economic/native qualification still unmet. See research/canonical-crowding-GUIDE.md. Prior-rule durable states reject before recovery; no migration/reset is implied. Historical evidence retains its original source identity.
-
-The current development default is SMA30/40/50 plus ATR-stop and registered crowding-interaction, rule2026-10-03-atr-stop-crowding-interaction-v1, scale1. Only genuine NEW BUY changes: halve once when causal settled funding>.0003 AND prior completed UTC paired trade-close basis>.01 AND completed close<=five completed days earlier. Missing required causal features block only NEW BUY. Held quantities, no-topup, pooled90% free cash/whole-account ceiling, ordinary/safety exits, ATR14 clip(4*ATR/close,.10,.30), confirmed native stop floors and fill-owned peaks remain. Stored Model/follow catchup stays28%; no client stop amendment while stopped. Funding/basis public responses use the same causal/provenance parser as replay and paper; no future feature-file feed or private futures client.
-
-Model format5 remains; old execution rule/research identity/incompatible durable state rejects before Lifecycle recovery even when flat. Preserve SQLite and order identities; no automatic migration/reset/new-directory inference. Current operation and reproduction: research/edge-GUIDE.md and canonical-crowding-GUIDE.md. Earlier adoption-GUIDE.md describes the immutable ATR-only historical delivery.
-
-Complete71 financial accounts and5 separate canonical current-runtime accounts independently PASS. Original measured Spot74bd/Pythonf2d6 remains distinct from new canonical609606/Pythonb81f. Later metadata/evidence HEADs require exact protected byte/mode equality and preserve all original Git objects. Full current evidence: evidence/btc-edge-20261003; old alpha-beta-next-20261002 remains immutable. Default56.5981% cost-net CNY CAGR/36.4122% original continuousOHLC proxy MDD versus ATR55.2180%/36.4122%; 2022+actual USDTbeta.300300 versus.337669. Goals100%/<=30% remainNOT_MET. Nativecases0/accountdays0/NOT_QUALIFIED/prospectivefalse. Historical journals have689 unchanged/200 missing-feature-blocked proposals/zero actual halving events: observed benefit does not validate halving profitability. Whole-window/descriptive alpha, contaminated2022+ history and HAC7 are not prospective proof.
-
-Only crowding passed all registered gates; exit-confirm/stop-budget rejected. Coin retains incumbent after three rejected singles; no multi-component combination applies. Actual731day2020–2021training only; scales affect new2022+orders, never held sizing or curves. Fixed three real budget pairs are diagnostics, neutral5000/5000 never historical best-allocation search; joint daily MDD cannot be continuous MDD. Actual paper ledgers are source-bound cold cash, with no backfill or invented observations/native days; fresh_public_market_pending remains truthful when official data is unavailable.
-
-One manual session repeatedly observes/reconciles/decides until deadline/interruption; no background daemon. Default read-only; `run --execute` stays blocked. Owner Demo requires explicit environment, matching UID, positive capital ceiling and persistent scoped directory. Unknown sent identities are never blindly resubmitted. Native stop replacement retains its confirmed-cancel gap and remains unverified. Engineering work authorizes no accounts/orders/transfers/credentials/settings.
-
-Main is the development/integration baseline, not profit/safety qualification. Use normal fast-forward/PR operations, verify actual remote HEAD and preserve parallel work; no force push/history deletion. Use PROJECT_STATE.md/HANDOFF_PROMPT.md as the only current progress/recovery entries. Run all Coin synthetic account producers/tests with overlapping UIDs strictly serially; cache/state directories do not isolate HOME-based account locks. Do not alter HOME or remove/bypass locks. Keep measured source frozen until all financial work and audits are complete.
-
-## Execution safety
-
-Default read-only; live writes blocked. Explicit owner Demo is a validation entry, not qualification. Engineering work does not authorize orders, transfers, credentials, or account-setting changes. Unknown balances and external BTC block new risk. Do not treat a new empty state directory as proof the account is flat. Do not invent a background daemon.
-
-Credentials: `SPOTQUANT_BINANCE_KEY` / `SPOTQUANT_BINANCE_SECRET` for live, `SPOTQUANT_BINANCE_DEMO_KEY` / `SPOTQUANT_BINANCE_DEMO_SECRET` for demo. Client ids use `sq-`. Scope is `binance:BTCUSDT:spot:{live|demo}:{uid}`.
-
-## Verification
-
-One CI workflow, Python 3.13, `contents: read`, timeout 10 minutes, no secrets, no market download, no full historical research. Runtime dependencies stay in the standard library.
-
-## Additional BTC research delivery (2026-10-04)
-
-All four new directions are closed: three fixed candidates screen-rejected, overlap budget already covered by single-position campaign ownership. See research/upgrade-RESULT.md and upgrade-GUIDE.md. No new795/full economic matrix or default adoption. Research source additions change whole-source identity; preserve original measured/forward bindings and use the original approved consumer commits for old ledgers. Do not observe old source-bound diaries from this new HEAD or reset/rebind them. Workspace minimum-verification rules apply: reuse accepted results, final fullsuite once per repo, affected failure recovery only.
-
-## Continuous BTC route delivery (2026-10-04)
-
-All six information/expression/risk/data/execution/joint-account routes and failure alternatives are completed in continuous-RESULT.md/GUIDE.md. Spotsoft75 admitted cheap information screen but two fixed independent quarter wallets had0actual treatment; do not call economicinvalid or adopted. Preserve frozen rule as supportpending. Five new wallets144sessions, no795. Risk basket respects each actual sold fraction/dust ownership; oldfaileddiagnostic retained, unaffected routes/accounts reused. Manualpublic_capture is finite unqualifiedresearch only, no oldaccountdiary/adapter/daemon. Originaldefaults/goals/immutableforwardconsumers preserved. Next cycles require new evidence or distinct mechanism, max2economicexpressions perinformationfamily; do not repeat alreadyclosed measurements.
-
-## Persistent BTC failure routes (2026-10-04)
-
-Read persistent-RESULT.md/GUIDE.md. All available preregistered lifecycle/information/new-opportunity/jointrisk/execution/forward branches screened; no account entrant,0newaccounts/sessions,0new795/largevaultscan. Spotchase6negative,repair0; Coinhandoff1/restart0; trend33/20failed period gates,range1/0insufficient. Four real option Greeks/IV receipts are nearby-tenor/near25delta research,1receiptday; OI/books451, no retries. Frozen pending families require genuinely new evidence; do not relax thresholds or redo old histories. Joint admission is read-only and requires confirmed fresh separately financed ownership/causal context; no transfers/orders/default promotion. Original producer/old forward consumer identities retained; final full software eachrepo once, scoped failure recovery.
-
-## Five alpha families / four joint beta layers (2026-10-04)
-
-Read nine-RESULT.md/GUIDE.md and evidence/btc-nine-20261004. Five families/two expressions and four joint new-risk rules implemented; alpha0account entrants. ETF latest incomplete, OI/options1real receiptday, chain403/unqualified denominator, SOFR-IORB feature known but no release. Public3new requests, old receipts reused. Joint12independent wallets372finite sessions; all financial/archives pass,8old case wallets reused in recovery. Stress passes2020Q1 only;2022Q1 no known effect. Statecap2 rejects first window; all rules lack complete two-window support, no default adoption. Observed joint MDD is not continuous/native. Daily metrics derive matched actual midnight account ledgers; failed pseudo-daily report retained. No795/wholevault scan/curve scaling/transfers. Keep original measured producers and old immutable forward consumers; new whole-source HEAD does not consume old diaries. Future work requires new actual data/period/mechanism, not repeat old windows or loosen gates. Workspace final-only fullsuite and Coin serial lock rules continue.
-
-## Mature BTC decision loop / joint minute risk (2026-10-04)
-
-Read loop-RESULT.md/GUIDE.md and evidence/btc-loop-20261004. Mature alpha can admit actual accounts after net-owned cash, causal controls and independent halves; three new alpha and three beta failure mechanisms/finite read-only plans implemented. All current branches pending,0newaccounts/sessions/795/largevaultscan. Shared actual risk from six accepted wallets reused:2020baseline daily11.7309%/minute23.9868% versus session6.2022%,upperunknown29heldmarkminutes. New realSpotminute months fixed-fill revaluation only,not native/accountreplay. Originalnine gates unchanged. Originalcross-market unit error kept; only that branch recovered2.34s,other21.53s measurement reused. FinalPython3.13 softwareSpot389/Coin491 once each,skipCI not remotePASS. Source/oldforwardconsumers preserved; keep future evidence distinct and never backfill availability/relax gates.
-
-## Historical BTC target core adoption (2026-10-04; retired 2026-10-05)
-
-Current development default is btc-target-core-20261004-v1; Spot continuous positive95%-cap target, Coin independently sized positive trend2x-cap. Old vote/crowding and SX60/DFII10 defaults are historical. See core-RESULT.md/GUIDE.md/roadmap. Interim losses disclosed and authorized; no alpha/full-history economic/native qualification claimed. Sixteen finite independent wallets/444 accepted sessions audited; no795. Keep recorded original producer identities and old immutable forward consumers; no migration/reset. Final-only fullsuite and scoped failure recovery apply. Historical tests explicitly scope legacy strategies; current default funds/clock/recovery checks and actual finite accounts are separate.
-
-## Comprehensive BTC tradeoffs and continued replacement routes (2026-10-05)
-
-Read current PROJECT_STATE/HANDOFF and research/tradeoff-RESULT.md/GUIDE.md/roadmap.json. This cycle completed14 independent wallets399 accepted finite sessions, reused6 original wallets and7 fixed actual joint daily pairs in two selected quarters. Lower returns were weighed, not vetoed; channel/short/defensive/tactical/macro do not yet demonstrate sufficient overall net utility. Defaults remain economically evidenced; main strategy/risk stay replaceable. No new795/large-vault scan/private operations. Original invalid Spot complete flags and all other source/interface/disk failures are retained; recover affected cases only.
-
-Finite information expressions remain research plans/orders0/account_entrants0. Seven new public GETs509935B; original put delta failure retained, fresh actual strict pairNO_EVENT versus causal BTCUSDT RMS. Mature outcomes0; new seven-day point2026-10-12 06:29:48.514UTC is not automatic support. OI/flow completeness, cross-window/conversion and eligible USDT-linear dated-contract gaps stay pending; no repeated451, inverse/USDC substitution or invented availability. Continue distinct opportunity/information routes per roadmap, compare actual simple risk/cash before complex cores, and do not refit old failed quarters.
-
-Final full local Python3.13 Coin510/5skip andSpot412/11skip eachPASS once; skipCI is not remotePASS. Reuse accepted account/software/source/data evidence; additional importer rejection of invalid sessions does not invalidate already accepted arithmetic. Shared originals live once in Spotquant evidence/btc-tradeoff-20261005/research-artifacts.zip, bound by both archive.json. All842 synthetic-state originals are compressed once, not deleted or falsely resumable without full venue checkpoints. Protect original account producers and old forward consumers; no state migration/reset or source rebinding. Workspace efficiency and serial CoinUID rules remain binding.
+- 主分支只保留当前运行实现和必要使用说明，不保留候选策略、改造流水账、历史报告和经济验收框架。
+- 优先直接函数、普通数据和现有调用路径。删除无用途的中间层、重复包装和兼容分支；局部重复比通用框架更合适时允许重复。
+- 账户 UID、环境隔离、固定状态目录、订单身份、实际成交归属、资金核对和原生保护是运行逻辑。精简时保持这些行为，不迁移或清空账户状态，不绕过锁。
+- 凭据只从环境变量读取；不提交凭据、账户数据库、大型行情或临时输出。修改代码不自动运行账户命令，不发起真实交易或资金操作。
+- 只做必要验证，复用适用的通过结果。一次完整交付的全量软件检查集中在最后一次；失败后只补测受影响部分。不为文档、提交身份或排版重测，不自动运行 795 会话或整段历史测量。
+- 修改策略时明确改变的行为和收益/风险取舍；不要用模拟结果宣称原生执行通过，不把失败检查写成通过。

@@ -1,4 +1,4 @@
-"""Durable P4 order allocation. Used by the bounded session and offline replay."""
+"""Durable sleeve order allocation for the bounded Demo session."""
 from __future__ import annotations
 
 import hashlib
@@ -25,9 +25,9 @@ def allocation_owners(rows):
 class Lifecycle:
     def __init__(self, state, venue, config):
         if not getattr(venue, 'execution_authorized', False) or config.environment != 'demo':
-            raise Blocked('P4 execution requires an explicitly authorized Demo or offline venue')
+            raise Blocked('execution requires an explicitly authorized Demo venue')
         if state.identity != config.scope or config.capital_limit is None:
-            raise Blocked('P4 execution requires scoped state and a positive capital ceiling')
+            raise Blocked('execution requires scoped state and a positive capital ceiling')
         self.state, self.venue, self.config = state, venue, config
 
     def rows(self):
@@ -104,10 +104,10 @@ class Lifecycle:
     def prepare(self, order, bar, positions, follows):
         group = sorted(order['sleeves'])
         if not group or any(window not in SLEEVES for window in group):
-            raise Blocked('invalid P4 sleeve allocation')
+            raise Blocked('invalid sleeve allocation')
         raw = {key: order[key] for key in FIELDS if key in order}
         if raw.get('symbol') != 'BTCUSDT' or raw.get('type') not in ('MARKET', 'STOP_LOSS'):
-            raise Blocked('invalid P4 order')
+            raise Blocked('invalid spot order')
         buying = raw.get('side') == 'BUY'
         weights = {str(w): '1' if buying else positions[str(w)]['qty'] for w in group}
         payload = serial({'order': raw, 'sleeves': group, 'weights': weights,
@@ -230,8 +230,8 @@ class Lifecycle:
         for identity, payload, status, _ in self.rows():
             if status == 'prepared' and payload['order']['type'] == 'STOP_LOSS' and identity not in wanted:
                 self.save(identity, payload, 'settled', {'not_sent': True, 'reason': 'protection preparation superseded'})
-        # Locked spot coins require confirmed cancellation before replacement. This gap
-        # is measured explicitly; native Demo qualification must verify its behavior.
+        # Locked spot coins require confirmed cancellation before replacement;
+        # the position has a protection gap until the replacement is confirmed.
         active = {row[0] for row in resting}
         if active != set(wanted):
             for identity in sorted(active - set(wanted)):

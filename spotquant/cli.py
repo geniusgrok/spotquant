@@ -35,7 +35,6 @@ def _base_report(config) -> dict:
     return dict(
         status='read_only', exchange='Binance', environment=config.environment,
         symbol='BTCUSDT', market='spot', leverage='0', sleeves=list(SLEEVES),
-        qualification='NOT_QUALIFIED',
         write_attempted=False, observation_current=False,
         recorded_limits=dict(RECORDED_LIMITS),
         reason='Account observation only',
@@ -97,11 +96,11 @@ def main(argv=None):
         command.add_argument('--config', default='config.json')
         if name == 'run':
             command.add_argument('--execute', action='store_true',
-                                 help='Blocked. Native qualification stays NOT_QUALIFIED.')
-    exported = commands.add_parser('snapshot', help='Fresh read-only account JSON for research.operations combine')
+                                 help='Blocked. Live execution is unavailable.')
+    exported = commands.add_parser('snapshot', help='Export a fresh read-only BTC account snapshot')
     exported.add_argument('--config', default='config.json')
     exported.add_argument('--out', type=Path, required=True)
-    demo = commands.add_parser('demo-check', help='Owner-operated bounded Demo execution; does not qualify live')
+    demo = commands.add_parser('demo-check', help='Owner-operated bounded Demo execution')
     demo.add_argument('--config', required=True)
     demo.add_argument('--execute', action='store_true')
     demo.add_argument('--authorize-uid', help='Repeat the dedicated Demo account UID for this invocation')
@@ -109,7 +108,7 @@ def main(argv=None):
     try:
         if args.command == 'run' and args.execute:
             # Before config, credentials, and network.
-            raise Blocked('Native qualification is NOT_QUALIFIED; execution unavailable')
+            raise Blocked('Live execution is unavailable')
         if args.command == 'snapshot':
             from .snapshot import export
             config = load(args.config)
