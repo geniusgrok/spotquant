@@ -83,6 +83,12 @@ class TradeoffAssessmentTests(unittest.TestCase):
         row['audit']['passed'] = False
         with self.assertRaises(ValueError):
             self.view(row)
+
+    def test_false_complete_flag_cannot_admit_blocked_strategy(self):
+        row = self.candidate()
+        row['sessions'][0]['errors'] = [{'reason': 'diagnostic risk identity mismatch'}]
+        with self.assertRaisesRegex(ValueError, 'integration failed'):
+            self.view(row)
         row = self.candidate()
         row['daily'][0]['quantity_btc'] = '1'
         with self.assertRaises(ValueError):

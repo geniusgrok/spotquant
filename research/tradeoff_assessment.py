@@ -86,6 +86,9 @@ def wallet_view(row, *, kind, source, conditions, original_gate=None):
             or len(starts) != row['registered_session_count']
             or any(s.get('pending_intents') or s.get('execution_unresolved') for s in sessions)):
         raise ValueError('incomplete or ambiguous session clocks')
+    if any(word in str(error) for session in sessions for error in session.get('errors', [])
+           for word in ('history must start', 'incompatible', 'risk identity mismatch')):
+        raise ValueError('strategy integration failed despite completion flag')
     begin, end = map(_stamp, row['window'])
     if begin >= end or any(t < begin or t >= end for t in starts):
         raise ValueError('session outside account window')
