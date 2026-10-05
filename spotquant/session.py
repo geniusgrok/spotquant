@@ -212,8 +212,13 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
     return report
 
 
+_LIFECYCLE_IDENTITY = None  # Only an explicitly scoped offline research context sets this.
+
+
 def _guard_state(state):
     """Read-only migration boundary, before any lifecycle recovery or venue request."""
+    if state.get('lifecycle_identity') != _LIFECYCLE_IDENTITY:
+        raise Blocked('lifecycle research state requires its matching offline consumer')
     saved, rule = state.get('models'), state.get('rule')
     if rule is not None and rule != RULE:
         raise Blocked('state was written for another rule; a new directory is not a flat account')
