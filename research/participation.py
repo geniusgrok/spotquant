@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 from research import edge_spot as edge, upgrade_spot as upgrade
 from spotquant import crowding, session
+from spotquant.model import DAY
+from spotquant.types import floor_step, serial
 
 POLICIES = ('trend-reentry', 'optional-crowding-half')
 OPTIONAL_ABSENCE = {
@@ -77,6 +79,48 @@ def policy_for(expression, venue, features, binding, *, risk=None):
     return policy
 
 
+def _owned_close(original, policy, models, positions, follows, accounted, open_ms,
+                 trades, history, owners=None):
+    """Record only a confirmed allocated full rounded close, after normal fold.
+
+    Runtime ownership lives in positions rather than Model.entry, so the old
+    ParticipationModel.note_flat cannot identify these actual owned closures.
+    The marker uses the same pre-bar completed-day clock as original note_exit.
+    A legitimate full rounded sale may retain proven unplaceable owned dust;
+    dust alone, a partial sale or an unconfirmed order never creates a marker.
+    """
+    result = original(models, positions, follows, accounted, open_ms, trades, history, owners=owners)
+    closed = result[3]
+    if owners is None or not closed:
+        return result
+    for window in closed:
+        prior = positions.get(window)
+        if prior is None or prior.get('dust'):
+            continue
+        for trade in trades:
+            if (trade['buyer'] or trade['id'] in accounted or trade['id'] not in result[2] or
+                    trade['time']//DAY*DAY != open_ms or trade['time'] < int(prior['first_ms'])):
+                continue
+            owner = owners.get(str(trade['order_id']))
+            if owner is None or window not in owner['sleeves']:
+                continue
+            order = owner['order']
+            full = sum((floor_step(D(owner['weights'][str(w)]), edge.preview.BASE_STEP)
+                        for w in owner['sleeves']), D(0))
+            if (order['side'] != 'SELL' or owner.get('native_status') != 'FILLED' or
+                    owner.get('native_executed_qty') is None or
+                    D(owner['native_executed_qty']) != D(order['quantity']) or
+                    D(order['quantity']) != full or full <= 0):
+                continue
+            models[window].last_exit_day = models[window].last
+            policy.journal.append(serial(dict(event='confirmed-participation-close',
+                sleeve=window, order_id=trade['order_id'], fill_ms=trade['time'],
+                last_exit_day=models[window].last, owned_before=prior['qty'],
+                confirmed_rounded_group_quantity=full)))
+            break
+    return result
+
+
 @contextmanager
 def configured(expression, *, venue, features, binding, risk=None, journal=None):
     """Root supplies cold independent venue/state, causal FeatureBook and clocks.
@@ -89,7 +133,11 @@ def configured(expression, *, venue, features, binding, risk=None, journal=None)
         policy.journal = journal
     context = upgrade.configured(policy) if expression == 'trend-reentry' else edge.configured(policy)
     evaluator = edge.evaluate if expression == 'trend-reentry' else optional_half
-    with patch.object(edge, 'evaluate', evaluator), context:
+    original = session.apply_day
+    def apply_day(*args, **kwargs):
+        return _owned_close(original, policy, *args, **kwargs)
+    closure = apply_day if expression == 'trend-reentry' else original
+    with patch.object(edge, 'evaluate', evaluator), patch.object(session, 'apply_day', closure), context:
         def run(config, selected, **kwargs):
             if selected is not venue or getattr(selected, 'offline', False) is not True:
                 raise ValueError('participation refuses account adapters before recovery')

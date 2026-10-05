@@ -8,7 +8,7 @@ import unittest
 from research import edge_spot as edge
 from research.participation import configured, optional_half
 from spotquant import session
-from spotquant.model import DAY
+from spotquant.model import DAY, ORIGIN
 from spotquant.state import State
 from spotquant.types import Blocked, Unknown
 from test_alpha_spot import views_at
@@ -30,6 +30,37 @@ class Features:
 
 
 class ParticipationBoundaries(unittest.TestCase):
+    def test_reentry_marker_requires_confirmed_owned_full_close_and_survives_restore(self):
+        original_fold = session.apply_day
+        for status, quantity in (('FILLED',D(1)), ('PARTIALLY_FILLED',D('.5')), ('NEW',D(1))):
+            with self.subTest(status=status), configured('trend-reentry',
+                    venue=SimpleNamespace(offline=True), features=None,
+                    binding=dict(specification_sha256='b'*64)) as selected:
+                cls = session.Model
+                model = cls(30)
+                for i in range(420):
+                    model.update(ORIGIN+i*DAY, D(100), D(100), D(100))
+                self.assertIsNone(model.entry)  # Actual ownership is in positions.
+                self.assertIsNone(model.last_exit_day)
+                position = dict(qty='1.000005', first_ms=model.last, sell_applied={})
+                owner = dict(sleeves=[30], weights={'30':'1.000005'},
+                             order=dict(side='SELL', type='MARKET', quantity='1'),
+                             native_status=status, native_executed_qty=str(quantity))
+                trade = dict(id=1, order_id=7, buyer=False, time=model.last+DAY+1000,
+                             qty=quantity, price=D(100), commission=D(0), commission_asset='USDT')
+                result = session.apply_day({30:model}, {30:position}, {30:None}, set(),
+                    model.last+DAY, [trade], lambda: [], owners={'7':owner})
+                if status == 'FILLED':
+                    self.assertEqual(result[3], [30])
+                    self.assertTrue(result[0][30]['dust'])
+                    self.assertEqual(model.last_exit_day, model.last)
+                    self.assertEqual(cls.restore(model.checkpoint()).last_exit_day, model.last)
+                    self.assertEqual(selected.policy.journal[-1]['event'], 'confirmed-participation-close')
+                else:
+                    self.assertIsNone(model.last_exit_day)
+                    self.assertEqual(selected.policy.journal, [])
+        self.assertIs(session.apply_day, original_fold)
+
     def test_only_optional_absence_changes_and_keeps_missing_evidence(self):
         now = 10*DAY+60000
         view = SimpleNamespace(last=9*DAY, close=D(100), closes=[D(100)]*6)
