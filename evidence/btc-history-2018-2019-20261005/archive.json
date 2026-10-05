@@ -1,0 +1,23 @@
+{
+  "format": "btc-history-static-research-evidence-v1",
+  "archive": "research-artifacts.zip",
+  "bytes": 1892379,
+  "sha256": "5170e45d36b11dbb8837f74df466f43b37835ce1f3b0b60ea1482e79814e1d90",
+  "git_blob_sha1": "44ac64bcf6b119a9e54193f287d19ae2cc845237",
+  "files": 69,
+  "study_years": [
+    2018,
+    2019
+  ],
+  "qualified_days": 730,
+  "candidate_cores": 4,
+  "adopted": false,
+  "historical_accounts": 0,
+  "historical_sessions": 0,
+  "new795": 0,
+  "original_failures_preserved": true,
+  "runtime_default_changed": false,
+  "coin_source_parent": "ca9419954de22b144de9c3472a0f14685b2fe5b4",
+  "spot_source_parent": "e814b3b9b7ef07947335eec7f8e01c135a2262ca",
+  "software": "Local Python3.13 final Coin505/5skip andSpot401/11skip PASS once each; skipCI is not new remote PASS."
+}
