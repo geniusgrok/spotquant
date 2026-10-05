@@ -148,6 +148,7 @@ class ReasonExitBoundaries(unittest.TestCase):
                              sum(floor_step(q, D('.00001')) for q in owned.values()))
             # A known native floor through the mark overrides this hold fully.
             stop = dict(sleeves=list(models), signal_ms=models[30].last, native_status='NEW',
+                weights={str(w):str(owned[w]) for w in models},
                 native_executed_qty='0', order=dict(type='STOP_LOSS', side='SELL', quantity='3', stopPrice='100'))
             safety = decide(held_views, owners={'9':stop})
             full = next(o for o in safety['orders'] if o['side']=='SELL')
