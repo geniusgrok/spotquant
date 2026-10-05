@@ -7,7 +7,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 
-from research.information_runtime import configured
+from research.information_runtime import EDGE_READER_BRIDGE, admitted, configured, edge_reader_bridge
 from spotquant import session
 from spotquant.model import DAY
 from spotquant.state import State
@@ -29,6 +29,19 @@ def admission(book):
 
 
 class InformationRuntimeTests(unittest.TestCase):
+    def test_exact_original_reader_bridge_rejects_any_other_file_or_source(self):
+        book = information_fixtures.IncrementalInformationTests().book()
+        result, binding = admission(book)
+        path = next(path for path in result['source_sha256'] if Path(path).name == 'edge_features.py')
+        result['source_sha256'][path] = EDGE_READER_BRIDGE['measured_file_sha256']
+        binding['information_result_sha256'] = hashlib.sha256((json.dumps(result, indent=2)+'\n').encode()).hexdigest()
+        admitted(book, binding, result, 'spot')
+        raw = Path(path).read_bytes()
+        self.assertFalse(edge_reader_bridge(['0'*64], EDGE_READER_BRIDGE['target_file_sha256'], raw))
+        self.assertFalse(edge_reader_bridge([EDGE_READER_BRIDGE['measured_file_sha256']], '0'*64, raw))
+        self.assertFalse(edge_reader_bridge([EDGE_READER_BRIDGE['measured_file_sha256']],
+                         EDGE_READER_BRIDGE['target_file_sha256'], raw.replace(b'FUNDING_LAG = 28800000', b'FUNDING_LAG = 0')))
+
     def context(self, cause=None):
         book = information_fixtures.IncrementalInformationTests().book()
         book.at = lambda now:dict(status='FEATURE_READY', release=False, day_ms=now//DAY*DAY-DAY)
