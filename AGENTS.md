@@ -2,7 +2,10 @@
 
 Repository: geniusgrok/spotquant. Use the personal / geniusgrok GitHub connection.
 
-## Latest mandate — economic baseline restoration (2026-10-05)
+## Latest mandate — benefits versus harms (2026-10-05)
+User explicitly corrected adoption: lower wealth/return than the incumbent is not an automatic rejection; consider adoption when the material benefits clearly outweigh the harms. Use research/benefit-harm-policy.md as the current performance/adoption policy. This supersedes fixed performance vetoes and permanent family closure in replacement-spec/history-spec and earlier guidance, including the fixed 10% return/5% tolerance/20% MDD rules. Preserve original preregistrations, failed gates, negative evidence and source identities unchanged; label the new assessment as post-result user-authorized reconsideration, never an original gate PASS. Weigh magnitude, relevance and uncertainty rather than counting winning metrics. Comparable independently financed accounts, causal data, funds/order ownership, protection and complete honest evidence remain required; no private account actions or state migration/reset. Reuse all applicable evidence and do not rerun measurements/tests for a policy/document change. Default strategies remain unchanged until comparative net benefits are demonstrated.
+
+## Previous mandate — economic baseline restoration (2026-10-05)
 
 User approved restoring the prior default when material improvement is unproven. Restore SMA30/40/50 + ATR-stop + crowding / rule2026-10-03-atr-stop-crowding-interaction-v1 / scale1, anchored to 38e05f3b98b59595d00ec14eb7e7f27ab78e1b53. This supersedes the 2026-10-04 target-core adoption mandate and its install-anyway clause. Main strategy and risk remain replaceable, but a candidate must satisfy research/replacement-spec.json and comparable actual-account/stress evidence before adoption. Phase losses belong in candidate research, not an economically unsupported default. Preserve original negative evidence and producer identities. No private account actions, state migration/reset, schedule changes or new795 for rollback. Coin strategy identity/missing-checkpoint checks must precede recovery AND final cleanup; do not silently read target-core checkpoints as incumbent state.
 
