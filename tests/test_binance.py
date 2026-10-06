@@ -2,10 +2,12 @@
 import hashlib
 import hmac
 import json
+from pathlib import Path
 from decimal import Decimal as D
 import unittest
 
 from spotquant.binance import Binance, ORIGIN, DAY
+from spotquant.preview import _qty_ok
 from spotquant.types import Blocked, Unknown
 
 
@@ -71,6 +73,36 @@ class Script:
 
 
 class BinanceTests(unittest.TestCase):
+    def test_official_btcusdt_market_zero_filters_allow_snapshot(self):
+        fixture = json.loads((Path(__file__).parent / 'fixtures' /
+                              'btcusdt_exchange_info_20261006.json').read_text())
+        script = Script()
+        def opener(method, url, headers):
+            if '/api/v3/exchangeInfo' in url:
+                return 200, json.dumps(fixture).encode()
+            return script(method, url, headers)
+        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener,
+                        clock=lambda: 1_700_000_000)
+        observed = venue.snapshot('10001')
+        self.assertEqual(observed['min_qty'], D('.00001'))
+        self.assertIsNone(observed['market_min_qty'])
+        self.assertIsNone(observed['market_step'])
+        self.assertEqual(observed['market_max_qty'], D('130.55122112'))
+        self.assertTrue(_qty_ok('.00001', observed))
+        self.assertFalse(_qty_ok('.000001', observed))
+
+        market = next(item for item in fixture['symbols'][0]['filters']
+                      if item['filterType'] == 'MARKET_LOT_SIZE')
+        market.update(minQty='0.00004000', maxQty='0.00006000', stepSize='0.00002000')
+        limited = venue.snapshot('10001')
+        self.assertFalse(_qty_ok('.00003', limited))
+        self.assertTrue(_qty_ok('.00004', limited))
+        self.assertFalse(_qty_ok('.00005', limited))
+        self.assertFalse(_qty_ok('.00008', limited))
+        market['stepSize'] = '-0.00001000'
+        with self.assertRaises(Blocked):
+            venue.snapshot('10001')
+
     def test_fee_endpoint_failure_only_gates_new_buy(self):
         script = Script()
         writes = []

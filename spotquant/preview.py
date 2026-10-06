@@ -217,6 +217,11 @@ def _qty_ok(quantity, snapshot: dict) -> bool:
     if quantity is None:
         return True
     qty = D(quantity)
+    if qty % BASE_STEP:
+        return False
+    market_step = snapshot.get('market_step')
+    if market_step is not None and qty % D(market_step):
+        return False
     for key in ('min_qty', 'market_min_qty'):
         if snapshot.get(key) is not None and qty < D(snapshot[key]):
             return False

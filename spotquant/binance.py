@@ -124,8 +124,8 @@ class Binance:
             raise Blocked('invalid Demo order sizing')
         if buying and (payload['type'] != 'MARKET' or number(payload[sizing]) > self.capital_limit):
             raise Blocked('Demo buy exceeds its configured cash ceiling')
+        from .preview import BASE_STEP, _qty_ok
         if buying:
-            from .preview import BASE_STEP
             from .types import floor_step
             if observed['fee_mode'] != 'base_quote' or observed['fee_rate'] is None:
                 raise Blocked('buy fee mode is not confirmed as BTC/USDT')
@@ -133,9 +133,10 @@ class Binance:
             if rate >= 1:
                 raise Blocked('buy commission leaves no protectable BTC')
             net = floor_step(number(payload[sizing]) / observed['last_price'] * (1 - rate), BASE_STEP)
-            if (net * observed['avg_price'] < observed['min_notional']
-                    or observed['min_qty'] is not None and net < observed['min_qty']):
+            if net * observed['avg_price'] < observed['min_notional'] or not _qty_ok(net, observed):
                 raise Blocked('estimated net buy cannot meet native protection minimum')
+        elif not _qty_ok(payload[sizing], observed):
+            raise Blocked('Demo sell quantity fails native lot filters')
         if payload['type'] == 'STOP_LOSS' and (buying or number(payload.get('stopPrice'), positive=True) <= 0):
             raise Blocked('only sell-side Demo stop protection is supported')
         if buying and getattr(self, '_risk_stop', lambda: False)():
@@ -368,9 +369,11 @@ class Binance:
         self.min_price = number(price['minPrice'], 'minPrice', positive=True) if price.get('minPrice') not in (None, '0', '0.00000000') else None
         self.max_price = number(price['maxPrice'], 'maxPrice', positive=True) if price.get('maxPrice') not in (None, '0', '0.00000000') else None
         if market:
-            self.market_step = number(market.get('stepSize', '0.00001'), 'market step', positive=True)
-            self.market_min_qty = number(market['minQty'], 'market minQty', positive=True) if 'minQty' in market else None
-            self.market_max_qty = number(market['maxQty'], 'market maxQty', positive=True) if 'maxQty' in market else None
+            step = number(market.get('stepSize', '0'), 'market step', nonnegative=True)
+            minimum = number(market.get('minQty', '0'), 'market minQty', nonnegative=True)
+            self.market_step = step or None
+            self.market_min_qty = minimum or None
+            self.market_max_qty = number(market['maxQty'], 'market maxQty', nonnegative=True) if 'maxQty' in market else None
         if notional.get('maxNotional') not in (None, ''):
             self.max_notional = number(notional['maxNotional'], 'maxNotional', positive=True)
         types = symbol.get('orderTypes') or []

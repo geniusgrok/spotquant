@@ -7,7 +7,7 @@ from decimal import Decimal as D
 from time import time
 
 from .model import SLEEVES
-from .preview import BASE_STEP, MIN_NOTIONAL, _protection, decision_view
+from .preview import BASE_STEP, MIN_NOTIONAL, _protection, _qty_ok, decision_view
 from .state import client_id
 from .types import Blocked, Unknown, NotSent, floor_step, number, serial
 
@@ -199,12 +199,16 @@ class Lifecycle:
                 continue
             if number(payload['order']['quantity']) > held:
                 raise Unknown('prepared reduction exceeds reconciled holdings; original identity is retained')
+            if not _qty_ok(payload['order']['quantity'], snapshot):
+                raise Blocked('prepared reduction fails native lot filters')
             for stop_id, stop, _, _ in resting:
                 if set(stop['sleeves']) & set(payload['sleeves']):
                     self.cancel(stop_id)
             return self.send(identity)
         sells = [order for order in decision['orders'] if order['side'] == 'SELL']
         for order in sells:
+            if not _qty_ok(order['quantity'], snapshot):
+                raise Blocked('desired reduction fails native lot filters')
             identity = self.prepare(order, bar, positions, follows)
             row = next(row for row in self.rows() if row[0] == identity)
             if row[2] in ('settled', 'rejected'):
@@ -289,8 +293,7 @@ class Lifecycle:
                     raise Blocked('buy commission leaves no protectable BTC')
                 net = floor_step(D(order['quoteOrderQty']) / D(snapshot['last_price']) * (1 - fee), BASE_STEP)
                 minimum = D(snapshot.get('min_notional') or MIN_NOTIONAL)
-                if (net <= 0 or net * D(snapshot['avg_price']) < minimum
-                        or snapshot.get('min_qty') is not None and net < D(snapshot['min_qty'])):
+                if net <= 0 or net * D(snapshot['avg_price']) < minimum or not _qty_ok(net, snapshot):
                     raise Blocked('estimated net buy cannot meet native protection minimum')
                 identity = self.prepare(order, bar, positions, follows)
                 if self.send(identity):
