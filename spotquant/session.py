@@ -535,7 +535,7 @@ def _public_snapshot(snapshot: dict) -> dict:
 
 
 def _risk_state(state, snapshot, venue):
-    """Conservative local export for another BTC exposure ledger."""
+    """Conservative local BTC exposure summary."""
     btc = D(snapshot['btc'])
     open_orders = {row['order_id']: row for row in snapshot.get('orders') or []}
     covered = D(0)
