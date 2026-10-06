@@ -1,0 +1,27 @@
+{
+  "format": "spot-etf-source-check-v1",
+  "registered_utc_date": "2026-10-06",
+  "route": "existing ETF demand route from archived research/nine-spec.json, pending data qualification",
+  "purpose": "One current public Farside page receipt to determine whether latest five prior trading dates have complete fund cells and whether the frozen sign conditions can be evaluated; no outcome or trade",
+  "url": "https://farside.co.uk/btc/",
+  "max_requests": 1,
+  "timeout_seconds": 5,
+  "max_body_bytes": 2097152,
+  "trading_days_to_check": [
+    "2026-09-29",
+    "2026-09-30",
+    "2026-10-01",
+    "2026-10-02",
+    "2026-10-05"
+  ],
+  "no_event_rule": "If any fund cell is missing, treat the row as incomplete; do not treat a dash as zero. If complete, use only original five-day net-negative or first positive after prior five negative rule. Do not run economic outcome or account without causal volume/FX and matured support.",
+  "limits": [
+    "public read only",
+    "no Binance",
+    "no credentials",
+    "no account",
+    "no trading",
+    "no repeated retries",
+    "no new model or threshold"
+  ]
+}

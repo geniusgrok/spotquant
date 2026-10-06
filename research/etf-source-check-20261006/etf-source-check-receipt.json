@@ -1,0 +1,14 @@
+{
+  "url": "https://farside.co.uk/btc/",
+  "request_utc": "2026-10-06T18:29:41.124801+00:00",
+  "receive_utc": "2026-10-06T18:29:42.509241+00:00",
+  "elapsed_seconds": 1.3848635499962256,
+  "status": 200,
+  "headers": {
+    "date": "Tue, 06 Oct 2026 18:29:42 GMT",
+    "content-type": "text/html; charset=UTF-8"
+  },
+  "bytes": 272570,
+  "sha256": "41ea59533ba84402724e70ddab8f537eb7a04bdcef73fc1ab407942794c67d90",
+  "body_path": "/workspace/scratch/spotquant-20261006/etf-source-check.raw"
+}
