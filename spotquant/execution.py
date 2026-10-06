@@ -7,9 +7,9 @@ from decimal import Decimal as D
 from time import time
 
 from .model import SLEEVES
-from .preview import MIN_NOTIONAL, _protection, decision_view
+from .preview import BASE_STEP, MIN_NOTIONAL, _protection, decision_view
 from .state import client_id
-from .types import Blocked, Unknown, NotSent, number, serial
+from .types import Blocked, Unknown, NotSent, floor_step, number, serial
 
 TERMINAL = {'FILLED', 'EXPIRED', 'CANCELED', 'REJECTED', 'EXPIRED_IN_MATCH'}
 FIELDS = ('symbol', 'side', 'type', 'quantity', 'quoteOrderQty', 'stopPrice')
@@ -81,25 +81,30 @@ class Lifecycle:
             raise Unknown('market remainder must reach a confirmed terminal state')
         anchor = self.state.get('execution_anchor')
         if anchor is None:
-            if snapshot['orders'] or D(snapshot['btc']) * D(snapshot['avg_price']) >= MIN_NOTIONAL:
+            if snapshot['orders'] or D(snapshot['btc']) * D(snapshot['last_price']) >= MIN_NOTIONAL:
                 raise Unknown('fresh execution state cannot adopt holdings or orders')
             anchor = serial({'cash': D(snapshot['usdt_free']) + D(snapshot['usdt_locked']),
                              'btc': D(snapshot['btc']), 'at_ms': int(self.venue.clock() * 1000)})
             self.state.set('execution_anchor', anchor)
         cash, btc = D(anchor['cash']), D(anchor['btc'])
         owners = self.owners()
+        unvalued = set(self.state.get('third_asset_fees_unvalued') or [])
         for trade in self.state.trades(self.venue, anchor['at_ms']):
             if str(trade['order_id']) not in owners:
                 raise Unknown('external trade blocks execution')
             commission, asset = trade['commission'], trade['commission_asset']
+            if commission and not asset:
+                raise Unknown('commission asset is missing')
             if commission and asset not in ('BTC', 'USDT'):
-                raise Unknown('third-asset commission cannot be reconciled')
+                unvalued.add(asset)
             sign = 1 if trade['buyer'] else -1
             btc += sign * trade['qty'] - (commission if asset == 'BTC' else D(0))
             cash -= sign * trade['quote'] + (commission if asset == 'USDT' else D(0))
         if abs(btc - D(snapshot['btc'])) > D('0.00000001') or abs(
                 cash - D(snapshot['usdt_free']) - D(snapshot['usdt_locked'])) > D('0.00000001'):
             raise Unknown('account balances differ from durable fills; transfers are not inferred')
+        if unvalued != set(self.state.get('third_asset_fees_unvalued') or []):
+            self.state.set('third_asset_fees_unvalued', sorted(unvalued))
 
     def prepare(self, order, bar, positions, follows):
         group = sorted(order['sleeves'])
@@ -113,6 +118,8 @@ class Lifecycle:
         payload = serial({'order': raw, 'sleeves': group, 'weights': weights,
                           'signal_ms': bar,
                           'repair': {str(w): bool((follows.get(str(w)) or {}).get('repair')) for w in group}})
+        if getattr(self, '_quote', None) is not None:
+            payload['quote_reference'] = self._quote
         # One market intent per signal and allocation; stop revisions include their parameters.
         operation = raw['side'] + '-' + raw['type'] + '-' + ','.join(map(str, group))
         if raw['type'] == 'STOP_LOSS':
@@ -121,7 +128,8 @@ class Lifecycle:
         prior = next((row for row in self.rows() if row[0] == identity), None)
         if prior is None:
             self.save(identity, payload, 'prepared', {})
-        elif prior[1] != payload and prior[2] == 'prepared':
+        elif any(prior[1].get(key) != payload.get(key) for key in
+                 ('order', 'sleeves', 'weights', 'signal_ms', 'repair')) and prior[2] == 'prepared':
             raise Blocked('prepared identity cannot change parameters')
         return identity
 
@@ -168,6 +176,7 @@ class Lifecycle:
     def act(self, decision, bar, observed):
         """One action, then the session re-observes fills before sizing any buy."""
         snapshot = self.venue.snapshot(self.config.account_uid)
+        self._quote = {'last_price': str(snapshot['last_price']), 'observed_at_ms': int(self.venue.clock() * 1000)}
         self.verify(snapshot)
         def key(row):
             return (number(row['btc']), number(row['usdt_free']), number(row['usdt_locked']),
@@ -216,7 +225,7 @@ class Lifecycle:
                 view, qty = _view(Model.restore(self.state.get('models')[str(window)]), position)
                 view = decision_view(view, position, getattr(self.state, '_execution_owners', None) or {})
                 stop = _protection(view, qty, snapshot)
-                if D(stop['stopPrice']) >= D(snapshot['avg_price']):
+                if D(stop['stopPrice']) >= D(snapshot['last_price']):
                     raise Unknown('partial exit remainder has a crossed stop; explicit reduction needed')
                 desired.append(dict(stop, sleeves=[window]))
         wanted = []
@@ -234,14 +243,55 @@ class Lifecycle:
         # the position has a protection gap until the replacement is confirmed.
         active = {row[0] for row in resting}
         if active != set(wanted):
+            if any(D(order['stopPrice']) >= D(snapshot['last_price']) for order in desired):
+                raise Unknown('desired stop is crossed at the last price; protection needs manual reduction')
             for identity in sorted(active - set(wanted)):
                 self.cancel(identity)
+            if active - set(wanted):
+                refreshed = self.venue.snapshot(self.config.account_uid)
+                self._quote = {'last_price': str(refreshed['last_price']),
+                               'observed_at_ms': int(self.venue.clock() * 1000)}
+                self.verify(refreshed)
+                if key(refreshed) != key(snapshot):
+                    # Expected canceled stops may differ; balances must still agree.
+                    if any(refreshed[field] != snapshot[field] for field in ('btc', 'usdt_free', 'usdt_locked')):
+                        raise Unknown('account changed while replacing protection')
+                if any(D(order['stopPrice']) >= D(refreshed['last_price']) for order in desired):
+                    raise Unknown('last price crossed after stop cancellation; unprotected coins need manual reduction')
             changed = False
             for identity in wanted:
-                changed = self.send(identity) or changed
+                try:
+                    changed = self.send(identity) or changed
+                except Blocked:
+                    saved = next(row for row in self.rows() if row[0] == identity)
+                    if saved[2] != 'rejected':
+                        raise
+                    fresh = self.venue.snapshot(self.config.account_uid)
+                    self.verify(fresh)
+                    qty = floor_step(min(D(saved[1]['order']['quantity']), D(fresh['btc_free'])), BASE_STEP)
+                    if qty <= 0 or qty * D(fresh['avg_price']) < D(fresh.get('min_notional') or MIN_NOTIONAL):
+                        raise Unknown('stop rejected; unprotected BTC is too small for confirmed reduction')
+                    reduce = dict(symbol='BTCUSDT', side='SELL', type='MARKET',
+                                  quantity=str(qty), sleeves=saved[1]['sleeves'])
+                    self.send(self.prepare(reduce, bar, positions, follows))
+                    return True
             return changed
         for order in decision['orders']:
             if order['side'] == 'BUY':
+                if getattr(self.venue, '_risk_stop', lambda: False)():
+                    return False
+                if self.state.get('third_asset_fees_unvalued'):
+                    raise Blocked('third-asset fees are unvalued; new buy needs owner reconciliation')
+                if snapshot.get('fee_mode') != 'base_quote' or snapshot.get('fee_rate') is None:
+                    raise Blocked('buy fee mode is not confirmed as BTC/USDT')
+                fee = D(snapshot['fee_rate'])
+                if fee >= 1:
+                    raise Blocked('buy commission leaves no protectable BTC')
+                net = floor_step(D(order['quoteOrderQty']) / D(snapshot['last_price']) * (1 - fee), BASE_STEP)
+                minimum = D(snapshot.get('min_notional') or MIN_NOTIONAL)
+                if (net <= 0 or net * D(snapshot['avg_price']) < minimum
+                        or snapshot.get('min_qty') is not None and net < D(snapshot['min_qty'])):
+                    raise Blocked('estimated net buy cannot meet native protection minimum')
                 identity = self.prepare(order, bar, positions, follows)
                 if self.send(identity):
                     return True

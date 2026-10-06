@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 import json
+import os
 from copy import copy
 from decimal import Decimal as D
 
@@ -101,6 +102,8 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
         'status': 'read_only',
         'model_preview': proposed,
         'actual': _public_snapshot(actual_snapshot),
+        'risk_state': _risk_state(state, actual_snapshot, venue),
+        'execution_evidence': _execution_evidence(state, actual_snapshot),
         'market_through': reference.last,
         'model_bull': {str(window): model.bull for window, model in models.items()},
         'entries_enabled': enabled,
@@ -131,17 +134,24 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
         'sleeves': list(SLEEVES),
         'stop_reason': 'deadline',
         'session_started_at_ms': int(venue.clock() * 1000),
+        'runtime_identity': {'rule': RULE, 'source_sha': os.environ.get('SPOTQUANT_SOURCE_SHA')},
         'session_ended': False,
         'stops_while_down': 'this process does not amend a stop while it is stopped',
         'recorded_limits': dict(RECORDED_LIMITS),
     }
+    venue._monotonic = monotonic
+    venue._risk_deadline_at = deadline
+    venue._deadline_at = deadline + (30 if execute else 0)
+    venue._risk_stop = lambda: monotonic() >= deadline or stopping()
     if hasattr(venue, '_stop'):
-        venue._stop = lambda: monotonic() >= deadline
+        venue._stop = lambda: monotonic() >= venue._deadline_at
     with State(config.state_dir, config.scope) as state:
         try:
             while monotonic() < deadline and not stopping():
                 report['cycles'] += 1
                 report['observation_current'] = False
+                report.pop('risk_state', None)
+                report.pop('execution_evidence', None)
                 try:
                     current = cycle(venue, state, config, execute=execute)
                     report.update(current)
@@ -155,6 +165,12 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
                     )
                     report['errors'] = (report['errors'] + [{'cycle': report['cycles'], 'reason': str(exc)}])[-10:]
                     clear_stale(report)
+                    if execute:
+                        try:
+                            report['risk_state'] = _risk_state(state, venue.snapshot(config.account_uid), venue)
+                        except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError):
+                            report['risk_state'] = {'direction': 'unknown', 'unprotected_btc': None,
+                                                    'manual_takeover': True, 'observation_current': False}
                     if 'rate limit' in str(exc) or 'session deadline' in str(exc):
                         report['stop_reason'] = 'rate_limit' if 'rate limit' in str(exc) else 'deadline'
                         break
@@ -172,6 +188,25 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
                 remaining = deadline - monotonic()
                 if remaining > 0 and not stopping():
                     wait(min(config.poll_seconds, remaining))
+            if (execute and not stopping() and state.pending()
+                    and deadline <= monotonic() < venue._deadline_at):
+                # One bounded recovery of the original identities. BUY stays disabled.
+                report['closeout_attempted'] = True
+                report['cycles'] += 1
+                report.pop('risk_state', None)
+                report.pop('execution_evidence', None)
+                try:
+                    report.update(cycle(venue, state, config, execute=True))
+                except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
+                    report.update(status='unknown', reason=str(exc), observation_current=False)
+                    report['errors'] = (report['errors'] + [
+                        {'cycle': report['cycles'], 'reason': str(exc)}])[-10:]
+                    clear_stale(report)
+                    try:
+                        report['risk_state'] = _risk_state(state, venue.snapshot(config.account_uid), venue)
+                    except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError):
+                        report['risk_state'] = {'direction': 'unknown', 'unprotected_btc': None,
+                                                'manual_takeover': True, 'observation_current': False}
             if stopping():
                 report['stop_reason'] = 'requested'
         except KeyboardInterrupt:
@@ -188,6 +223,13 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
             report['write_attempted'] = _writes(venue)
             report['session_ended'] = True
             report['observation_current'] = False
+            report.setdefault('risk_state', {'direction': 'unknown', 'unprotected_btc': None,
+                                              'manual_takeover': execute, 'observation_current': False})
+            report['risk_state']['observation_current'] = False
+            if execute and report.get('risk_state', {}).get('unprotected_btc') is None:
+                report['manual_takeover'] = True
+            elif execute and report.get('risk_state', {}).get('unprotected_btc', 0) > 0:
+                report['manual_takeover'] = True
             report['stops_while_down'] = 'this process does not amend a stop while it is stopped'
             state.report(report)
     return report
@@ -350,7 +392,7 @@ def _fold(state, venue, models, snapshot):
     mark = models[SLEEVES[0]].close
     if any(item is not None for item in positions.values()) or any(follows.values()):
         unexplained(positions, D(snapshot['btc']), mark)
-    elif mark is not None and D(snapshot['btc']) * mark >= MIN_NOTIONAL:
+    elif mark is not None and D(snapshot['btc']) * max(mark, D(snapshot.get('last_price') or mark)) >= MIN_NOTIONAL:
         raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
     cursor, accounted = _cursor_after(trades, accounted, cursor)
     _stash(state, positions, follows, accounted, exit_through, cursor)
@@ -487,4 +529,61 @@ def _public_snapshot(snapshot: dict) -> dict:
         'open_orders': snapshot.get('open_orders'),
         'orders': list(snapshot.get('orders') or []),
         'environment': snapshot.get('environment'),
+        'last_price': snapshot.get('last_price'),
+        'avg_price': snapshot.get('avg_price'),
     }
+
+
+def _risk_state(state, snapshot, venue):
+    """Conservative local export for another BTC exposure ledger."""
+    btc = D(snapshot['btc'])
+    open_orders = {row['order_id']: row for row in snapshot.get('orders') or []}
+    covered = D(0)
+    for payload, status, result in state.db.execute(
+            "SELECT payload,status,result FROM intents WHERE kind='p4' AND status='resting'"):
+        order = json.loads(payload)['order']
+        native = json.loads(result)
+        row = open_orders.get(native.get('orderId'))
+        if (order['type'] == 'STOP_LOSS' and row and row['type'] == 'STOP_LOSS'
+                and row['status'] in ('NEW', 'PARTIALLY_FILLED')):
+            covered += max(D(0), D(row['orig_qty']) - D(row['executed_qty']))
+    unprotected = max(D(0), btc - covered)
+    unvalued = state.get('third_asset_fees_unvalued') or []
+    return {'account_uid': snapshot['account_uid'], 'environment': snapshot['environment'],
+            'symbol': 'BTCUSDT', 'direction': 'long' if btc else 'flat',
+            'btc': btc, 'usdt': D(snapshot['usdt_free']) + D(snapshot['usdt_locked']),
+            'last_price': snapshot.get('last_price'), 'covered_btc': min(btc, covered),
+            'unprotected_btc': unprotected, 'manual_takeover': unprotected > 0,
+            'fee_valuation_complete': not bool(unvalued), 'unvalued_fee_assets': unvalued,
+            'observed_at_ms': int(venue.clock() * 1000), 'observation_current': True}
+
+
+def _execution_evidence(state, snapshot):
+    """Small local readback for later Demo fill, fee, and slippage review."""
+    owners = {}
+    for payload, result in state.db.execute("SELECT payload,result FROM intents WHERE kind='p4'"):
+        native = json.loads(result)
+        if type(native.get('orderId')) is int:
+            owners[native['orderId']] = json.loads(payload)
+    fills = []
+    seen = set()
+    for trade in reversed(getattr(state, '_seen_trades', [])):
+        if trade['id'] in seen:
+            continue
+        seen.add(trade['id'])
+        owner = owners.get(trade['order_id']) or {}
+        order = owner.get('order') or {}
+        reference = order.get('stopPrice') if order.get('type') == 'STOP_LOSS' else (owner.get('quote_reference') or {}).get('last_price')
+        fill_price = D(trade['price']) if 'price' in trade else D(trade['quote']) / D(trade['qty'])
+        slippage = None if reference is None else (
+            (fill_price / D(reference) - 1) if trade['buyer'] else (1 - fill_price / D(reference))) * 100
+        fills.append({'trade_id': trade['id'], 'order_id': trade['order_id'],
+                      'price': fill_price, 'quantity': trade['qty'], 'quote': trade['quote'],
+                      'commission': trade['commission'], 'commission_asset': trade['commission_asset'],
+                      'reference_price': reference, 'slippage_pct': slippage})
+        if len(fills) == 20:
+            break
+    return {'quote': {'last_price': snapshot.get('last_price'), 'avg_price': snapshot.get('avg_price')},
+            'fee_status': snapshot.get('fee_status'),
+            'fills': list(reversed(fills)),
+            'protection_orders': [row for row in snapshot.get('orders') or [] if row['type'] == 'STOP_LOSS']}

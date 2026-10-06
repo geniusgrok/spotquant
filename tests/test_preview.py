@@ -70,6 +70,11 @@ class PreviewTests(unittest.TestCase):
         capped = portfolio(views, {30: D(0), 40: D(1), 50: D(0)}, snapshot('100', '1'),
                            entries_enabled=True, capital_limit=D(140))
         self.assertEqual(D(capped['orders'][0]['quoteOrderQty']), D(38))
+        rising = snapshot('100', '1')
+        rising['last_price'] = D(130)
+        marked = portfolio(views, {30: D(0), 40: D(1), 50: D(0)}, rising,
+                           entries_enabled=True, capital_limit=D(140))
+        self.assertEqual(D(marked['orders'][0]['quoteOrderQty']), D(10))
         all_enter = {w: model(window=w) for w in SLEEVES}
         pooled = portfolio(all_enter, {}, snapshot('100.01'), entries_enabled=True, capital_limit=D(50))
         self.assertEqual(D(pooled['orders'][0]['quoteOrderQty']), D(50))
