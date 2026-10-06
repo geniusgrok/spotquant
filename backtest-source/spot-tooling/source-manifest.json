@@ -1,0 +1,54 @@
+{
+  "note": "Only archived historical market/money and feature-reader primitives. Current main session/Lifecycle/Model/preview/crowding used without hooks.",
+  "files": [
+    {
+      "path": "paper_money.py",
+      "source_archive_head": "bcfdea040df8baa2fb42d71657131e625ffcd3ba",
+      "origin": "spotquant/offline.py",
+      "origin_sha256": "3f25dd91ae13c5a4b9d5ddfdecab37047de7e495f0ce60fe6e656785ef3a59f8",
+      "extracted_nodes": [
+        "OfflineVenue",
+        "P4Venue"
+      ],
+      "sha256": "0229a9ed5507f7d2911cee604be02c76f9661911eec9e8a49e5505fddd5f4146"
+    },
+    {
+      "path": "historical_venue.py",
+      "source_archive_head": "bcfdea040df8baa2fb42d71657131e625ffcd3ba",
+      "origin": "research/session_account.py",
+      "origin_sha256": "7204d04320d9356b65a51441461b075d1d1c0bd2678bf189181ef24e4fe32a5b",
+      "extracted_nodes": [
+        "HistoricalVenue",
+        "audit"
+      ],
+      "sha256": "02fe2d98e408f7c67072ffacfbc17bccf99b79ba434a10dd2712e928b03e7f4d"
+    },
+    {
+      "path": "prior_fx.py",
+      "source_archive_head": "bcfdea040df8baa2fb42d71657131e625ffcd3ba",
+      "origin": "research/complete_spot.py",
+      "origin_sha256": "4ef422e75fd871f1840f1a6e0cb19609ef640488bdfe373c54ee8871ecbc64c4",
+      "extracted_nodes": [
+        "PriorFX"
+      ],
+      "sha256": "529b23b22392f049598c9862070967853b126943e713073bb657888821c3ce46"
+    },
+    {
+      "path": "feature_book.py",
+      "source_archive_head": "bcfdea040df8baa2fb42d71657131e625ffcd3ba",
+      "origin": "research/edge_features.py",
+      "origin_sha256": "84a1a109f0262f61380185b955afaab634f42d247be92050142dabde4252c766",
+      "extracted_nodes": [
+        "_canonical",
+        "_hash",
+        "_digest",
+        "_time",
+        "_unique_object",
+        "_read",
+        "FeatureBook",
+        "_coverage"
+      ],
+      "sha256": "245a06b5ccc30bb1b80f59eff896bac9b379af88127cedac201ec8bbb0b5970d"
+    }
+  ]
+}

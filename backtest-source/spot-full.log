@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/workspace/btc-main-backtest-20261006/spot-tooling/run.py", line 189, in <module>
+    main()
+    ~~~~^^
+  File "/workspace/btc-main-backtest-20261006/spot-tooling/run.py", line 101, in main
+    if shutil.disk_usage(args.state_dir.parent).free < 100_000_000:
+       ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/shutil.py", line 1377, in disk_usage
+    st = os.statvfs(path)
+FileNotFoundError: [Errno 2] No such file or directory: '/workspace/btc-main-backtest-20261006/private/spot'

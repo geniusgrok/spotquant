@@ -1,0 +1,12 @@
+{
+  "stage": "before_first_historical_session",
+  "sessions": 0,
+  "persistent_state_created": false,
+  "error": "FileNotFoundError: planned synthetic parent directory absent for disk_usage",
+  "original_log": "/workspace/btc-main-backtest-20261006/spot-full.log",
+  "original_log_sha256": "877043dc6de532163101702b8c31b6072f73e0d1ab3782353299b47944442b58",
+  "original_empty_journal": "/workspace/btc-main-backtest-20261006/spot-full.json.gz.sessions.jsonl",
+  "original_registration_preserved": "/workspace/btc-main-backtest-20261006/spot-registration.json",
+  "fix": "Create planned synthetic parent only; no state reset or source/input changes",
+  "recovery_output": "/workspace/btc-main-backtest-20261006/spot-full-recovery.json.gz"
+}
