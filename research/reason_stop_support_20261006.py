@@ -156,6 +156,17 @@ def support(projection: Path, progress_zip: Path) -> dict:
     asof_snapshots = sum("positions" in event for event in source["opportunity_ledger"])
     if asof_snapshots:
         raise ValueError("new per-event positions need separate durable-field validation")
+    by_stop = []
+    for order_id in sorted({row["order_id"] for row in roles}):
+        group = [row for row in roles if row["order_id"] == order_id]
+        by_stop.append({
+            "order_id": order_id,
+            "allocated_sleeves": [row["window"] for row in group],
+            "terminal_exact_fill_all": all(row["full_terminal_receipt"] for row in group),
+            "allocated_close_all": all(row["closed_by_allocation"] for row in group),
+            "final_sell_applied_all": all(row["final_applied_matches"] for row in group),
+            "per_decision_durable_state_present": False,
+        })
     return {
         "source_sha256": PROJECTION_SHA,
         "daily_sha256": DAILY_SHA,
@@ -170,6 +181,7 @@ def support(projection: Path, progress_zip: Path) -> dict:
         "pattern_with_later_baseline_buy_session": len(aligned),
         "per_decision_dust_sell_applied_snapshots": asof_snapshots,
         "strict_persisted_state_qualified_opportunities": 0,
+        "per_stop_proof_private": by_stop,
         "pattern_details_private": pattern_roles,
         "aligned_details_private": aligned,
     }
