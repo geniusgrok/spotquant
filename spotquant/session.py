@@ -188,6 +188,25 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
                 remaining = deadline - monotonic()
                 if remaining > 0 and not stopping():
                     wait(min(config.poll_seconds, remaining))
+            if (execute and not stopping() and state.pending()
+                    and deadline <= monotonic() < venue._deadline_at):
+                # One bounded recovery of the original identities. BUY stays disabled.
+                report['closeout_attempted'] = True
+                report['cycles'] += 1
+                report.pop('risk_state', None)
+                report.pop('execution_evidence', None)
+                try:
+                    report.update(cycle(venue, state, config, execute=True))
+                except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
+                    report.update(status='unknown', reason=str(exc), observation_current=False)
+                    report['errors'] = (report['errors'] + [
+                        {'cycle': report['cycles'], 'reason': str(exc)}])[-10:]
+                    clear_stale(report)
+                    try:
+                        report['risk_state'] = _risk_state(state, venue.snapshot(config.account_uid), venue)
+                    except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError):
+                        report['risk_state'] = {'direction': 'unknown', 'unprotected_btc': None,
+                                                'manual_takeover': True, 'observation_current': False}
             if stopping():
                 report['stop_reason'] = 'requested'
         except KeyboardInterrupt:
@@ -529,11 +548,13 @@ def _risk_state(state, snapshot, venue):
                 and row['status'] in ('NEW', 'PARTIALLY_FILLED')):
             covered += max(D(0), D(row['orig_qty']) - D(row['executed_qty']))
     unprotected = max(D(0), btc - covered)
+    unvalued = state.get('third_asset_fees_unvalued') or []
     return {'account_uid': snapshot['account_uid'], 'environment': snapshot['environment'],
             'symbol': 'BTCUSDT', 'direction': 'long' if btc else 'flat',
             'btc': btc, 'usdt': D(snapshot['usdt_free']) + D(snapshot['usdt_locked']),
             'last_price': snapshot.get('last_price'), 'covered_btc': min(btc, covered),
             'unprotected_btc': unprotected, 'manual_takeover': unprotected > 0,
+            'fee_valuation_complete': not bool(unvalued), 'unvalued_fee_assets': unvalued,
             'observed_at_ms': int(venue.clock() * 1000), 'observation_current': True}
 
 
@@ -563,5 +584,6 @@ def _execution_evidence(state, snapshot):
         if len(fills) == 20:
             break
     return {'quote': {'last_price': snapshot.get('last_price'), 'avg_price': snapshot.get('avg_price')},
+            'fee_status': snapshot.get('fee_status'),
             'fills': list(reversed(fills)),
             'protection_orders': [row for row in snapshot.get('orders') or [] if row['type'] == 'STOP_LOSS']}

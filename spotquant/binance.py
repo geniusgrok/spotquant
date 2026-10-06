@@ -211,20 +211,23 @@ class Binance:
             raise Unknown('average price response is incomplete')
         fee_rate = None
         fee_mode = None
+        fee_status = 'not_queried'
         if self.execution_authorized:
-            commission = self._get('/api/v3/account/commission', {'symbol': 'BTCUSDT'}, signed=True)
-            if not isinstance(commission, dict) or commission.get('symbol') != 'BTCUSDT':
-                raise Unknown('commission response is incomplete')
-            discount = commission.get('discount')
-            if not isinstance(discount, dict) or type(discount.get('enabledForAccount')) is not bool or type(discount.get('enabledForSymbol')) is not bool:
-                raise Unknown('commission discount mode is incomplete')
-            fee_mode = 'third_asset' if (discount['enabledForAccount'] and discount['enabledForSymbol']) else 'base_quote'
             try:
+                commission = self._get('/api/v3/account/commission', {'symbol': 'BTCUSDT'}, signed=True)
+                if not isinstance(commission, dict) or commission.get('symbol') != 'BTCUSDT':
+                    raise Unknown('commission response is incomplete')
+                discount = commission.get('discount')
+                if (not isinstance(discount, dict) or type(discount.get('enabledForAccount')) is not bool
+                        or type(discount.get('enabledForSymbol')) is not bool):
+                    raise Unknown('commission discount mode is incomplete')
+                fee_mode = 'third_asset' if (discount['enabledForAccount'] and discount['enabledForSymbol']) else 'base_quote'
                 fee_rate = sum((number(commission[group][key], f'{group} {key}', nonnegative=True)
                                 for group in ('standardCommission', 'specialCommission', 'taxCommission')
                                 for key in ('taker', 'buyer')), D(0))
-            except (KeyError, TypeError, Blocked) as exc:
-                raise Unknown('commission rate response is incomplete') from exc
+                fee_status = 'confirmed'
+            except (Unknown, KeyError, TypeError, Blocked):
+                fee_mode, fee_rate, fee_status = 'unknown', None, 'unavailable'
         last = self._get('/api/v3/ticker/price', {'symbol': 'BTCUSDT'}, signed=False)
         if not isinstance(last, dict) or last.get('symbol') != 'BTCUSDT':
             raise Unknown('last price response is incomplete')
@@ -244,6 +247,7 @@ class Binance:
             'last_price': number(last['price'], 'last price', positive=True),
             'fee_rate': fee_rate,
             'fee_mode': fee_mode,
+            'fee_status': fee_status,
             'min_notional': self.min_notional,
             'min_price': self.min_price,
             'max_price': self.max_price,

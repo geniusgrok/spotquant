@@ -56,7 +56,7 @@ class TestVenue:
         return dict(account_uid=self.uid, environment=self.environment, btc=self.btc,
                     btc_free=self.btc - locked, btc_locked=locked, usdt_free=self.cash,
                     usdt_locked=D(0), avg_price=self.price, last_price=self.price,
-                    min_notional=D('5'), fee_mode='base_quote', fee_rate=self.fee, can_trade=True,
+                    min_notional=D('5'), min_qty=None, fee_mode='base_quote', fee_rate=self.fee, can_trade=True,
                     open_orders=len(active), orders=[_order(dict(row, origQty=row.get('quantity', '0')))
                                                     for row in active])
 

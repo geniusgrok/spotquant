@@ -88,18 +88,23 @@ class Lifecycle:
             self.state.set('execution_anchor', anchor)
         cash, btc = D(anchor['cash']), D(anchor['btc'])
         owners = self.owners()
+        unvalued = set(self.state.get('third_asset_fees_unvalued') or [])
         for trade in self.state.trades(self.venue, anchor['at_ms']):
             if str(trade['order_id']) not in owners:
                 raise Unknown('external trade blocks execution')
             commission, asset = trade['commission'], trade['commission_asset']
+            if commission and not asset:
+                raise Unknown('commission asset is missing')
             if commission and asset not in ('BTC', 'USDT'):
-                raise Unknown('third-asset commission cannot be reconciled')
+                unvalued.add(asset)
             sign = 1 if trade['buyer'] else -1
             btc += sign * trade['qty'] - (commission if asset == 'BTC' else D(0))
             cash -= sign * trade['quote'] + (commission if asset == 'USDT' else D(0))
         if abs(btc - D(snapshot['btc'])) > D('0.00000001') or abs(
                 cash - D(snapshot['usdt_free']) - D(snapshot['usdt_locked'])) > D('0.00000001'):
             raise Unknown('account balances differ from durable fills; transfers are not inferred')
+        if unvalued != set(self.state.get('third_asset_fees_unvalued') or []):
+            self.state.set('third_asset_fees_unvalued', sorted(unvalued))
 
     def prepare(self, order, bar, positions, follows):
         group = sorted(order['sleeves'])
@@ -275,6 +280,8 @@ class Lifecycle:
             if order['side'] == 'BUY':
                 if getattr(self.venue, '_risk_stop', lambda: False)():
                     return False
+                if self.state.get('third_asset_fees_unvalued'):
+                    raise Blocked('third-asset fees are unvalued; new buy needs owner reconciliation')
                 if snapshot.get('fee_mode') != 'base_quote' or snapshot.get('fee_rate') is None:
                     raise Blocked('buy fee mode is not confirmed as BTC/USDT')
                 fee = D(snapshot['fee_rate'])

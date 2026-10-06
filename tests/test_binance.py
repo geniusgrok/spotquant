@@ -71,6 +71,28 @@ class Script:
 
 
 class BinanceTests(unittest.TestCase):
+    def test_fee_endpoint_failure_only_gates_new_buy(self):
+        script = Script()
+        writes = []
+        def opener(method, url, headers):
+            if '/api/v3/account/commission' in url:
+                return 503, b'{"code":-1000,"msg":"unavailable"}'
+            if method == 'POST':
+                writes.append(url)
+                return 200, b'{"orderId":1,"clientOrderId":"sq-stop","status":"NEW"}'
+            return script(method, url, headers)
+        venue = Binance(key=KEY, secret=SECRET, environment='demo', opener=opener,
+                        clock=lambda: 1_700_000_000, capital_limit=D('100'),
+                        demo_execution_uid='10001')
+        snapshot = venue.snapshot('10001')
+        self.assertEqual(snapshot['fee_status'], 'unavailable')
+        self.assertEqual(snapshot['fee_mode'], 'unknown')
+        with self.assertRaisesRegex(Blocked, 'fee mode'):
+            venue.submit('sq-buy', dict(symbol='BTCUSDT', side='BUY', type='MARKET', quoteOrderQty='10'))
+        venue.submit('sq-stop', dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
+                                     quantity='.1', stopPrice='90'))
+        self.assertEqual(len(writes), 1)
+
     def test_native_rejection_is_distinct_from_unknown_write(self):
         for status, code, expected in ((400, -1013, Blocked), (504, -1007, Unknown),
                                        (503, -1000, Unknown)):
