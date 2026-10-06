@@ -42,6 +42,12 @@ python3 -m spotquant demo-check --config demo.json --execute --authorize-uid <DE
 
 固定 `state_dir` 保存 `intents.sqlite`、成交归属、有限观察记录、`latest.json` 和执行锁。同一账户只使用一台机器、一个客户端，Demo 与主网不共用目录。重启继续原模型和订单身份；不兼容状态拒绝接管，不删除数据库或换空目录绕过。数量步长以下残币仍计入持仓和风险。
 
+## 当前完整回测
+
+2026-10-06 对当前运行代码 `b81db17` 完成独立 1 万元账户的完整回测（2020-01-01 至 2026-09-20 UTC，末端不含，795 会话，不追加资金）。期末人民币权益 **203,568.00 元**，年化净收益 **56.60%**，人民币路径最大回撤代理 **36.41%**。
+
+结果已计入模拟成交成本和换汇成本；历史价格与执行使用代理，历史窗口曾用于开发，不证明实盘或样本外 alpha。详细口径、权益图及数据见 [BACKTEST.md](BACKTEST.md)。
+
 开发说明见 [AGENTS.md](AGENTS.md)，当前任务状态见 [PROJECT_STATE.md](PROJECT_STATE.md)。历史代码、研究和交付记录保存在 [archive/pre-slim-20261006](https://github.com/geniusgrok/spotquant/tree/archive/pre-slim-20261006) 分支。
 
 项目供仓库所有者个人使用，公开可见不授予第三方使用许可，详见 [LICENSE](LICENSE)。
