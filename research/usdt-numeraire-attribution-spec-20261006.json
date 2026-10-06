@@ -1,0 +1,43 @@
+{
+  "format": "spot-usdt-numeraire-attribution-spec-v1",
+  "frozen_at_date_utc": "2026-10-06",
+  "repository": "geniusgrok/spotquant",
+  "branch": "archive/pre-slim-20261006",
+  "parent_sha": "219f25a4a1860feeab7780c55dad95b49d738b3f",
+  "question": "Does multiplying same completed UTC-day BTCUSDT close by Coinbase USDT-USD close materially change original post-2022 BUY price gates?",
+  "theory": "USDT/USD drift changes the USD unit of BTCUSDT. A persistent unit move can alter a rolling price gate only near that gate; this is signal attribution, not a cross-venue premium prediction or a claim USD is better for a USDT wallet.",
+  "inputs": {
+    "coinbase_zip": "evidence/btc-search-next-20261005/search-artifacts.zip",
+    "coinbase_zip_sha256": "c9f9b30ab5f5a551a9a9bf5e9bd99ced3dc934b50d116eee1d9f5d59ff941cc3",
+    "coinbase_rows": "history/daily.json products USDT-USD; [time_s,low,high,open,close,base_volume]; use only close",
+    "binance_rows": "daily-composition.json bars, close, timestamp_ms",
+    "original_projection": "evidence/btc-flow-risk-20261004/spot-baseline-projection.json.gz",
+    "original_projection_sha256": "ef32a84a7e89cfd7ea3d76a8c6fa56a1da95546500269a8a0b688047f94a2118",
+    "original_model": "spotquant/model.py at source commit 74bd6e035e36531c517029077c1a9e2e5ec44516; price-gate constants unchanged"
+  },
+  "scope": {
+    "cohort": "All distinct settled original BUY allocation rows with signal_ms >= 2022-01-01T00:00:00Z, inside same-day complete BTCUSDT and USDT-USD range; no search of SELL, non-BUY, premiums or candidate entries.",
+    "order": "Ascending signal_ms; first three BUY rows with 400 consecutive converted closes are the 2-3 required original reconstruction examples. Stop and investigate source mismatch before calculating divergences.",
+    "availability": "Use completed bar signal_ms only if signal_ms + 86400000 + 60000 <= earliest original accepted BUY decision_ms for that signal. No current-day FX. This 60-second modeled close lag is a conditional development check; 2026 receipts do not prove historical Coinbase data actually available then.",
+    "warmup": "Require 400 consecutive same-day complete converted close rows ending at signal_ms for full price-branch screen, including 30/40/50, 252 and 400. Count actual rows. Earlier BUY rows remain insufficient; never splice unconverted BTCUSDT into a USD rolling window.",
+    "no_selection": "No date, SMA, quote, or effect-size adjustment after screen; all eligible original BUY rows reported, including zero differences."
+  },
+  "computation": {
+    "usd_price": "Decimal(Binance BTCUSDT close) * Decimal(Coinbase USDT-USD close) on exactly the same UTC-day bucket. USDT/USD is USD per USDT, so multiply, never invert.",
+    "original_reconstruction": "Replay both units using the original Model rolling formulas: close > SMA for 30/40/50, 2 consecutive bullish closes, close >= 0.5*max(last 252 closes), extension close >=1.61*SMA; 400-day cap reversal/handoff prerequisites with their original .11/.07/.50/.11 constants. For 3 examples, original-unit price gates, trigger_close and approved BUY sleeves must agree with original ledger before comparison.",
+    "ownership_limit": "Reuse original BUY allocations, approved sleeves, decision time, and unchanged ownership/need_reset from original ledger. Price-only attribution cannot prove hypothetical full account action or new BUY for sleeves absent from the original order.",
+    "affected_quote": "For each approved original BUY sleeve whose USD close-based ordinary entry gate fails, attribute its equal-weight fraction of that order's original quoteOrderQty. No synthetic order or cash effect.",
+    "material_screen": "Proceed toward a separately frozen account comparison only if at least 2 distinct original BUY groups in at least 2 calendar years change approved-sleeve eligibility and affected quote is at least 5% of all fully eligible original BUY quote. Otherwise close this route. Report exact component differences even when screen fails.",
+    "valuation_sensitivity": "Optional read-only same-day USD value: original projection daily equity_usdt times Coinbase USDT-USD close, contrasted with its old fx=1 USD proxy. This is a valuation sensitivity, not new account cash flow, return proof, or true available historical mark."
+  },
+  "next_gate": "Only if material screen passes and historical input availability is actually authenticated, freeze one minimal account variant before running it. Require original vs variant vs simple BTC hold/cash, matched start dates, funds, fees, fill ownership, USD/USDT valuation and participation; no account run on this screening specification alone.",
+  "prohibited": [
+    "No new market download",
+    "No Binance account or orders",
+    "No stale FX",
+    "No price-only account profit claim",
+    "No old premium route rerun",
+    "No threshold tuning",
+    "No main strategy change"
+  ]
+}
