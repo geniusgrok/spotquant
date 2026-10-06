@@ -23,7 +23,7 @@ def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limi
     """
     if model.close is None:
         return _flat('no completed daily close is available')
-    price = model.close
+    price = D(snapshot.get('last_price') or model.close)
     btc = D(snapshot['btc'])
     external = btc - owned_btc
     if external * price >= MIN_NOTIONAL:
@@ -247,7 +247,7 @@ def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool
     reference = next(iter(views.values()))
     if reference.close is None:
         return dict(_flat('no completed daily close is available'), sleeves={}, orders=[], protections=[])
-    price = reference.close
+    price = D(snapshot.get('last_price') or reference.close)
     dust = {window: D(owned.get(window, 0)) for window, model in views.items()
             if getattr(model, '_owned_dust', False) and D(owned.get(window, 0)) >= BASE_STEP}
     minimum = D(snapshot.get('min_notional') or MIN_NOTIONAL)
@@ -268,7 +268,7 @@ def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool
     flat_count = sum(1 for window in views if coins[window] == 0) + len(exiting)
     held_value = sum((coins[window] * price for window in views if window not in exiting), D(0))
     if dust:
-        held_value += sum(dust.values(), D(0)) * D(snapshot['avg_price'])
+        held_value += sum(dust.values(), D(0)) * price
     pool = D(snapshot['usdt_free']) + sum((coins[window] * price for window in exiting), D(0))
     if capital_limit is not None:
         # The limit is the whole exposure, including coins already held.
@@ -334,7 +334,7 @@ def consensus_allocation(decision, views, snapshot, capital_limit):
     if buys and voters >= 2:
         budget = D(snapshot['usdt_free']) * D('.90')
         if capital_limit is not None:
-            budget = min(budget, max(D(0), capital_limit - D(snapshot['btc']) * D(snapshot['avg_price'])))
+            budget = min(budget, max(D(0), capital_limit - D(snapshot['btc']) * D(snapshot.get('last_price') or snapshot['avg_price'])))
         budget = floor_step(budget, QUOTE_STEP)
         if budget >= D(snapshot.get('min_notional') or MIN_NOTIONAL):
             buys[0]['quoteOrderQty'] = str(max(D(buys[0]['quoteOrderQty']), budget))
@@ -420,7 +420,7 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
                                       quantity=str(quantity), sleeves=group))
     sells = any(o['side'] == 'SELL' for o in out['orders'])
     free = D(snapshot['usdt_free'])
-    cap_remaining = max(D(0), capital_limit - D(snapshot['btc']) * D(snapshot['avg_price'])) if capital_limit is not None else free
+    cap_remaining = max(D(0), capital_limit - D(snapshot['btc']) * D(snapshot.get('last_price') or snapshot['avg_price'])) if capital_limit is not None else free
     for order in list(out['orders']):
         if order['side'] != 'BUY':
             continue

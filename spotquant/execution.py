@@ -81,7 +81,7 @@ class Lifecycle:
             raise Unknown('market remainder must reach a confirmed terminal state')
         anchor = self.state.get('execution_anchor')
         if anchor is None:
-            if snapshot['orders'] or D(snapshot['btc']) * D(snapshot['avg_price']) >= MIN_NOTIONAL:
+            if snapshot['orders'] or D(snapshot['btc']) * D(snapshot['last_price']) >= MIN_NOTIONAL:
                 raise Unknown('fresh execution state cannot adopt holdings or orders')
             anchor = serial({'cash': D(snapshot['usdt_free']) + D(snapshot['usdt_locked']),
                              'btc': D(snapshot['btc']), 'at_ms': int(self.venue.clock() * 1000)})

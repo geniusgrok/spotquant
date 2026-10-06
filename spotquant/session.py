@@ -373,7 +373,7 @@ def _fold(state, venue, models, snapshot):
     mark = models[SLEEVES[0]].close
     if any(item is not None for item in positions.values()) or any(follows.values()):
         unexplained(positions, D(snapshot['btc']), mark)
-    elif mark is not None and D(snapshot['btc']) * mark >= MIN_NOTIONAL:
+    elif mark is not None and D(snapshot['btc']) * max(mark, D(snapshot.get('last_price') or mark)) >= MIN_NOTIONAL:
         raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
     cursor, accounted = _cursor_after(trades, accounted, cursor)
     _stash(state, positions, follows, accounted, exit_through, cursor)
