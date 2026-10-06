@@ -1,0 +1,169 @@
+{
+  "source": "https://blockstream.info/api",
+  "tip_at_request": 970180,
+  "selected_height": 970174,
+  "selected_block_hash": "000000000000000000000b056858a1f27b8b27df4ae9e1ce056c89c64a23127f",
+  "coinbase_txid": "2958cb059e19ea8c8689d33ff70d0b49495139cbdb8cccc3534b1af1e85e7216",
+  "receipts": [
+    {
+      "path": "/blocks/tip/height",
+      "request_utc": "2026-10-06T13:48:54.627986+00:00",
+      "receipt_utc": "2026-10-06T13:48:54.983601+00:00",
+      "http_status": 200,
+      "response_date": "Tue, 06 Oct 2026 13:48:54 GMT",
+      "sha256": "f46cd16e9b364fade6571d2a5faa882391cec2c40cc735d88eb1aa66ea01e1c8",
+      "body": 970180
+    },
+    {
+      "path": "/block-height/970174",
+      "request_utc": "2026-10-06T13:48:54.983733+00:00",
+      "receipt_utc": "2026-10-06T13:48:55.706022+00:00",
+      "http_status": 200,
+      "response_date": "Tue, 06 Oct 2026 13:48:55 GMT",
+      "sha256": "7837bd9841334dd2d5272ac4f28f8a3a9b5908f921e26343aee6c2be6b210071",
+      "body": "000000000000000000000b056858a1f27b8b27df4ae9e1ce056c89c64a23127f"
+    },
+    {
+      "path": "/block/000000000000000000000b056858a1f27b8b27df4ae9e1ce056c89c64a23127f",
+      "request_utc": "2026-10-06T13:48:55.706138+00:00",
+      "receipt_utc": "2026-10-06T13:48:55.897742+00:00",
+      "http_status": 200,
+      "response_date": "Tue, 06 Oct 2026 13:48:55 GMT",
+      "sha256": "4bd648b3e396aa5cb9f4e94308056e0299dc5c94e5ad04f0637347e67441937e",
+      "body": {
+        "id": "000000000000000000000b056858a1f27b8b27df4ae9e1ce056c89c64a23127f",
+        "height": 970174,
+        "version": 838860800,
+        "timestamp": 1791290901,
+        "tx_count": 6660,
+        "size": 1455578,
+        "weight": 3992753,
+        "merkle_root": "ff05e6455833bf3241e5db6e39a147989d162999a6ff41f473edc15147878fca",
+        "previousblockhash": "00000000000000000000a9f59f843733ae438c348b63fa6d445fe985ea3655c3",
+        "mediantime": 1791288169,
+        "nonce": 3022174676,
+        "bits": 386014960,
+        "difficulty": 132716002350731.27
+      }
+    },
+    {
+      "path": "/block/000000000000000000000b056858a1f27b8b27df4ae9e1ce056c89c64a23127f/status",
+      "request_utc": "2026-10-06T13:48:55.897850+00:00",
+      "receipt_utc": "2026-10-06T13:48:56.115741+00:00",
+      "http_status": 200,
+      "response_date": "Tue, 06 Oct 2026 13:48:56 GMT",
+      "sha256": "98e0cde47c30b6e31428345018e9e8c2be8423ba65d9c1f15ef7a85a0dba3b05",
+      "body": {
+        "in_best_chain": true,
+        "height": 970174,
+        "next_best": "0000000000000000000019f6c6615990d4fcbe234ab6eaede2ad14e9c8daee4d"
+      }
+    },
+    {
+      "path": "/block/000000000000000000000b056858a1f27b8b27df4ae9e1ce056c89c64a23127f/header",
+      "request_utc": "2026-10-06T13:48:56.115815+00:00",
+      "receipt_utc": "2026-10-06T13:48:56.192461+00:00",
+      "http_status": 200,
+      "response_date": "Tue, 06 Oct 2026 13:48:56 GMT",
+      "sha256": "fde663a372db57c82402dcc3590fd670e4427be2fb1c421359381024101399ca",
+      "body": "00000032c35536ea85e95f446dfa638b348c43ae3337849ff5a900000000000000000000ca8f874751c1ed73f441ffa69929169d9847a1396edbe54132bf335845e605ff15eec46af01e0217d4b922b4"
+    },
+    {
+      "path": "/block/000000000000000000000b056858a1f27b8b27df4ae9e1ce056c89c64a23127f/txid/0",
+      "request_utc": "2026-10-06T13:48:56.193268+00:00",
+      "receipt_utc": "2026-10-06T13:48:56.393646+00:00",
+      "http_status": 200,
+      "response_date": "Tue, 06 Oct 2026 13:48:56 GMT",
+      "sha256": "d004c6583980cb97ef25bf9700acf92c71f36a1da2b582ba5b635dd403903222",
+      "body": "2958cb059e19ea8c8689d33ff70d0b49495139cbdb8cccc3534b1af1e85e7216"
+    },
+    {
+      "path": "/tx/2958cb059e19ea8c8689d33ff70d0b49495139cbdb8cccc3534b1af1e85e7216",
+      "request_utc": "2026-10-06T13:48:56.393715+00:00",
+      "receipt_utc": "2026-10-06T13:48:56.541193+00:00",
+      "http_status": 200,
+      "response_date": "Tue, 06 Oct 2026 13:48:56 GMT",
+      "sha256": "155db3491c483df366258462a5750a371053804bcda8021844e0875ecdd41c42",
+      "body": {
+        "txid": "2958cb059e19ea8c8689d33ff70d0b49495139cbdb8cccc3534b1af1e85e7216",
+        "version": 2,
+        "locktime": 970173,
+        "vin": [
+          {
+            "txid": "0000000000000000000000000000000000000000000000000000000000000000",
+            "vout": 4294967295,
+            "prevout": null,
+            "scriptsig": "03becd0e05e19815ee002f466f756e6472792055534120506f6f6c202364726f70676f6c642f7e2e392f0000913bb78b0500",
+            "scriptsig_asm": "OP_PUSHBYTES_3 becd0e OP_PUSHBYTES_5 e19815ee00 OP_PUSHBYTES_47 <push past end>",
+            "witness": [
+              "0000000000000000000000000000000000000000000000000000000000000000"
+            ],
+            "is_coinbase": true,
+            "sequence": 4294967294
+          }
+        ],
+        "vout": [
+          {
+            "scriptpubkey": "00205efc4cbddb79e97bb0e79742eb77fb75971eef38a08b8f763c9b1f45a51a2283",
+            "scriptpubkey_asm": "OP_0 OP_PUSHBYTES_32 5efc4cbddb79e97bb0e79742eb77fb75971eef38a08b8f763c9b1f45a51a2283",
+            "scriptpubkey_type": "v0_p2wsh",
+            "scriptpubkey_address": "bc1qtm7ye0wm085hhv88japwkalmwkt3amec5z9c7a3unv05tfg6y2pstr3xfz",
+            "value": 313246875
+          },
+          {
+            "scriptpubkey": "6a24aa21a9ed713ad27a910f56deb856e6549e30635fea0f26292dce82baa1581289d5525344",
+            "scriptpubkey_asm": "OP_RETURN OP_PUSHBYTES_36 aa21a9ed713ad27a910f56deb856e6549e30635fea0f26292dce82baa1581289d5525344",
+            "scriptpubkey_type": "op_return",
+            "value": 0
+          }
+        ],
+        "size": 227,
+        "weight": 800,
+        "fee": 0,
+        "status": {
+          "confirmed": true,
+          "block_height": 970174,
+          "block_hash": "000000000000000000000b056858a1f27b8b27df4ae9e1ce056c89c64a23127f",
+          "block_time": 1791290901
+        }
+      }
+    },
+    {
+      "path": "/tx/2958cb059e19ea8c8689d33ff70d0b49495139cbdb8cccc3534b1af1e85e7216/hex",
+      "request_utc": "2026-10-06T13:48:56.541634+00:00",
+      "receipt_utc": "2026-10-06T13:48:56.695260+00:00",
+      "http_status": 200,
+      "response_date": "Tue, 06 Oct 2026 13:48:56 GMT",
+      "sha256": "f7160130ca4f0f5aaff491a2bb4d75b6af2a3a29cf736e5d1b3270d165359c45",
+      "body": "020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff3203becd0e05e19815ee002f466f756e6472792055534120506f6f6c202364726f70676f6c642f7e2e392f0000913bb78b0500feffffff029bc4ab12000000002200205efc4cbddb79e97bb0e79742eb77fb75971eef38a08b8f763c9b1f45a51a22830000000000000000266a24aa21a9ed713ad27a910f56deb856e6549e30635fea0f26292dce82baa1581289d552534401200000000000000000000000000000000000000000000000000000000000000000bdcd0e00"
+    },
+    {
+      "path": "/tx/2958cb059e19ea8c8689d33ff70d0b49495139cbdb8cccc3534b1af1e85e7216/merkle-proof",
+      "request_utc": "2026-10-06T13:50:25.118867+00:00",
+      "receipt_utc": "2026-10-06T13:50:25.408161+00:00",
+      "http_status": 200,
+      "response_date": "Tue, 06 Oct 2026 13:50:25 GMT",
+      "sha256": "955e6fdaee52dba3fae8139d99f134c884e3c33bf17dd2a18f860124f2a7247c",
+      "body": {
+        "block_height": 970174,
+        "merkle": [
+          "d0d63de972d5a20f5d05010fc62c50fc4627ddd52589ba1b6bb8a9753d18a760",
+          "27bd0336a4ed7e3392197562dcf996a8795220277f4980ff745adebe75aeae9d",
+          "7b96d1a59d57b51d65d1bd8b43ee1092498c2561b7561598398859d78ab0d90e",
+          "ce18e06dffa7dbbcb28eae54fe08d2116cff078b4e33731a942dca7fc8559166",
+          "6d18a51eae6f964d56d9506a2fb20391595f5981a0624575727c43e439729899",
+          "ec22cd71d34633fa9886de389cd842abbd1bbf298c340da5c7fadaea7a0bc3a8",
+          "e1a4d903f2f4ed5f94e9d174b02ed6df087ecba98f54c720afda2c1fdcba2f8d",
+          "9dbd657a0694943d1b4216d7cc24e40e9d541c6a4ac1e595892261f9c7f66b7c",
+          "96f92014044f5fe5a21b3b67fa9cd8b26a6e9d8bf71a05d1ac030db3857bf59f",
+          "e97b0b69ef78c56af6d5fc1c9c8d89ad24d87d1913b817de6a156d9bff83847e",
+          "d8fd07eca69cf2b1c4e63f7e8c0f7616181831c9c4f44be2698396dc9e3eeb3e",
+          "c2d4f8420817b0aff753d56dd62120efa33048937dda04b3e177e88659cd1dcb",
+          "52c809fa4b0aab2e2ef51a52a9fd77557a7eb1a159b2d2d72b4e0cbb5403a72a"
+        ],
+        "pos": 0
+      }
+    }
+  ],
+  "proof_request_addendum": "One read-only dependency repair after the original eight requests: original cap omitted the inclusion-proof endpoint. Original eight-response record is preserved separately; no sample reselection."
+}

@@ -1,0 +1,13 @@
+{
+  "version": "btc-raw-block-source-qualification-v1",
+  "source": "Blockstream public Esplora Bitcoin mainnet API, read-only GET",
+  "selection": "At capture, select current reported tip minus six blocks; do not select by economic outcome or timestamp. One block only, no historical chain scan.",
+  "question": "Can a raw mainnet block establish an independently timestamped, native-satoshi coinbase reward/fee-claim observation without relying on a retrospective daily aggregator?",
+  "mechanism_theory": "Confirmed native BTC settlement fees could contain chain-demand information beyond market prices and venue trade-count composition; this does not identify miners selling BTC or predict returns without separate tests.",
+  "information_clock": "Record UTC request and receipt around every public response. Header nTime, median-time-past, provider Date, and receipt are different clocks. A historic block fetched now was only observed by this process now.",
+  "minimal_checks": "One tip-minus-six block: hash/header, best-chain status, coinbase transaction and hex, inclusion proof, all output values in integer satoshis, and height-based subsidy. Reject proof failures or clock inconsistencies.",
+  "boundary": "Coinbase payout minus allowed subsidy is at most a fee-claim proxy; if miners underclaim, it differs from total block transaction fees. One block is not a completed day, a historical receipt, or enough independent outcomes for an alpha screen.",
+  "economics_gate": "Only if source scope, timestamp and pre-decision receipt are qualified across at least ten non-overlapping events with early/late support should one fixed fee-information hypothesis and matched exposure/cost/start-time account test be registered. No old CoinMetrics values may be backfilled as receipts.",
+  "request_limit": 8,
+  "no_private_data_or_orders": true
+}
