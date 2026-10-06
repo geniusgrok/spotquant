@@ -1,0 +1,14 @@
+{
+  "name": "spot-order-level-exit-timing-screen-v1",
+  "source": "archive/pre-slim-20261006:evidence/btc-flow-risk-20261004/spot-baseline-projection.json.gz",
+  "main_at_freeze": "7f2e25df69e024e669ffc2426b3be1c82af55879",
+  "hypothesis": "A repeatable, observable delay or adverse execution component in ordinary MARKET exits may explain material avoidable BTC exposure cost independent of SMA exit confirmation.",
+  "unit": "unique sell order_id, with fills summed and allocations deduplicated by order_id",
+  "observability": "decision action and price available at decision_ms; signal_ms is historical completed bar; fill and future price unavailable until later",
+  "attribution": "join fill order_id to settled allocation; join decision by decision_ms, signal_ms, side and order quantity; preserve unmatched as unknown",
+  "classifications": "information_exit if all sold sleeves had exit action at recorded decision; operational_delay if decision-to-fill exceeds documented normal market latency, with timestamp validity; model_execution if all adverse decision-to-fill difference is a fixed synthetic impact; unknown otherwise",
+  "controls": "original strategy and BTC price over same exposure interval; matching BTC participation, original fees, market execution and manual session starts; extra exit and reentry turnover must be charged",
+  "falsify_before_account": "reject if no independently repeating identified abnormal delay/adverse execution beyond deterministic model impact, if material difference lacks a causal pre-order predictor, or if effect cannot survive costs and matched exposure without extra risk",
+  "minimum_account_if_qualified": "one fixed intervention and simple constant exposure control across early/late and multiple original start times, with wealth, path-tail drawdown, ES, turnover, participation, execution and complexity; no parameter search",
+  "scope": "read-only development-history diagnostic; no new account, new source-profit claim, native observations or private exchange actions"
+}

@@ -1,0 +1,11 @@
+{
+  "name": "spot-manual-buy-signal-decay-v1",
+  "source": "archive/pre-slim-20261006:evidence/btc-flow-risk-20261004/spot-baseline-projection.json.gz",
+  "theory": "A completed daily bullish SMA entry signal can decay while the strategy waits for its fixed manual session; entries more than 12 hours after the bar is complete may be net inferior, even at unchanged SMA parameters.",
+  "information": "Bar open and completion time, accepted new BUY decision time and opportunity identity are known before the order; later fills and PnL are outcomes only. Completion is signal_ms plus 24 hours; the historical availability convention adds 60 seconds.",
+  "single_action": "For a new BUY only, decline if decision_ms exceeds signal_ms plus 36 hours. Existing sells, stops and positions remain untouched. No session rescheduling or background trading.",
+  "unit": "unique filled BUY order/batch with actual fee-inclusive FIFO realized cash attribution; do not count multiple sleeves or polling as independent opportunities",
+  "screen": "Compare original filled cohorts with fresh versus stale groups in 2020-2021 and 2022-2026. A stale cohort must be economically material, net detrimental in both eras after recorded fees, and show at least 3 stale batches per era; otherwise stop before an account.",
+  "controls_if_screen_passes": "Run one fixed independent account intervention against incumbent and a constant smaller BUY budget chosen before results, with identical BTC participation diagnostics, actual venue fees/slippage/protection, same manual starts and sensitivity to the original nonoptimized start offsets. Evaluate CNY net wealth, path-tail drawdown, ES, turnover, time in BTC, complexity. Do not choose a better historical start.",
+  "limitations": "Existing history is development data. Cohort PnL is not a counterfactual account or matched-risk alpha; residual dust stays marked. No live account use. Do not revise the 12-hour cutoff if screen fails."
+}
