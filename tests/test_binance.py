@@ -63,12 +63,58 @@ class Script:
             return 200, json.dumps([row]).encode()
         if '/api/v3/avgPrice' in url:
             return 200, json.dumps({'mins': 5, 'price': '100.00'}).encode()
+        if '/api/v3/ticker/price' in url:
+            return 200, json.dumps({'symbol': 'BTCUSDT', 'price': '100.00'}).encode()
         if '/api/v3/myTrades' in url:
             return 200, b'[]'
         raise AssertionError(url)
 
 
 class BinanceTests(unittest.TestCase):
+    def test_native_rejection_is_distinct_from_unknown_write(self):
+        for status, code, expected in ((400, -1013, Blocked), (504, -1007, Unknown),
+                                       (503, -1000, Unknown)):
+            script = Script()
+            def opener(method, url, headers):
+                if method == 'POST':
+                    return status, json.dumps({'code': code, 'msg': 'failed'}).encode()
+                return script(method, url, headers)
+            venue = Binance(key=KEY, secret=SECRET, environment='demo', opener=opener,
+                            clock=lambda: 1_700_000_000, capital_limit=D('100'),
+                            demo_execution_uid='10001')
+            with self.assertRaises(expected):
+                venue._get('/api/v3/order', {'symbol': 'BTCUSDT'}, signed=True, method='POST')
+
+    def test_bnb_discount_blocks_buy_before_order_transport(self):
+        script = Script()
+        writes = []
+        def opener(method, url, headers):
+            if method != 'GET':
+                writes.append(url)
+                raise AssertionError('buy reached order transport')
+            if '/api/v3/account/commission' in url:
+                return 200, json.dumps({
+                    'symbol': 'BTCUSDT',
+                    'standardCommission': {'taker': '.001', 'buyer': '0'},
+                    'specialCommission': {'taker': '0', 'buyer': '0'},
+                    'taxCommission': {'taker': '0', 'buyer': '0'},
+                    'discount': {'enabledForAccount': True, 'enabledForSymbol': True,
+                                 'discountAsset': 'BNB'},
+                }).encode()
+            if '/api/v3/account?' in url:
+                return 200, json.dumps({'uid': '10001', 'canTrade': True, 'balances': [
+                    {'asset': 'BTC', 'free': '0', 'locked': '0'},
+                    {'asset': 'USDT', 'free': '100', 'locked': '0'},
+                    {'asset': 'BNB', 'free': '1', 'locked': '0'},
+                ]}).encode()
+            return script(method, url, headers)
+        venue = Binance(key=KEY, secret=SECRET, environment='demo', opener=opener,
+                        clock=lambda: 1_700_000_000, capital_limit=D('100'),
+                        demo_execution_uid='10001')
+        with self.assertRaisesRegex(Blocked, 'fee mode'):
+            venue.submit('sq-test', dict(symbol='BTCUSDT', side='BUY', type='MARKET', quoteOrderQty='10'))
+        self.assertEqual(writes, [])
+
     def test_snapshot_signs_gets_and_checks_uid(self):
         script = Script()
         venue = Binance(key=KEY, secret=SECRET, environment='live', opener=script, clock=lambda: self_now())

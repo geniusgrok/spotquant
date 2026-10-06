@@ -54,8 +54,8 @@ def _decide(model: Model, snapshot: dict, *, entries_enabled: bool, owned_btc: D
     if not entries_enabled:
         return _flat('cold start: no completed daily close after the first checkpoint')
     spend = floor_step(max(budget, D(0)), QUOTE_STEP)
-    if spend < MIN_NOTIONAL:
-        return _flat('the sleeve budget is below the 5 USDT minimum notional')
+    if spend < D(snapshot.get('min_notional') or MIN_NOTIONAL):
+        return _flat('the sleeve budget is below the current venue minimum notional')
     return {
         'action': 'enter',
         'reason': (
@@ -203,7 +203,7 @@ def _annotate_venue(order: dict, model: Model, snapshot: dict) -> None:
     notional_ok = True
     reference = snapshot.get('avg_price') or model.close
     if 'quantity' in order and reference is not None:
-        notional_ok = D(order['quantity']) * D(reference) >= MIN_NOTIONAL
+        notional_ok = D(order['quantity']) * D(reference) >= D(snapshot.get('min_notional') or MIN_NOTIONAL)
         maximum = snapshot.get('max_notional')
         if maximum is not None and D(order['quantity']) * D(reference) > D(maximum):
             notional_ok = False
@@ -250,7 +250,8 @@ def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool
     price = reference.close
     dust = {window: D(owned.get(window, 0)) for window, model in views.items()
             if getattr(model, '_owned_dust', False) and D(owned.get(window, 0)) >= BASE_STEP}
-    if any(floor_step(qty, BASE_STEP) * D(snapshot['avg_price']) >= MIN_NOTIONAL for qty in dust.values()):
+    minimum = D(snapshot.get('min_notional') or MIN_NOTIONAL)
+    if any(floor_step(qty, BASE_STEP) * D(snapshot['avg_price']) >= minimum for qty in dust.values()):
         raise Unknown('retained close residual is now placeable; owner reconciliation required')
     coins = {window: D(0) if getattr(views[window], '_owned_dust', False)
              else floor_step(D(owned.get(window, 0)), BASE_STEP) for window in views}
@@ -290,7 +291,7 @@ def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool
             'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET',
             'quantity': _step(quantity, BASE_STEP), 'sleeves': exits,
         }
-        if quantity * price >= MIN_NOTIONAL:
+        if quantity * D(snapshot['avg_price']) >= minimum:
             orders.append(sell)
     if enters:
         quote = sum((D(decisions[window]['order']['quoteOrderQty']) for window in enters), D(0))
@@ -335,7 +336,7 @@ def consensus_allocation(decision, views, snapshot, capital_limit):
         if capital_limit is not None:
             budget = min(budget, max(D(0), capital_limit - D(snapshot['btc']) * D(snapshot['avg_price'])))
         budget = floor_step(budget, QUOTE_STEP)
-        if budget >= MIN_NOTIONAL:
+        if budget >= D(snapshot.get('min_notional') or MIN_NOTIONAL):
             buys[0]['quoteOrderQty'] = str(max(D(buys[0]['quoteOrderQty']), budget))
             total = D(buys[0]['quoteOrderQty'])
             group = sorted(buys[0]['sleeves'])
@@ -406,7 +407,7 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
     for w in views:
         sleeve = out['sleeves'][str(w)]
         stop = sleeve.get('protection')
-        if (stop and 'quantity' in stop and D(stop['stopPrice']) >= D(snapshot['avg_price'])
+        if (stop and 'quantity' in stop and D(stop['stopPrice']) >= D(snapshot.get('last_price') or snapshot['avg_price'])
                 and sleeve['action'] != 'exit'):
             sleeve.update(action='exit', protection=None, order=None)
             forced = True
@@ -414,7 +415,7 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
         group = [w for w in views if out['sleeves'][str(w)]['action'] == 'exit']
         quantity = sum((floor_step(D(owned[w]), BASE_STEP) for w in group), D(0))
         out['orders'] = [o for o in out['orders'] if o['side'] != 'SELL']
-        if quantity * D(snapshot['avg_price']) >= MIN_NOTIONAL:
+        if quantity * D(snapshot['avg_price']) >= D(snapshot.get('min_notional') or MIN_NOTIONAL):
             out['orders'].append(dict(symbol='BTCUSDT', side='SELL', type='MARKET',
                                       quantity=str(quantity), sleeves=group))
     sells = any(o['side'] == 'SELL' for o in out['orders'])
@@ -424,7 +425,7 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
         if order['side'] != 'BUY':
             continue
         quote = floor_step(min(D(order['quoteOrderQty']), free, cap_remaining), QUOTE_STEP)
-        if sells or quote < MIN_NOTIONAL:
+        if sells or quote < D(snapshot.get('min_notional') or MIN_NOTIONAL):
             out['orders'].remove(order)
             for w in order['sleeves']:
                 if out['sleeves'][str(w)]['action'] == 'enter':
@@ -452,7 +453,7 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
             diagnostic['blocked_reason'] = 'held_sleeve_no_topup'
         quote = floor_step(D(order['quoteOrderQty']) * factor, QUOTE_STEP)
         cause = diagnostic['blocked_reason']
-        if quote < MIN_NOTIONAL:
+        if quote < D(snapshot.get('min_notional') or MIN_NOTIONAL):
             out['orders'].remove(order)
             for w in order['sleeves']:
                 out['sleeves'][str(w)].update(action='flat', order=None, protection=None)

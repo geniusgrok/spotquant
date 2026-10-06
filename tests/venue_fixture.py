@@ -24,7 +24,7 @@ class TestVenue:
         self.bars, self.fills, self.sent, self.orders = list(bars), [], [], {}
         self.now_ms = bars[-1][0] + DAY
         self.fraction, self.fee = D(1), D('.001')
-        self.lose_ack = self.unknown_query = self.reject_stop = False
+        self.lose_ack = self.unknown_query = self.reject_stop = self.reject_stop_known = False
 
     def clock(self):
         return self.now_ms / 1000
@@ -55,7 +55,8 @@ class TestVenue:
         locked = sum((D(row['quantity']) for row in active), D(0))
         return dict(account_uid=self.uid, environment=self.environment, btc=self.btc,
                     btc_free=self.btc - locked, btc_locked=locked, usdt_free=self.cash,
-                    usdt_locked=D(0), avg_price=self.price, can_trade=True,
+                    usdt_locked=D(0), avg_price=self.price, last_price=self.price,
+                    min_notional=D('5'), fee_mode='base_quote', fee_rate=self.fee, can_trade=True,
                     open_orders=len(active), orders=[_order(dict(row, origQty=row.get('quantity', '0')))
                                                     for row in active])
 
@@ -74,6 +75,8 @@ class TestVenue:
         if payload['type'] == 'STOP_LOSS':
             if self.reject_stop:
                 raise Unknown('stop rejected without confirmed response')
+            if self.reject_stop_known:
+                raise Blocked('native filter rejected stop before matching')
             if D(payload['quantity']) > self.btc - locked:
                 raise Blocked('coins are locked by protection')
             row = dict(payload, status='NEW', executedQty='0', quote='0')

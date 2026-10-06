@@ -32,11 +32,11 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise Blocked('refusing an HTTP redirect')
 
 
-def _default_opener(method: str, url: str, headers: dict):
+def _default_opener(method: str, url: str, headers: dict, timeout=10):
     request = urllib.request.Request(url, headers=headers, method=method)
     opener = urllib.request.build_opener(_NoRedirect)
     try:
-        with opener.open(request, timeout=10) as response:
+        with opener.open(request, timeout=timeout) as response:
             return response.status, response.read(), dict(response.headers.items())
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read(), dict(exc.headers.items())
@@ -68,7 +68,8 @@ class Binance:
         self.demo_execution_uid = demo_execution_uid
         self.execution_authorized = demo_execution_uid is not None
         self.base = HOSTS[environment]
-        self._opener = opener or _default_opener
+        self._opener = opener or (lambda method, url, headers: _default_opener(
+            method, url, headers, self._remaining(10)))
         self._clock = clock or time.time
         self._offset_ms = None
         self._clock_retried = False
@@ -81,12 +82,15 @@ class Binance:
         self.market_max_qty = None
         self.market_step = None
         self.max_notional = None
+        self.min_notional = None
 
     def crowding_features(self):
         from .crowding import PublicFeatures
         if not hasattr(self, '_crowding_source'):
             self._crowding_source = PublicFeatures()
-        self._crowding_source.refresh(int(self.clock() * 1000), self._stop)
+        self._crowding_source.refresh(int(self.clock() * 1000),
+                                      getattr(self, '_risk_stop', self._stop),
+                                      lambda: self._remaining(5, risk=True))
         return self._crowding_source
 
     def clock(self) -> float:
@@ -102,10 +106,10 @@ class Binance:
         if not isinstance(identity, str) or not identity.startswith('sq-'):
             raise Blocked('Demo order requires a stable Spotquant identity')
         try:
-            can_trade = self.snapshot(self.demo_execution_uid)['can_trade']
+            observed = self.snapshot(self.demo_execution_uid)
         except Unknown as exc:
             raise NotSent(str(exc)) from exc
-        if can_trade is not True:
+        if observed['can_trade'] is not True:
             raise Blocked('Demo account cannot trade')
         params = dict(payload, newClientOrderId=identity, newOrderRespType='FULL')
         if set(payload) - {'symbol', 'side', 'type', 'quantity', 'quoteOrderQty', 'stopPrice'}:
@@ -120,8 +124,22 @@ class Binance:
             raise Blocked('invalid Demo order sizing')
         if buying and (payload['type'] != 'MARKET' or number(payload[sizing]) > self.capital_limit):
             raise Blocked('Demo buy exceeds its configured cash ceiling')
+        if buying:
+            from .preview import BASE_STEP
+            from .types import floor_step
+            if observed['fee_mode'] != 'base_quote' or observed['fee_rate'] is None:
+                raise Blocked('buy fee mode is not confirmed as BTC/USDT')
+            rate = observed['fee_rate']
+            if rate >= 1:
+                raise Blocked('buy commission leaves no protectable BTC')
+            net = floor_step(number(payload[sizing]) / observed['last_price'] * (1 - rate), BASE_STEP)
+            if (net * observed['avg_price'] < observed['min_notional']
+                    or observed['min_qty'] is not None and net < observed['min_qty']):
+                raise Blocked('estimated net buy cannot meet native protection minimum')
         if payload['type'] == 'STOP_LOSS' and (buying or number(payload.get('stopPrice'), positive=True) <= 0):
             raise Blocked('only sell-side Demo stop protection is supported')
+        if buying and getattr(self, '_risk_stop', lambda: False)():
+            raise NotSent('entry deadline reached before order dispatch')
         return self._execution_order(self._get('/api/v3/order', params, signed=True, method='POST'))
 
     def cancel(self, identity):
@@ -164,6 +182,8 @@ class Binance:
                 or after.get('canTrade') != account.get('canTrade')):
             raise Unknown('account changed during bounded spot observation')
         btc = D(0)
+        btc_free = D(0)
+        btc_locked = D(0)
         usdt_free = D(0)
         usdt_locked = D(0)
         seen = set()
@@ -179,6 +199,7 @@ class Binance:
             locked = number(row['locked'], asset, nonnegative=True)
             if asset == 'BTC':
                 btc = free + locked
+                btc_free, btc_locked = free, locked
             elif asset == 'USDT':
                 usdt_free = free
                 usdt_locked = locked
@@ -188,9 +209,30 @@ class Binance:
             raise Unknown('account response omits BTC or USDT balances')
         if not isinstance(average, dict) or 'price' not in average:
             raise Unknown('average price response is incomplete')
+        fee_rate = None
+        fee_mode = None
+        if self.execution_authorized:
+            commission = self._get('/api/v3/account/commission', {'symbol': 'BTCUSDT'}, signed=True)
+            if not isinstance(commission, dict) or commission.get('symbol') != 'BTCUSDT':
+                raise Unknown('commission response is incomplete')
+            discount = commission.get('discount')
+            if not isinstance(discount, dict) or type(discount.get('enabledForAccount')) is not bool or type(discount.get('enabledForSymbol')) is not bool:
+                raise Unknown('commission discount mode is incomplete')
+            fee_mode = 'third_asset' if (discount['enabledForAccount'] and discount['enabledForSymbol']) else 'base_quote'
+            try:
+                fee_rate = sum((number(commission[group][key], f'{group} {key}', nonnegative=True)
+                                for group in ('standardCommission', 'specialCommission', 'taxCommission')
+                                for key in ('taker', 'buyer')), D(0))
+            except (KeyError, TypeError, Blocked) as exc:
+                raise Unknown('commission rate response is incomplete') from exc
+        last = self._get('/api/v3/ticker/price', {'symbol': 'BTCUSDT'}, signed=False)
+        if not isinstance(last, dict) or last.get('symbol') != 'BTCUSDT':
+            raise Unknown('last price response is incomplete')
         return {
             'account_uid': uid,
             'btc': btc,
+            'btc_free': btc_free,
+            'btc_locked': btc_locked,
             'usdt_free': usdt_free,
             'usdt_locked': usdt_locked,
             'open_orders': len(orders),
@@ -199,6 +241,10 @@ class Binance:
             'can_trade': account.get('canTrade') is True,
             'environment': self.environment,
             'avg_price': number(average['price'], 'avgPrice', positive=True),
+            'last_price': number(last['price'], 'last price', positive=True),
+            'fee_rate': fee_rate,
+            'fee_mode': fee_mode,
+            'min_notional': self.min_notional,
             'min_price': self.min_price,
             'max_price': self.max_price,
             'min_qty': self.min_qty,
@@ -312,8 +358,7 @@ class Binance:
             raise Blocked('BTCUSDT tick or step differs from supported order sizing')
         if 'minNotional' not in notional:
             raise Blocked('BTCUSDT minimum notional is missing')
-        if number(notional['minNotional'], 'minNotional') != D('5'):
-            raise Blocked('BTCUSDT minimum notional is no longer 5 USDT')
+        self.min_notional = number(notional['minNotional'], 'minNotional', positive=True)
         self.min_qty = number(lot['minQty'], 'minQty', positive=True) if 'minQty' in lot else None
         self.max_qty = number(lot['maxQty'], 'maxQty', positive=True) if 'maxQty' in lot else None
         self.min_price = number(price['minPrice'], 'minPrice', positive=True) if price.get('minPrice') not in (None, '0', '0.00000000') else None
@@ -393,12 +438,21 @@ class Binance:
                     return self._get(path, params, signed=signed)
                 finally:
                     self._clock_retried = False
+            if method != 'GET' and 400 <= status < 500 and status not in (403, 409) and code not in (-1006, -1007):
+                raise Blocked(f'Binance {path} rejected HTTP {status} code {code}')
             raise Unknown(f'Binance {path} failed with HTTP {status} code {code}')
         return payload
 
     def _check_deadline(self) -> None:
         if self._stop is not None and self._stop():
             raise Unknown('session deadline reached; not starting another request')
+
+    def _remaining(self, ceiling, *, risk=False):
+        cutoff = getattr(self, '_risk_deadline_at' if risk else '_deadline_at', None)
+        clock = getattr(self, '_monotonic', None)
+        if cutoff is None or clock is None:
+            return ceiling
+        return max(.001, min(ceiling, cutoff - clock()))
 
 
 def _header(headers, name: str):

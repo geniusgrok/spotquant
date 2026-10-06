@@ -143,7 +143,7 @@ class PublicFeatures:
         self.last_lookup = dict(record, now_ms=now, value=None if value is None else str(value), cause=cause)
         return value
 
-    def refresh(self, now, stopping=None):
+    def refresh(self, now, stopping=None, remaining=None):
         if self.fetched is None or now - self.fetched >= 60000:
             observations = []
             for category, url in PUBLIC_URLS.items():
@@ -151,7 +151,7 @@ class PublicFeatures:
                 record = dict(category=category, url=url, request_ms=request)
                 try:
                     if stopping is not None and stopping(): raise ValueError('session deadline')
-                    with urlopen(url, timeout=5) as response:
+                    with urlopen(url, timeout=remaining() if remaining else 5) as response:
                         if response.geturl() != url: raise ValueError('redirect')
                         raw = response.read(1000001)
                     if len(raw) > 1000000: raise ValueError('oversized response')

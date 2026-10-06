@@ -83,6 +83,78 @@ class ExecutionTests(TestCase):
                 self.assertEqual(run_day(config, venue)['status'], 'unknown')
             self.assertEqual(len([row for row in venue.orders.values() if row['type'] == 'MARKET']), 1)
 
+    def test_known_stop_rejection_reduces_unprotected_fill(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            run_day(config, venue)
+            add_day(venue, '101')
+            run_day(config, venue)
+            add_day(venue, '102')
+            venue.reject_stop_known = True
+            report = run_day(config, venue)
+            self.assertEqual(report['errors'], [])
+            self.assertLess(venue.btc * venue.price, D('5'))
+            self.assertEqual(report['risk_state']['unprotected_btc'], venue.btc)
+
+    def test_buy_below_net_protection_minimum_is_blocked(self):
+        from spotquant.execution import Lifecycle
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '5.01')
+            venue = venue_before_entry()
+            venue.capital_limit = config.capital_limit
+            with State(directory, config.scope) as state:
+                lifecycle = Lifecycle(state, venue, config)
+                decision = {'orders': [dict(symbol='BTCUSDT', side='BUY', type='MARKET',
+                                            quoteOrderQty='5.00', sleeves=[30])],
+                            'protections': [], 'sleeves': {}}
+                from spotquant.types import Blocked
+                with self.assertRaisesRegex(Blocked, 'net buy'):
+                    lifecycle.act(decision, venue.bars[-1][0], venue.snapshot('1'))
+            self.assertEqual(venue.sent, [])
+
+    def test_crossed_last_price_forces_exit_even_if_average_is_higher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self.entered(directory)
+            add_day(venue, '103', '110')
+            snapshot = venue.snapshot
+            def divergent(uid):
+                row = snapshot(uid)
+                row['avg_price'] = D('105')
+                row['last_price'] = D('85')
+                return row
+            venue.snapshot = divergent
+            report = run_day(config, venue)
+            self.assertEqual(report['errors'], [])
+            self.assertTrue(any(row['side'] == 'SELL' and row['type'] == 'MARKET'
+                                for row in venue.orders.values()))
+            self.assertFalse(any(row['status'] == 'NEW' and D(row['stopPrice']) > D('85')
+                                 for row in venue.orders.values() if row['type'] == 'STOP_LOSS'))
+
+    def test_price_crossing_during_replacement_reports_unprotected_btc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self.entered(directory)
+            add_day(venue, '103', '110')
+            run_day(config, venue)
+            add_day(venue, '104', '112')
+            original = venue.cancel
+            def cancel(identity):
+                original(identity)
+                venue.price = D('85')
+            venue.cancel = cancel
+            observed = venue.snapshot
+            def divergent(uid):
+                row = observed(uid)
+                row['avg_price'] = D('105')
+                return row
+            venue.snapshot = divergent
+            report = run_day(config, venue)
+            self.assertEqual(report['status'], 'unknown')
+            self.assertTrue(any('last price crossed after stop cancellation' in row['reason']
+                                for row in report['errors']))
+            self.assertGreater(report['risk_state']['unprotected_btc'], 0)
+            self.assertTrue(report['manual_takeover'])
+
     def entered(self, directory):
         config = Config('1', directory, 1, 1, 'demo', '1000')
         venue = venue_before_entry()
