@@ -1,0 +1,10 @@
+# Conditional USDT cap backfill coverage, 2026-10-07
+
+Frozen protocol SHA-256 `33e037268ae46df99d1d075eea97328d0577ee2468c632e230bdc62487ea27ce` was saved before the one fixed calendar request. The public CoinGecko keyless GET returned HTTP 200, received at 2026-10-07 15:09:57.212 UTC (23:09:57.212 UTC+8). Raw response SHA-256 `5585da24ce972871b71173484235366207f4f9186d29539da747516993249894`, 38,014 bytes. Its 365 paired complete UTC daily cap/price points run from 2025-10-08 through 2026-10-07; one current non-midnight point per field was excluded. This is a late historical snapshot with unknown original receipt times and D+1/D+2 revisions: every joined row is `CONDITIONAL_BACKFILL`, not point-in-time proof.
+
+The pinned original complete Spotquant account has 62 distinct accepted external BUY signal days after deduplicating repeated session polling. Of these, 57 fall outside the free fixed calendar source. The other 5 all have three consecutive paired cap/price days, prior completed 20-day BTC controls, a recorded original BUY fill, and a mature seven-day BTC daily endpoint. Chronological seven-day non-overlap leaves 5, split 2/3 by time. Strict PIT eligible BUY remains 0 because every original decision predates the first saved response receipt.
+
+The frozen information gate requires at least 10 independent mature windows and at least 3 per chronological half. Thus the fixed expression has too little original BUY support to justify inspecting slope signs or seven-day outcomes; no information regression, candidate wallet, parameter search or main edit was run. Existing Spotquant artifacts have USDT/USD daily prices but no original point-in-time USDT cap series. No older cap gaps were filled with an unlicensed reference CSV or later final values. This result is a source/support diagnosis, not evidence that USDT supply lacks predictive information.
+
+Reproduce with the provided script and original pinned private account/search artifacts:
+`python usdt_backfill_coverage.py <original-account.json.gz> <search-artifacts.zip> <backfill-raw.json> <backfill-receipt.json>`.
