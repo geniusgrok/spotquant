@@ -1,0 +1,9 @@
+# Single STOP re-entry: bounded window result
+
+The [frozen protocol](stop-reentry-local-pair-20261007-PROTOCOL.md) and [source-bound reproduction script](stop_reentry_window_20261007.py) were saved to this archive branch. This result concerns one previously identified historical development case. It is neither a newly selected opportunity nor prospective/native account evidence.
+
+- The original source, archived complete account, daily data digest, ordered fills, durable allocation and original reducer passed their pinned checks. The reconstructed incumbent decision reproduced the original accepted BUY exactly.
+- The reason-aware 50-day re-entry changed an executable pooled MARKET BUY and its sleeve ownership; it was not merely an internal label. It used more cash, while each of the two incumbent entering sleeves received less allocation.
+- The original decision code gave both arms one placeable, identical-price protective STOP group. The existing OHLC path did not cross it. At the first subsequent original full liquidation of the incumbent BUY cohort, the same decision code gave each arm one full MARKET SELL. The original arm reproduced the archived endpoint wallet to the recorded precision.
+- The fixed same-start, same-fee, same-slip, same-price-path window produced lower cost-net ending equity and a worse local drawdown tail for the reason-aware arm. Turnover and fees increased. The script prints the precise private account arithmetic when run with the pinned private source packet.
+- Conclusion: do not absorb this STOP re-entry candidate into main from this evidence. The window is short and historical; no result here establishes account-wide benefit, native execution or a prospective sample. No threshold search, new account run or full-history replay was performed. Main remains unchanged.
