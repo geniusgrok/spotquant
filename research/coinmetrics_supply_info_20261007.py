@@ -50,6 +50,18 @@ def inputs(account_path, search_path, cm_path, receipt_path):
 
 
 def support(result, bars, supply, receipt):
+    allocations = {}
+    for record in result['allocations']:
+        intent = json.loads(record[1])
+        if intent.get('order', {}).get('side') != 'BUY' or record[2] != 'settled':
+            continue
+        signal = intent['signal_ms']
+        if signal in allocations:
+            raise ValueError('duplicate settled external BUY allocation')
+        response = json.loads(record[3])
+        if response.get('side') != 'BUY' or response.get('clientOrderId') != record[0]:
+            raise ValueError('BUY allocation/order identity differs')
+        allocations[signal] = (intent['order'], response['orderId'])
     original = []
     for row in result['opportunity_ledger']:
         if row.get('event') != 'decision':
@@ -93,7 +105,13 @@ def support(result, bars, supply, receipt):
         if str(btc_day + 7 * DAY) not in bars or btc_day + 8 * DAY + 60_000 > receipt['received_ms']:
             rejected['missing_seven_day_endpoint'] += 1
             continue
-        if not any(fill['buyer'] and decision < fill['time'] < decision + 60_000 for fill in result['fills']):
+        owned = allocations.get(btc_day)
+        accepted = [o for o in row['accepted_orders'] if o.get('side') == 'BUY']
+        if (owned is None or len(accepted) != 1
+                or any(owned[0].get(key) != accepted[0].get(key)
+                       for key in ('symbol', 'side', 'type', 'quoteOrderQty'))
+                or not any(fill['buyer'] and fill['order_id'] == owned[1]
+                           and decision < fill['time'] < decision + 60_000 for fill in result['fills'])):
             rejected['missing_fill'] += 1
             continue
         aligned.append((row, source_day))
