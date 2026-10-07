@@ -23,6 +23,7 @@ SOURCE = "74bd6e035e36531c517029077c1a9e2e5ec44516"
 ACCOUNT_SHA = "4c937ecf80f60d957486a752562c8ab8dfee4c06fa2e5b38b135cfb24ec38872"
 SEARCH_ZIP_SHA = "c9f9b30ab5f5a551a9a9bf5e9bd99ced3dc934b50d116eee1d9f5d59ff941cc3"
 DAILY_SHA = "6a35dadcbe9228d95191a2d2716bc2c2d9f01aa8be08638718325fbefb376009"
+CASE_COMMITMENT = "e3bf2304e1ea0590db53302ab71dbee0975d7629e65fe10b9a9367d6dded1b06"
 DAY = 86_400_000
 
 
@@ -35,6 +36,9 @@ def checked(path: Path, expected: str) -> bytes:
 
 def prove(repo: Path, account_path: Path, search_zip: Path, *, order_id: int, sleeve: int,
           trigger_bar: int, candidate_bar: int) -> dict:
+    identity = f"{order_id}:{sleeve}:{trigger_bar}:{candidate_bar}".encode()
+    if hashlib.sha256(identity).hexdigest() != CASE_COMMITMENT:
+        raise ValueError("case differs from the previously counted fixed opportunity")
     account_blob = checked(account_path, ACCOUNT_SHA)
     with zipfile.ZipFile(io.BytesIO(checked(search_zip, SEARCH_ZIP_SHA))) as archive:
         day_blob = archive.read("daily-composition.json")
