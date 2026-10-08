@@ -81,22 +81,6 @@ class Model:
         # stays valid when this process restarts.
         self.position_peak: D | None = None
 
-    def note_exit(self) -> None:
-        """A fill closed the position. The next entry waits for a fresh cross."""
-        self.need_reset = True
-        self.repair = False
-        self.repair_peak = None
-        self.entry = None
-        self.adverse = False
-        self.position_peak = None
-
-    def note_entry(self, price, peak=None) -> None:
-        """Record the fill and its optional starting protection peak."""
-        self.entry = number(price, 'entry', positive=True)
-        self.adverse = False
-        if peak is not None:
-            self.position_peak = number(peak, 'peak', positive=True)
-
     def note_flat(self) -> None:
         """A followed position is gone. A bullish regime still needs a fresh cross."""
         self.position_peak = None
@@ -108,11 +92,6 @@ class Model:
         self.entry = None
         self.adverse = False
         self.enter = False
-
-    def note_cap_entry(self) -> None:
-        """This fill is a crash reversal. Keep only the 28% stop until the handoff close."""
-        self.repair = True
-        self.adverse = False
 
     def _view_sma(self):
         if self.close is None or len(self.closes) < self.sma_window:
@@ -195,8 +174,7 @@ class Model:
         )
         if self.position_peak is not None:
             self.position_peak = max(self.position_peak, high)
-        blocked = self.need_reset
-        self.enter = self.streak >= self.confirm and self.crash_ok and not blocked
+        self.enter = self.streak >= self.confirm and self.crash_ok and not self.need_reset
         return self.bull
 
     @property

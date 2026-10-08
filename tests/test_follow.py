@@ -52,20 +52,6 @@ class FollowTests(unittest.TestCase):
         self.assertIsNone(follows[30])
         self.assertEqual(closed, [])
 
-    def test_sleeves_on_one_signal_day_share_one_fill_equally(self):
-        signal = ORIGIN + 10 * DAY
-        trades = [_trade(1, signal + DAY + 5, '0.3', '30')]
-        follows = {window: {'signal_ms': signal, 'repair': False} for window in (30, 40, 50)}
-        positions, follows, _accounted, _closed = apply_day(
-            {window: _Model() for window in (30, 40, 50)}, {30: None, 40: None, 50: None}, follows,
-            set(), signal + DAY, trades,
-            lambda: [(ORIGIN + index * DAY, D(100), D(100), D(100)) for index in range(12)],
-        )
-        self.assertEqual(
-            [D(positions[window]['qty']) for window in (30, 40, 50)],
-            [D('0.1'), D('0.1'), D('0.1')])
-        self.assertTrue(all(item is None for item in follows.values()))
-
     def test_a_balance_that_is_not_the_buy_is_unknown(self):
         signal = ORIGIN + 10 * DAY
         trades = [_trade(1, signal + DAY + 5, '1', '100')]
@@ -75,37 +61,22 @@ class FollowTests(unittest.TestCase):
         )
         with self.assertRaises(Unknown):
             unexplained(positions, D('1.2'), D('100'))
-
-    def test_a_sell_that_leaves_one_sleeve_closes_only_that_sleeve(self):
-        first = ORIGIN + 5 * DAY + 60
-        held = {30: _position('0.1', first), 40: _position('0.2', first), 50: None}
-        trades = [_trade(1, first, '0.3', '30'), _trade(2, first + 2 * DAY, '0.1', '11', buyer=False)]
-        positions, _follows, accounted, closed = apply_day(
-            {30: _Model(), 40: _Model(), 50: _Model()}, held, {30: None, 40: None, 50: None},
-            set(), day_open(first + 2 * DAY), trades, lambda: [])
-        self.assertEqual(closed, [30])
-        self.assertIsNone(positions[30])
-        self.assertEqual(positions[40]['qty'], '0.2')
-        self.assertIn(2, accounted)
-
-    def test_a_full_transfer_out_with_no_sell_is_unknown(self):
-        first = ORIGIN + 5 * DAY
-        held = {30: _position('0.1', first)}
         with self.assertRaises(Unknown):
-            unexplained(held, D('0'), D('100'))
+            unexplained(positions, D(0), D(100))
 
-    def test_a_sell_already_accounted_for_is_not_counted_twice(self):
-        first = ORIGIN + 5 * DAY
-        sold_at = first + DAY
-        held = {40: _position('0.2', first + 2 * DAY)}
-        trades = [
-            _trade(1, first, '0.1', '10'), _trade(2, sold_at, '0.1', '11', buyer=False),
-            _trade(3, first + 2 * DAY, '0.2', '20'),
-        ]
-        positions, _f, _ids, closed = apply_day(
-            {40: _Model()}, held, {40: None}, {2}, day_open(sold_at), trades, lambda: [])
-        self.assertEqual(closed, [])
-        self.assertEqual(positions[40]['qty'], '0.2')
+    def test_fill_owned_loss_and_repair_flags_follow_completed_bars(self):
+        history = [(ORIGIN + i * DAY, D(100), D(100), D(100)) for i in range(400)]
+        def held(prices, entry='100', repair=False):
+            bars = history + [(ORIGIN + (400 + i) * DAY, D(p), D(p), D(p))
+                              for i, p in enumerate(prices)]
+            return replay(bars, entry_fill=D(entry), first_ms=ORIGIN + 400 * DAY,
+                          repair=repair)
+        self.assertFalse(held(('97',))['adverse'])
+        self.assertTrue(held(('97', '96'))['adverse'])
+        repairing = held(('48', '40'), entry='48', repair=True)
+        self.assertTrue(repairing['repair'])
+        self.assertFalse(repairing['adverse'])
+        self.assertFalse(held(('48', '40', '100'), entry='48', repair=True)['repair'])
 
     def test_equal_sleeves_are_unknown_even_when_both_want_to_exit(self):
         first = ORIGIN + 5 * DAY

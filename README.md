@@ -4,6 +4,8 @@
 
 ## 配置与只读运行
 
+在仓库目录内使用 Python 3.13，无需安装第三方包。
+
 ```sh
 cp config.example.json config.json
 python3 -m spotquant status --config config.json
@@ -40,20 +42,21 @@ Demo BUY 前读取当前手续费和交易所最小额，按最新成交价估�
 
 会话结束后保留确认的原生保护；进程停止期间不再计算移动止损或模型退出。Demo 回读和只读快照不代表主网执行已验证。
 
-固定状态目录的 `latest.json` 包含 `risk_state`（BTC/USDT、方向、已确认止损覆盖数量、未保护数量、第三资产费用估值状态、观察时间）、`execution_evidence`（报价、原生成交/止损回读、手续费资产和数量、相对下单前报价或止损价的滑点）及 `runtime_identity`。设置可选环境变量 `SPOTQUANT_SOURCE_SHA` 可把部署源码提交写入运行身份；未设置时为空。这些是 spotquant 自己的本地字段，不依赖其他项目或联动运行；未来授权 Demo 时可据此采集证据。停止后的快照并非实时账户状态；`manual_takeover` 为真或未保护数量未知时需人工核对交易所。公开提交和 PR 不包含账户报告。
+固定状态目录的 `latest.json` 包含 `risk_state`（余额、已确认止损覆盖、未保护数量、第三资产费用估值及观察时间）、`execution_evidence`（报价、成交/止损回读、费用及滑点）和 `runtime_identity`。可选环境变量 `SPOTQUANT_SOURCE_SHA` 记录部署提交，未设置时为空。停止后的快照并非实时账户状态；`manual_takeover` 为真或未保护数量未知时需人工核对交易所。不要公开提交账户报告。
 
 ## 账户状态
 
-固定 `state_dir` 保存 `intents.sqlite`、成交归属、有限观察记录、`latest.json` 和执行锁。同一账户只使用一台机器、一个客户端，Demo 与主网不共用目录。重启继续原模型和订单身份；不兼容状态拒绝接管，不删除数据库或换空目录绕过。数量步长以下残币仍计入持仓和风险。
+固定 `state_dir` 保存 `intents.sqlite`、成交归属、有限观察记录、`latest.json` 和执行锁。同一账户只使用一台机器、一个客户端，Demo 与主网不共用目录。重启继续原模型和订单身份；不兼容状态拒绝接管，不删除数据库或换空目录绕过。持有中的袖不补仓，关闭后须满足原 fresh-cross；残币仍保留归属并计入持仓和风险，达到数量步长的残币保守阻止新增 BUY。
 
-## 当前完整回测
+## 离线检查与排障
 
-2026-10-06 对当前运行代码 `b81db17` 完成独立 1 万元账户的完整回测（2020-01-01 至 2026-09-20 UTC，末端不含，795 会话，不追加资金）。期末人民币权益 **203,568.00 元**，年化净收益 **56.60%**，人民币路径最大回撤代理 **36.41%**。
+```sh
+python3 -m compileall -q spotquant tests
+python3 -m unittest discover -s tests
+```
 
-结果已计入模拟成交成本和换汇成本；历史价格与执行使用代理，历史窗口曾用于开发，不证明实盘或样本外 alpha。详细口径、权益图及数据见 [BACKTEST.md](BACKTEST.md)。
+检查使用离线输入，不连接账户。`blocked` 表示当前权限或配置不允许操作；`unknown` 表示无法确认数据、订单或账户状态，不能当作已成交。先核对 UID、环境、固定状态目录、凭据变量及报告原因；状态不兼容或余额/订单归属不一致时保留原文件，人工核对，不清空重试。
 
-目标年化 100%、最大回撤 30% 未达到；当前账户实测天数为 0。回测绑定旧运行源码 `b81db17`，不视为本次执行修复后的验证。
-
-开发说明见 [AGENTS.md](AGENTS.md)，当前任务状态见 [PROJECT_STATE.md](PROJECT_STATE.md)。历史代码、研究和交付记录保存在 [archive/pre-slim-20261006](https://github.com/geniusgrok/spotquant/tree/archive/pre-slim-20261006) 分支。
+开发约定见 [AGENTS.md](AGENTS.md)。历史代码、回测及交付材料见 [归档分支](https://github.com/geniusgrok/spotquant/tree/archive/pre-slim-20261008)。
 
 项目供仓库所有者个人使用，公开可见不授予第三方使用许可，详见 [LICENSE](LICENSE)。

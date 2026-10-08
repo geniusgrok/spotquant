@@ -8,13 +8,6 @@ from pathlib import Path
 
 from .types import Blocked
 
-ENVIRONMENTS = ('live', 'demo')
-
-
-def scope(environment: str, uid: str) -> str:
-    """One environment, one spot account, one symbol. Futures state cannot satisfy this."""
-    return f'binance:BTCUSDT:spot:{environment}:{uid}'
-
 
 @dataclass(frozen=True)
 class Config:
@@ -36,7 +29,7 @@ class Config:
                 or type(self.poll_seconds) is not int or not 1 <= self.poll_seconds <= 60
                 or self.poll_seconds > self.session_seconds):
             raise Blocked('session must be 1..86400 seconds; poll 1..60 and no longer than session')
-        if self.environment not in ENVIRONMENTS:
+        if self.environment not in ('live', 'demo'):
             raise Blocked('environment must be live or demo')
         if self.capital_limit_usdt is not None:
             try:
@@ -48,7 +41,7 @@ class Config:
 
     @property
     def scope(self) -> str:
-        return scope(self.environment, self.account_uid)
+        return f'binance:BTCUSDT:spot:{self.environment}:{self.account_uid}'
 
     @property
     def capital_limit(self):

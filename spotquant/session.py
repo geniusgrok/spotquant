@@ -79,7 +79,7 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
         lifecycle.verify(snapshot)
         # Confirmed owned STOP_LOSS orders reserve BTC, but do not consume the cash pool.
         snapshot = dict(snapshot, open_orders=sum(row['type'] != 'STOP_LOSS' for row in snapshot['orders']))
-    positions, follows, accounted, exit_through, _cursor = _fold(state, venue, models, snapshot)
+    positions, follows, exit_through = _fold(state, venue, models, snapshot)
     if fresh:
         for model in models.values():
             model.note_flat()
@@ -97,7 +97,7 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
         crowding_source=crowding, decision_ms=int(venue.clock() * 1000))
     follows = _follow_after(proposed, models, positions, follows, exit_through)
     reference = models[SLEEVES[0]]
-    _commit(state, models, positions, follows, accounted, exit_through, fresh, reference.last)
+    _commit(state, models, positions, follows, fresh, reference.last)
     return {
         'status': 'read_only',
         'model_preview': proposed,
@@ -226,11 +226,9 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
             report.setdefault('risk_state', {'direction': 'unknown', 'unprotected_btc': None,
                                               'manual_takeover': execute, 'observation_current': False})
             report['risk_state']['observation_current'] = False
-            if execute and report.get('risk_state', {}).get('unprotected_btc') is None:
+            unprotected = report['risk_state'].get('unprotected_btc')
+            if execute and (unprotected is None or unprotected > 0):
                 report['manual_takeover'] = True
-            elif execute and report.get('risk_state', {}).get('unprotected_btc', 0) > 0:
-                report['manual_takeover'] = True
-            report['stops_while_down'] = 'this process does not amend a stop while it is stopped'
             state.report(report)
     return report
 
@@ -317,8 +315,6 @@ def _load_models(state: State, venue):
     state._seen_trades = []
     saved = state.get('models')
     anchor = state.get('entries_after')
-    if saved is not None and set(saved) != {str(window) for window in SLEEVES}:
-        raise Blocked('state was written for other sleeves; use a new state directory')
     models = _guard_state(state) or {window: Model(window) for window in SLEEVES}
     last = models[SLEEVES[0]].last
     for open_ms, high, low, close in venue.completed_daily(None if saved is None else last):
@@ -365,7 +361,7 @@ def _consume_bar(state, venue, models, open_ms, high, low, close):
         if item is not None and not item.get('dust'):
             positions[window] = advance(item, step_models[window], models[window])
     cursor, accounted = _cursor_after(trades, accounted, cursor)
-    _stash(state, positions, follows, accounted, exit_through, cursor)
+    state._staged = (positions, follows, accounted, exit_through, cursor)
 
 
 def _fold(state, venue, models, snapshot):
@@ -395,8 +391,8 @@ def _fold(state, venue, models, snapshot):
     elif mark is not None and D(snapshot['btc']) * max(mark, D(snapshot.get('last_price') or mark)) >= MIN_NOTIONAL:
         raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
     cursor, accounted = _cursor_after(trades, accounted, cursor)
-    _stash(state, positions, follows, accounted, exit_through, cursor)
-    return positions, follows, accounted, exit_through, cursor
+    state._staged = (positions, follows, accounted, exit_through, cursor)
+    return positions, follows, exit_through
 
 
 def _stored(state: State):
@@ -408,10 +404,6 @@ def _stored(state: State):
     accounted = set(state.get('accounted_ids') or [])
     exit_through = dict(state.get('exit_through') or {})
     return positions, follows, accounted, exit_through, state.get('trade_cursor_ms')
-
-
-def _stash(state, positions, follows, accounted, exit_through, cursor):
-    state._staged = (positions, follows, accounted, exit_through, cursor)
 
 
 def _trades_for(state, venue, positions, follows, cursor):
@@ -457,8 +449,8 @@ def _cursor_after(trades, accounted, cursor):
     return new_cursor, keep
 
 
-def _commit(state, models, positions, follows, accounted, exit_through, fresh, last):
-    _positions, _follows, accounted, exit_through, cursor = _stored(state)
+def _commit(state, models, positions, follows, fresh, last):
+    _, _, accounted, exit_through, cursor = _stored(state)
     values = {
         'rule': RULE,
         'models': {str(window): model.checkpoint() for window, model in models.items()},
@@ -521,17 +513,12 @@ def _view(model: Model, position):
 
 def _public_snapshot(snapshot: dict) -> dict:
     """Balances for the report. Filter multipliers stay on the preview, not here."""
-    return {
-        'account_uid': snapshot.get('account_uid'),
-        'btc': snapshot.get('btc'),
-        'usdt_free': snapshot.get('usdt_free'),
-        'usdt_locked': snapshot.get('usdt_locked'),
-        'open_orders': snapshot.get('open_orders'),
-        'orders': list(snapshot.get('orders') or []),
-        'environment': snapshot.get('environment'),
-        'last_price': snapshot.get('last_price'),
-        'avg_price': snapshot.get('avg_price'),
-    }
+    out = {key: snapshot.get(key) for key in (
+        'account_uid', 'btc', 'usdt_free', 'usdt_locked', 'open_orders', 'orders',
+        'environment', 'last_price', 'avg_price',
+    )}
+    out['orders'] = list(out['orders'] or [])
+    return out
 
 
 def _risk_state(state, snapshot, venue):
@@ -539,8 +526,8 @@ def _risk_state(state, snapshot, venue):
     btc = D(snapshot['btc'])
     open_orders = {row['order_id']: row for row in snapshot.get('orders') or []}
     covered = D(0)
-    for payload, status, result in state.db.execute(
-            "SELECT payload,status,result FROM intents WHERE kind='p4' AND status='resting'"):
+    for payload, result in state.db.execute(
+            "SELECT payload,result FROM intents WHERE kind='p4' AND status='resting'"):
         order = json.loads(payload)['order']
         native = json.loads(result)
         row = open_orders.get(native.get('orderId'))

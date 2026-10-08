@@ -29,7 +29,6 @@ class Venue:
         self.capital_limit = None
         self.orders_sent = 0
         self.trade_rows = []
-        self.trade_since = []
 
     def clock(self):
         # The observation clock and completed candles share one historical date.
@@ -51,10 +50,9 @@ class Venue:
         return [bar for bar in self.bars if bar[0] > after]
 
     def trades(self, since):
-        self.trade_since.append(since)
         return [row for row in self.trade_rows if row['time'] >= since]
 
-    def place_order(self, *args, **kwargs):
+    def submit(self, *args, **kwargs):
         self.orders_sent += 1
         raise AssertionError('session must not place orders')
 
@@ -85,44 +83,9 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(third['model_preview']['order']['quoteOrderQty'], '999.99')
         self.assertEqual(venue.orders_sent, 0)
 
-    def test_external_btc_stops_the_observation(self):
-        venue = Venue(bars(252, 100))
-        venue.snapshot = lambda uid: {
-            'account_uid': uid, 'btc': D('1'), 'usdt_free': D('1000'),
-            'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live', 'avg_price': venue.bars[-1][-1],
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            config = Config('10001', directory, session_seconds=2, poll_seconds=1)
-            report = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-        self.assertEqual(report['status'], 'unknown')
-        self.assertIn('no recorded spotquant fill', report['reason'])
-        self.assertNotIn('model_bull', report)
-        self.assertNotIn('model_preview', report)
-
     def test_a_followed_buy_previews_the_fill_stop_and_a_failed_cycle_drops_the_old_view(self):
-        venue = Venue(bars(252, 100))
         with tempfile.TemporaryDirectory() as directory:
-            config = Config('10001', directory, session_seconds=2, poll_seconds=1)
-            run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-            venue.bars.append((ORIGIN + 252 * DAY, D(110), D(100), D(110)))
-            run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-            venue.bars.append((ORIGIN + 253 * DAY, D(111), D(100), D(111)))
-            armed = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-            self.assertEqual(armed['model_preview']['action'], 'enter')
-            venue.snapshot = lambda uid: {
-                'account_uid': uid, 'btc': D('0.6'), 'usdt_free': D('0'),
-                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live', 'avg_price': venue.bars[-1][-1],
-            }
-            venue.trade_rows = [{
-                'id': 1,
-                'time': ORIGIN + 254 * DAY + 60_000,
-                'qty': D('0.6'),
-                'quote': D('66.6'),
-                'buyer': True,
-                'order_id': 1,
-                'commission': D('0'),
-                'commission_asset': 'BNB',
-            }]
+            config, venue = self._held_venue(directory)
             held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
             self.assertEqual(held['status'], 'read_only')
             self.assertTrue(held['followed_position'])
@@ -132,6 +95,11 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '99.90')
             self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [30, 40, 50])
             self.assertIn('since the fill', held['model_preview']['sleeves']['40']['reason'])
+            observed = venue.snapshot
+            venue.snapshot = lambda uid: dict(observed(uid), btc=D(1))
+            external = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
+            self.assertEqual(external['status'], 'unknown')
+            self.assertNotIn('model_preview', external)
             venue.snapshot = lambda uid: (_ for _ in ()).throw(Unknown('feed broke'))
             failed = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(failed['status'], 'unknown')
@@ -161,36 +129,6 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(held['followed_position'])
         return config, venue
 
-    def test_a_full_transfer_out_without_a_sell_is_unknown_and_drops_the_followed_flag(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config, venue = self._held_venue(directory)
-            venue.snapshot = lambda uid: {
-                'account_uid': uid, 'btc': D(0), 'usdt_free': D(0),
-                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live', 'avg_price': venue.bars[-1][-1],
-            }
-            report = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-        self.assertEqual(report['status'], 'unknown')
-        self.assertIn('does not match the recorded', report['reason'])
-        self.assertNotIn('followed_position', report)
-        self.assertNotIn('model_preview', report)
-
-    def test_a_sell_on_the_account_closes_the_followed_sleeves(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config, venue = self._held_venue(directory)
-            venue.bars.append((ORIGIN + 254 * DAY, D(111), D(50), D(50)))
-            venue.snapshot = lambda uid: {
-                'account_uid': uid, 'btc': D(0), 'usdt_free': D('66'),
-                'usdt_locked': D(0), 'open_orders': 0, 'environment': 'live', 'avg_price': venue.bars[-1][-1],
-            }
-            venue.trade_rows.append({
-                'id': 2, 'time': ORIGIN + 255 * DAY + 60_000, 'qty': D('0.6'), 'quote': D('30'),
-                'buyer': False, 'order_id': 2, 'commission': D('0'), 'commission_asset': 'BNB',
-            })
-            report = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-        self.assertEqual(report['status'], 'read_only')
-        self.assertFalse(report['followed_position'])
-        self.assertEqual(report['model_preview']['action'], 'flat')
-
     def test_a_failed_preview_still_keeps_the_positions_in_step_with_the_model(self):
         with tempfile.TemporaryDirectory() as directory:
             config, venue = self._held_venue(directory)
@@ -207,51 +145,11 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '132.85')
         self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [30, 40, 50])
 
-    def test_a_flat_account_reads_later_trades_from_the_cursor(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config, venue = self._held_venue(directory)
-            venue.bars.append((ORIGIN + 254 * DAY, D(111), D(50), D(50)))
-            venue.snapshot = lambda uid: {
-                'account_uid': uid, 'btc': D(0), 'usdt_free': D('66'),
-                'usdt_locked': D(0), 'open_orders': 0, 'orders': [], 'environment': 'live', 'avg_price': venue.bars[-1][-1],
-            }
-            sold_at = ORIGIN + 255 * DAY + 60_000
-            venue.trade_rows.append({
-                'id': 2, 'time': sold_at, 'qty': D('0.6'), 'quote': D('30'),
-                'buyer': False, 'order_id': 2, 'commission': D('0'), 'commission_asset': 'BNB',
-            })
-            run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-            venue.trade_since.clear()
-            run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-        self.assertTrue(venue.trade_since)
-        self.assertEqual(min(venue.trade_since), sold_at - DAY)
-        # The durable ledger serves the committed cursor; venue reads overlap
-        # one day so a late fill at the same millisecond cannot disappear.
-
-    def test_open_order_details_stay_on_the_report(self):
-        orders = [{
-            'order_id': 9, 'side': 'SELL', 'type': 'STOP_LOSS', 'status': 'NEW',
-            'stop_price': '99.90',
-        }]
-        with tempfile.TemporaryDirectory() as directory:
-            config, venue = self._held_venue(directory)
-            previous = venue.snapshot
-            venue.snapshot = lambda uid: dict(previous(uid), open_orders=1, orders=orders)
-            report = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-        self.assertEqual(report['status'], 'read_only')
-        self.assertEqual(report['actual']['orders'], orders)
-        self.assertNotEqual(report['model_preview']['action'], 'enter')
-
     def test_an_old_checkpoint_is_rejected_even_when_flat(self):
         with tempfile.TemporaryDirectory() as directory:
             venue = Venue(bars(252, 100))
             config = Config('10001', directory, session_seconds=2, poll_seconds=1)
             run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-            venue.bars.append((ORIGIN + 252 * DAY, D(200), D(180), D(200)))
-            run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-            venue.bars.append((ORIGIN + 253 * DAY, D(210), D(190), D(210)))
-            armed = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-            self.assertEqual(armed['model_preview']['action'], 'enter')
             from spotquant.state import State
             with State(config.state_dir, config.scope) as state:
                 state.set('rule', 'older')

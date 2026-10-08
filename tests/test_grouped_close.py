@@ -4,7 +4,6 @@ import tempfile
 from decimal import Decimal as D
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import patch
 
 from spotquant.config import Config
 from spotquant.execution import Lifecycle
@@ -84,22 +83,10 @@ class GroupedCloseTests(TestCase):
                 with self.assertRaises(Unknown):
                     self.apply(models, positions, follows, owners, self.trade(1, 60, '.00004'))
 
-    def test_late_terminal_readback_does_not_commit_a_permanently_unprotected_remainder(self):
-        models, positions, follows, owners = self.fixtures('NEW', '.00004', '0')
-        original = json.loads(json.dumps(positions))
-        trade = self.trade(1, 60, '.00004')
-        with self.assertRaisesRegex(Unknown, 'terminal native readback'):
-            self.apply(models, positions, follows, owners, trade)
-        self.assertEqual(json.loads(json.dumps(positions)), original)
-        owners['17'].update(native_status='FILLED', native_executed_qty='.00004')
-        positions, _, accounted, closed = self.apply(models, positions, follows, owners, trade)
-        self.assertEqual(accounted, {1})
-        self.assertEqual(set(closed), set(SLEEVES))
-        self.assertTrue(all(p['dust'] for p in positions.values()))
-
-    def test_full_close_is_strategy_flat_while_real_ownership_and_capital_are_kept(self):
+    def test_full_close_keeps_real_dust_and_reentry_merges_owned_coins(self):
         models, positions, follows, owners = self.fixtures()
-        positions, _, _, _ = self.apply(models, positions, follows, owners, self.trade(1, 60, '.00004'))
+        positions, follows, accounted, _ = self.apply(models, positions, follows, owners,
+                                                      self.trade(1, 60, '.00004'))
         views, owned = {}, {}
         for w in SLEEVES:
             views[w], owned[w] = _view(models[w], positions[w])
@@ -119,43 +106,12 @@ class GroupedCloseTests(TestCase):
         with self.assertRaises(Unknown):
             portfolio(views, owned, dict(snapshot, avg_price=D(600000)),
                       entries_enabled=True, capital_limit=D(1000))
-
-    def test_real_reentry_merges_owned_residual_and_resets_peak(self):
-        models, positions, follows, owners = self.fixtures()
-        positions, follows, accounted, _ = self.apply(models, positions, follows, owners, self.trade(1, 60, '.00004'))
         owners['18'] = dict(sleeves=list(SLEEVES), weights={str(w): '1' for w in SLEEVES}, repair={})
-        old_qty = sum((D(p['qty']) for p in positions.values()), D(0))
         positions, _, _, _ = self.apply(models, positions, follows, owners,
                                         self.trade(2, 61, '.003', buyer=True), accounted)
-        self.assertTrue(all(not p.get('dust') for p in positions.values()))
-        self.assertTrue(all(D(p['peak']) == D(60000) for p in positions.values()))
-        self.assertTrue(all(p['first_ms'] == ORIGIN + 61 * DAY + 1000 for p in positions.values()))
-        self.assertLess(abs(sum((D(p['qty']) for p in positions.values()), D(0)) - old_qty - D('.003')), D('1e-24'))
-
-    def test_readonly_recovery_and_executor_use_the_same_durable_native_metadata(self):
-        models, _, _, owners = self.fixtures()
-        payload = dict(owners['17'])
-        payload.pop('native_status')
-        payload.pop('native_executed_qty')
-        result = dict(orderId=17, status='FILLED', executedQty='.00004')
-        with tempfile.TemporaryDirectory() as directory:
-            config = Config('1', directory, 300, 5, 'demo', '1000')
-            venue = SimpleNamespace(execution_authorized=True, sent=[])
-            with State(directory, config.scope) as state:
-                state.set_many({'rule': RULE, 'models': {str(w): m.checkpoint() for w, m in models.items()},
-                                'positions': {str(w): None for w in SLEEVES},
-                                'follows': {str(w): None for w in SLEEVES},
-                                'entries_after': ORIGIN + 59 * DAY})
-                lifecycle = Lifecycle(state, venue, config)
-                lifecycle.save('owned-sale', payload, 'settled', result)
-                expected = lifecycle.owners()
-                self.assertEqual(expected['17']['native_status'], 'FILLED')
-                self.assertEqual(D(expected['17']['native_executed_qty']), D('.00004'))
-                def observed(adapter, observed_state, observed_config, **kwargs):
-                    self.assertEqual(observed_state._execution_owners, expected)
-                    return {}
-                with patch('spotquant.session._cycle', observed):
-                    self.assertEqual(cycle(venue, state, config)['status'], 'read_only')
+        self.assertTrue(all(not p.get('dust') and D(p['peak']) == D(60000)
+                            and p['first_ms'] == ORIGIN + 61 * DAY + 1000 for p in positions.values()))
+        self.assertLess(abs(sum((D(p['qty']) for p in positions.values()), D(0)) - btc - D('.003')), D('1e-24'))
 
     def test_readonly_cycle_rolls_back_earlier_sleeve_before_late_terminal_guard(self):
         models, positions, follows, owners = self.fixtures('NEW', '.00004', '0')

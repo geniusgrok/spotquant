@@ -147,40 +147,25 @@ def normalize_trade(row: dict) -> dict:
     }
 
 
-def _out(trade: dict) -> D:
-    """Coins that left the balance in a sell, including a BTC commission."""
-    commission = trade['commission'] if trade.get('commission_asset') == 'BTC' else D(0)
-    return trade['qty'] + commission
-
-
-def _one_order(trades) -> int:
+def _one_order(trades) -> None:
     orders = {int(trade['order_id']) for trade in trades}
     if len(orders) != 1:
         raise Unknown('trades from more than one order have no recorded sleeve; refusing new risk')
-    return orders.pop()
 
 
-def _region_buy(region):
-    """The net buy of one order after the last sell, or None when there is no buy."""
-    last_sell = None
-    for index, trade in enumerate(region):
-        if not trade['buyer']:
-            last_sell = index
-    if last_sell is not None:
-        region = region[last_sell + 1:]
-    if not region:
-        return None
-    _one_order(region)
-    gross = sum((trade['qty'] for trade in region), D(0))
-    quote = sum((trade['quote'] for trade in region), D(0))
-    net = sum((_base_delta(trade) for trade in region), D(0))
+def _region_buy(buys):
+    """The net buy of one order; the caller supplies nonempty, buy-only fills."""
+    _one_order(buys)
+    gross = sum((trade['qty'] for trade in buys), D(0))
+    quote = sum((trade['quote'] for trade in buys), D(0))
+    net = sum((_base_delta(trade) for trade in buys), D(0))
     if gross <= 0 or quote <= 0 or net <= 0:
         raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
     return {
         'qty': net,
         'entry_fill': quote / gross,
-        'first_ms': min(trade['time'] for trade in region),
-        'ids': [trade['id'] for trade in region],
+        'first_ms': min(trade['time'] for trade in buys),
+        'ids': [trade['id'] for trade in buys],
     }
 
 
@@ -226,7 +211,7 @@ def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open
     tolerance = BASE_STEP * (len(positions) + 1)
     closed = []
     sells = [trade for trade in day if not trade['buyer']]
-    sold = sum((_out(trade) for trade in sells), D(0))
+    sold = sum((-_base_delta(trade) for trade in sells), D(0))
     if sold > tolerance:
         if not held:
             raise Unknown('a sell on the account does not match one recorded sleeve group; refusing new risk')
@@ -250,8 +235,6 @@ def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open
     if len(cohorts) != 1:
         raise Unknown('trades from more than one order have no recorded sleeve; refusing new risk')
     found = _region_buy(buys)
-    if found is None:
-        return positions, follows, accounted, closed
     group = sorted(window for window, item in active.items() if int(item['signal_ms']) == cohorts[0])
     bars = history()
     share = floor_step(found['qty'] / len(group), BASE_STEP)

@@ -164,7 +164,8 @@ class PublicFeatures:
             self.observations, self.fetched = observations, now
 
 
-def _read_public(raw):
+def public_body(raw):
+    """Unavailable public JSON is a feature failure, with raw integrity checked by callers."""
     def pairs(items):
         result = {}
         for key, value in items:
@@ -173,12 +174,7 @@ def _read_public(raw):
         return result
     def nonfinite(value):
         raise ValueError('nonfinite public number')
-    return json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite)
-
-
-def public_body(raw):
-    """Unavailable public JSON is a feature failure, with raw integrity checked by callers."""
     try:
-        return dict(body=_read_public(raw))
+        return dict(body=json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite))
     except ValueError as exc:
         return dict(body=None, error=type(exc).__name__)

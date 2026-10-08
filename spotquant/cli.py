@@ -42,21 +42,11 @@ def _base_report(config) -> dict:
 
 
 def _failure_report(config, exc) -> dict:
-    report = _base_report(config)
-    report.update(
+    return dict(
+        _base_report(config),
         status='unknown' if isinstance(exc, Unknown) else 'blocked',
         reason=str(exc),
-        observation_current=False,
-        write_attempted=False,
     )
-    clear_stale(report)
-    return report
-
-
-def _persist(config, report: dict) -> dict:
-    with State(config.state_dir, config.scope) as state:
-        state.report(report)
-    return report
 
 
 def observe(config_path) -> dict:
@@ -79,8 +69,6 @@ def observe(config_path) -> dict:
             report = _failure_report(config, exc)
         except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
             report = _failure_report(config, Unknown('Invalid observation or state'))
-            report['reason'] = 'Invalid observation or state'
-            report['status'] = 'unknown'
         state.report(report)
         return report
 
@@ -130,7 +118,9 @@ def main(argv=None):
             try:
                 venue = connect(config)
             except (Blocked, Unknown) as exc:
-                report = _persist(config, _failure_report(config, exc))
+                report = _failure_report(config, exc)
+                with State(config.state_dir, config.scope) as state:
+                    state.report(report)
             else:
                 report = run(config, venue)
     except (Blocked, Unknown) as exc:
