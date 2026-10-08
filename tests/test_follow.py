@@ -8,8 +8,9 @@ from spotquant.types import Unknown
 
 
 class _Model:
-    def note_flat(self):
+    def note_flat(self, *, rearm=False):
         self.flat = True
+        self.rearm = rearm
 
 
 def _trade(index, time, qty, quote, *, buyer=True, commission='0', asset='BNB', order_id=None):

@@ -18,7 +18,8 @@ def _decide(model: Model, snapshot: dict, *, entries_enabled: bool, owned_btc: D
     owned = floor_step(owned_btc, BASE_STEP)
     if owned > 0:
         return _position_decision(model, snapshot, owned)
-    armed = model.enter or model.cap_enter
+    early = model.streak >= 1 and model.crash_ok and not model.need_reset and not model.shadow_in
+    armed = model.shadow_in or model.enter or model.cap_enter or early
     if not armed:
         if model.sma is None:
             return _flat('SMA warmup is incomplete')
@@ -37,8 +38,12 @@ def _decide(model: Model, snapshot: dict, *, entries_enabled: bool, owned_btc: D
                 f'crash reversal: {percent(model.cap_drop)} down, then {percent(model.cap_bounce)} up, '
                 f'still at least {percent(model.cap_depth)} under the {model.cap_window}-day high'
             )
-            if model.cap_enter
-            else 'two confirmed closes cleared the fresh-cross and crash filters'
+            if model.shadow_in and model.shadow_repair
+            else (
+                'one completed close is back above its SMA and passed the crash filter'
+                if not model.shadow_in
+                else 'the daily book is long and this session is flat'
+            )
         ),
         'order': {
             'symbol': 'BTCUSDT',
@@ -64,7 +69,16 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
             model, owned,
             'the resting stop is already through the completed close; the sell is the next open',
         )
-    if model.repair:
+    if not model.shadow_in:
+        if model.bull and not model.extended:
+            return {
+                'action': 'hold',
+                'reason': 'early entry is waiting for the daily book to join or for the close to lose the SMA',
+                'order': None,
+                'protection': _protection(model, owned, snapshot),
+            }
+        return _exit(model, owned, 'the daily book is flat; the session sells')
+    if model.repair or model.shadow_repair:
         return {
             'action': 'hold',
             'reason': (
@@ -74,6 +88,13 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
             'order': None,
             'protection': _protection(model, owned, snapshot),
         }
+    last = snapshot.get('last_price')
+    if last is not None and model.sma is not None and D(last) <= model.sma * (D(1) + model.touch):
+        return _exit(
+            model, owned,
+            f'session price is within {percent(model.touch)} of the SMA while the daily book stays long',
+            rearm=True,
+        )
     if model.adverse:
         return _exit(
             model, owned,
@@ -107,7 +128,7 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
     }
 
 
-def _exit(model: Model, owned: D, reason: str) -> dict:
+def _exit(model: Model, owned: D, reason: str, *, rearm: bool = False) -> dict:
     tradable = owned * model.close >= MIN_NOTIONAL
     order = None
     if tradable:
@@ -119,6 +140,7 @@ def _exit(model: Model, owned: D, reason: str) -> dict:
         'untradeable': not tradable,
         'order': order,
         'protection': None,
+        'rearm': rearm,
     }
 
 

@@ -96,8 +96,6 @@ class ExecutionTests(TestCase):
             account = venue_before_entry()
             run_day(config, account)
             add_day(account, '101')
-            run_day(config, account)
-            add_day(account, '102')
             adapter = OrderAdapter(account, 'POST')
             report = run(config, adapter, execute=True, monotonic=adapter.monotonic, wait=adapter.wait)
             self.assertTrue(report['closeout_attempted'])
@@ -199,8 +197,6 @@ class ExecutionTests(TestCase):
             venue = venue_before_entry()
             run_day(config, venue)
             add_day(venue, '101')
-            run_day(config, venue)
-            add_day(venue, '102')
             venue.reject_stop = True
             for _ in range(2):
                 self.assertEqual(run_day(config, venue)['status'], 'unknown')
@@ -212,8 +208,6 @@ class ExecutionTests(TestCase):
             venue = venue_before_entry()
             run_day(config, venue)
             add_day(venue, '101')
-            run_day(config, venue)
-            add_day(venue, '102')
             venue.reject_stop_known = True
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
@@ -306,8 +300,8 @@ class ExecutionTests(TestCase):
             self.assertEqual(report['errors'], [])
             stops = [row for row in venue.orders.values() if row['status'] == 'NEW']
             self.assertEqual(len(stops), 1)
-            # Remainder keeps the 28% trail under the fill peak.
-            self.assertTrue(all(D(row['stopPrice']) == D('73.44') for row in stops))
+            # Remainder keeps the 28% trail under the 101 fill. 101 * 0.72 = 72.72.
+            self.assertTrue(all(D(row['stopPrice']) == D('72.72') for row in stops))
             self.assertLess(abs(sum(D(row['quantity']) for row in stops) - venue.btc), D('.00004'))
             before = len(venue.sent)
             run_day(config, venue)
@@ -327,8 +321,6 @@ class ExecutionTests(TestCase):
             venue = venue_before_entry()
             self.assertEqual(run_day(config, venue)['errors'], [])
             add_day(venue, '101')
-            run_day(config, venue)
-            add_day(venue, '102')
             venue.fraction, venue.lose_ack = D('.5'), True
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
@@ -336,15 +328,15 @@ class ExecutionTests(TestCase):
             sent = len(venue.sent)
             run_day(config, venue)
             self.assertEqual(len(venue.sent), sent)
-            add_day(venue, '103', '110')
+            add_day(venue, '102', '110')
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
             active = [row for row in venue.orders.values() if row['status'] == 'NEW']
             self.assertEqual(len(active), 1)
-            # Basis availability puts the fill outside the first-minute window:
-            # the completed entry-day high cannot be treated as post-fill.
-            self.assertEqual(D(active[0]['stopPrice']), D('73.44'))
-            add_day(venue, '104', '110')
+            # The fill is one minute into the next daily bar, so that high is
+            # not yet the post-fill peak. 101 * 0.72 = 72.72.
+            self.assertEqual(D(active[0]['stopPrice']), D('72.72'))
+            add_day(venue, '103', '110')
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
             active = [row for row in venue.orders.values() if row['status'] == 'NEW']
@@ -364,8 +356,6 @@ class ExecutionTests(TestCase):
             venue = venue_before_entry()
             run_day(config, venue)
             add_day(venue, '101')
-            run_day(config, venue)
-            add_day(venue, '102')
             original = venue.submit
             def submit(identity, payload):
                 row = original(identity, payload)

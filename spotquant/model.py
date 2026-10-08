@@ -1,11 +1,11 @@
 """Causal BTC daily signals for one SMA40 sleeve on the whole USDT pool.
 
-New entries need two bullish closes, a fresh cross and the 252-day high filter.
-A 6% bounce after an 8% decline below half the 400-day high can enter repair.
-Repair holds until the SMA and the 20% high-distance handoff; other positions
-exit on SMA loss, 60% extension, or a 4% adverse close. There is no same-day
-re-entry. Protection is a 28% trail under the high since the fill, plus any
-confirmed native stop floor. Completed bars and fill-owned peaks only.
+A shadow book trades the next daily open: two closes, the 252-day filter, a
+fresh cross, and the crash-reversal repair. The account follows that book
+only at a session. One close back above the average can buy early. A trend
+whose session price is within 0.5% of the SMA sells and can rejoin while the
+shadow book is still long. Protection is a 28% trail under the high since
+the fill. Completed bars and fill-owned peaks only.
 """
 from __future__ import annotations
 
@@ -33,7 +33,8 @@ CAP_DEPTH = D('0.50')
 CAP_HAND = D('0.20')
 CAP_WINDOW = 400
 ADVERSE = D('0.04')
-VERSION = 5
+TOUCH = D('0.005')
+VERSION = 6
 
 
 def percent(value) -> str:
@@ -58,6 +59,7 @@ class Model:
         self.cap_hand = CAP_HAND
         self.cap_window = CAP_WINDOW
         self.adverse_stop = ADVERSE
+        self.touch = TOUCH
         self.closes: deque[D] = deque(maxlen=CAP_WINDOW)
         self.true_ranges: deque[tuple[int, D]] = deque(maxlen=14)
         self.last: int | None = None
@@ -75,23 +77,53 @@ class Model:
         self.streak = 0
         self.need_reset = False
         self.crash_ok = False
+        self.shadow_in = False
+        self.shadow_repair = False
+        self.shadow_entry: D | None = None
+        self.shadow_adverse = False
         self.peak: D | None = None
         self.repair_peak: D | None = None
         # Runtime only. Not part of the checkpoint, so a price-only history
         # stays valid when this process restarts.
         self.position_peak: D | None = None
 
-    def note_flat(self) -> None:
-        """A followed position is gone. A bullish regime still needs a fresh cross."""
+    def note_flat(self, *, rearm: bool = False) -> None:
+        """A followed position is gone.
+
+        Selling because the session price met the average leaves the shadow
+        book long, so the next session may buy again. A shadow exit still
+        needs a fresh cross.
+        """
         self.position_peak = None
         if not (self.bull and self.fresh):
             return
-        self.need_reset = True
         self.repair = False
         self.repair_peak = None
         self.entry = None
         self.adverse = False
+        if rearm:
+            return
+        self.need_reset = True
         self.enter = False
+
+    def _trade_shadow(self) -> None:
+        """Apply the previous close at this daily open, before the new close."""
+        if self.last is None or self.close is None:
+            return
+        if self.shadow_in and not self.shadow_repair and (
+                self.shadow_adverse or self.extended or not self.bull):
+            self.shadow_in = False
+            self.shadow_repair = False
+            self.shadow_entry = None
+            self.shadow_adverse = False
+            if self.bull and self.fresh:
+                self.need_reset = True
+                self.enter = False
+        elif not self.shadow_in and (self.enter or self.cap_enter):
+            self.shadow_in = True
+            self.shadow_repair = bool(self.cap_enter)
+            self.shadow_entry = self.close
+            self.shadow_adverse = False
 
     def _view_sma(self):
         if self.close is None or len(self.closes) < self.sma_window:
@@ -138,6 +170,7 @@ class Model:
             raise Blocked('nonfinite daily bar')
         if not D(0) < low <= close <= high:
             raise Blocked('invalid daily bar')
+        self._trade_shadow()
         if self.close is not None:
             self.true_ranges.append((open_time, max(high - low, abs(high - self.close), abs(low - self.close))))
         self.older_close = self.prev_close
@@ -175,6 +208,16 @@ class Model:
         if self.position_peak is not None:
             self.position_peak = max(self.position_peak, high)
         self.enter = self.streak >= self.confirm and self.crash_ok and not self.need_reset
+        if self.shadow_in and self.shadow_repair:
+            cap_high = self._view_cap_high()
+            if (self.bull and cap_high is not None and self.cap_hand > 0
+                    and self.close >= cap_high * (D(1) - self.cap_hand)):
+                self.shadow_repair = False
+        if (self.shadow_in and not self.shadow_repair and self.shadow_entry is not None
+                and self.adverse_stop > 0):
+            self.shadow_adverse = self.close <= self.shadow_entry * (D(1) - self.adverse_stop)
+        else:
+            self.shadow_adverse = False
         return self.bull
 
     @property
@@ -202,6 +245,7 @@ class Model:
             'cap_hand': format(self.cap_hand, 'f'),
             'cap_window': self.cap_window,
             'adverse_stop': format(self.adverse_stop, 'f'),
+            'touch': format(self.touch, 'f'),
             'last': self.last,
             'closes': [format(item, 'f') for item in self.closes],
             'true_ranges': [[stamp, format(value, 'f')] for stamp, value in self.true_ranges],
@@ -217,6 +261,10 @@ class Model:
             'entry': None if self.entry is None else format(self.entry, 'f'),
             'streak': self.streak,
             'need_reset': self.need_reset,
+            'shadow_in': self.shadow_in,
+            'shadow_repair': self.shadow_repair,
+            'shadow_adverse': self.shadow_adverse,
+            'shadow_entry': None if self.shadow_entry is None else format(self.shadow_entry, 'f'),
             'crash_ok': self.crash_ok,
             'peak': None if self.peak is None else format(self.peak, 'f'),
             'repair_peak': None if self.repair_peak is None else format(self.repair_peak, 'f'),
@@ -238,6 +286,7 @@ class Model:
                 'cap_drop': str(CAP_DROP), 'cap_bounce': str(CAP_BOUNCE),
                 'cap_depth': str(CAP_DEPTH), 'cap_hand': str(CAP_HAND),
                 'cap_window': CAP_WINDOW, 'adverse_stop': str(ADVERSE),
+                'touch': str(TOUCH),
             }
             if any(type(body[k]) is not type(v) or body[k] != v for k, v in parameters.items()):
                 raise ValueError('strategy parameters')
@@ -272,14 +321,31 @@ class Model:
             model.entry = None if body['entry'] is None else D(body['entry'])
             model.streak = body['streak']
             model.need_reset = body['need_reset']
+            model.shadow_in = body['shadow_in']
+            model.shadow_repair = body['shadow_repair']
+            model.shadow_adverse = body['shadow_adverse']
+            model.shadow_entry = None if body['shadow_entry'] is None else D(body['shadow_entry'])
             model.crash_ok = body['crash_ok']
             model.peak = None if body['peak'] is None else D(body['peak'])
             model.repair_peak = None if body['repair_peak'] is None else D(body['repair_peak'])
             model.close = model.closes[-1] if model.closes else None
             model.prev_close = None if body['prev_close'] is None else D(body['prev_close'])
             model.older_close = None if body['older_close'] is None else D(body['older_close'])
-            if type(model.streak) is not int or type(model.need_reset) is not bool or type(model.crash_ok) is not bool:
+            if (type(model.streak) is not int or type(model.need_reset) is not bool
+                    or type(model.crash_ok) is not bool or type(model.shadow_in) is not bool
+                    or type(model.shadow_repair) is not bool or type(model.shadow_adverse) is not bool):
                 raise ValueError('flags')
+            if model.shadow_entry is not None and (not model.shadow_entry.is_finite() or model.shadow_entry <= 0):
+                raise ValueError('shadow entry')
+            if not model.shadow_in and (model.shadow_repair or model.shadow_adverse or model.shadow_entry is not None):
+                raise ValueError('shadow flat')
+            if model.shadow_in and model.shadow_repair and model.shadow_adverse:
+                raise ValueError('shadow repair')
+            if (model.shadow_in and not model.shadow_repair and model.shadow_entry is not None
+                    and model.close is not None and model.adverse_stop > 0):
+                expected_shadow = model.close <= model.shadow_entry * (D(1) - model.adverse_stop)
+                if bool(model.shadow_adverse) != bool(expected_shadow):
+                    raise ValueError('shadow adverse')
             if type(model.extended) is not bool or type(model.cap_enter) is not bool or type(model.repair) is not bool:
                 raise ValueError('flags')
             if any(type(body[k]) is not bool for k in ('bull', 'enter', 'cap_enter')):

@@ -19,6 +19,12 @@ from .types import Blocked, Unknown, floor_step, number
 OPEN_FILL_MS = 60_000
 
 
+def _rearm(model, position: dict) -> bool:
+    """Rejoin only when the daily book is still long and this was not a repair."""
+    return bool(getattr(model, 'shadow_in', False) and not position.get('repair')
+                and not getattr(model, 'shadow_repair', False))
+
+
 def day_open(timestamp: int) -> int:
     if type(timestamp) is not int or timestamp < ORIGIN:
         raise Unknown('fill time is before the model origin')
@@ -217,7 +223,7 @@ def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open
             raise Unknown('a sell on the account does not match one recorded sleeve group; refusing new risk')
         closed = _closed(held, sells, sold, tolerance)
         for window in closed:
-            models[window].note_flat()
+            models[window].note_flat(rearm=_rearm(models[window], held[window]))
             positions[window] = None
             follows[window] = None
             held.pop(window)
@@ -345,7 +351,7 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
                     positions[window] = (dict(prior, qty=format(remaining, 'f'), dust=True,
                                               protection='unplaceable_dust') if remaining else None)
                     follows[window] = None
-                    models[window].note_flat()
+                    models[window].note_flat(rearm=_rearm(models[window], prior))
                     closed.append(window)
                 else:
                     positions[window] = dict(prior, qty=format(remaining, 'f'))

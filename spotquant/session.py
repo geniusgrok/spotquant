@@ -485,7 +485,10 @@ def _follow_after(decision: dict, models: dict, positions: dict, follows: dict, 
             if follow and follow.get('signal_ms') is not None:
                 out[window] = {'signal_ms': follow['signal_ms'], 'repair': bool(follow.get('repair'))}
             else:
-                out[window] = {'signal_ms': model.last, 'repair': bool(model.cap_enter)}
+                out[window] = {
+                    'signal_ms': model.last,
+                    'repair': bool(model.shadow_in and model.shadow_repair),
+                }
         elif not (model.enter or model.cap_enter):
             out[window] = None
         else:

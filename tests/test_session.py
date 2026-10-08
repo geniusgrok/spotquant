@@ -62,7 +62,7 @@ def bars(count, close):
 
 
 class SessionTests(unittest.TestCase):
-    def test_cold_start_then_two_bullish_closes_preview_entry(self):
+    def test_cold_start_then_one_bullish_close_previews_entry(self):
         venue = Venue(bars(252, 100))
         with tempfile.TemporaryDirectory() as directory:
             config = Config('10001', directory, session_seconds=2, poll_seconds=1)
@@ -74,7 +74,7 @@ class SessionTests(unittest.TestCase):
             self.assertGreaterEqual(first['cycles'], 1)
             venue.bars.append((ORIGIN + 252 * DAY, D(200), D(180), D(200)))
             second = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
-            self.assertEqual(second['model_preview']['action'], 'flat')
+            self.assertEqual(second['model_preview']['action'], 'enter')
             venue.bars.append((ORIGIN + 253 * DAY, D(210), D(190), D(210)))
             third = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(third['model_preview']['action'], 'enter')
@@ -94,7 +94,7 @@ class SessionTests(unittest.TestCase):
             # The 28% trail uses the 111 fill as the peak, not the pre-fill wick.
             self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '79.92')
             self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [40])
-            self.assertIn('since the fill', held['model_preview']['sleeves']['40']['reason'])
+            self.assertIn('early entry', held['model_preview']['sleeves']['40']['reason'])
             observed = venue.snapshot
             venue.snapshot = lambda uid: dict(observed(uid), btc=D(1))
             external = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)

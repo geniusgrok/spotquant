@@ -20,6 +20,26 @@ def snapshot(usdt='1000', btc='0', price='102', orders=0):
 
 
 class PreviewTests(unittest.TestCase):
+    def test_one_close_can_buy_before_the_shadow_book_joins(self):
+        view = model((101,))
+        self.assertFalse(view.enter)
+        self.assertFalse(view.shadow_in)
+        result = portfolio({40: view}, {40: D(0)}, snapshot('1000', price='101'),
+                           entries_enabled=True, capital_limit=None)
+        self.assertEqual(result['action'], 'enter')
+
+    def test_session_price_near_the_average_sells_while_the_shadow_book_stays_long(self):
+        view = model()
+        close_next = view.last + DAY
+        view.update(close_next, view.close, view.close, view.close)
+        self.assertTrue(view.shadow_in)
+        view, _qty = _view(view, dict(entry_fill='102', peak='110', qty='1',
+                                      repair=False, repair_peak=None, adverse=False))
+        near = snapshot('0', '1', price='102')
+        near['last_price'] = view.sma
+        result = portfolio({40: view}, {40: D(1)}, near, entries_enabled=True, capital_limit=None)
+        self.assertEqual(result['action'], 'exit')
+        self.assertTrue(result['sleeves']['40']['rearm'])
     def test_consensus_allocation_and_capital_limit_use_current_shared_pool(self):
         views = {30: model(), 40: model(window=40), 50: model((98,), 50)}
         views[40], _ = _view(views[40], dict(entry_fill='102', peak='102', qty='1',
