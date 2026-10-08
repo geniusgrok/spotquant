@@ -1,0 +1,15 @@
+{
+  "source_sha256": "d0a232465e6a46fe8ae1ecfc317437ef957fbdbeda9a29e8c2733420ed5dbd03",
+  "received_utc": "2026-10-08T00:38:10.601221+00:00",
+  "newest_complete_day": "06 Oct 2026",
+  "prior_five_usd_million": "769.3",
+  "latest_five_usd_million": "172.9",
+  "current_incomplete_day": "07 Oct 2026",
+  "missing_funds": [
+    "IBIT",
+    "BTCO"
+  ],
+  "frozen_sign_event": false,
+  "status": "NO_EVENT_NO_ECONOMIC_SCREEN",
+  "outcome_or_account_read": false
+}

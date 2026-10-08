@@ -1,0 +1,15 @@
+{
+  "url": "https://farside.co.uk/btc/",
+  "request_utc": "2026-10-08T00:38:09.378020+00:00",
+  "receive_utc": "2026-10-08T00:38:10.601221+00:00",
+  "elapsed_seconds": 1.223201,
+  "status": 200,
+  "server_date": "Thu, 08 Oct 2026 00:38:10 GMT",
+  "content_type": "text/html; charset=UTF-8",
+  "bytes": 272035,
+  "sha256": "d0a232465e6a46fe8ae1ecfc317437ef957fbdbeda9a29e8c2733420ed5dbd03",
+  "max_requests": 1,
+  "timeout_seconds": 5,
+  "max_body_bytes": 2097152,
+  "raw_storage": "local_restricted_only"
+}
