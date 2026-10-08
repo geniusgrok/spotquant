@@ -352,13 +352,9 @@ def _merge_protections(decisions: dict, views: dict, snapshot: dict) -> list:
 
 
 def decision_view(model, position, owners):
-    """Adaptive protection on a copy; catch-up and checkpoints keep the static trail."""
+    """Static 28% trail on a copy, floored by any confirmed native stop."""
     view = copy.copy(model)
-    atr = model.atr14
-    if atr is None:
-        return view
     from .execution import TERMINAL
-    view.trail = min(D('.30'), max(D('.10'), 4 * atr / view.close))
     proven = [D(o['order']['stopPrice']) for o in owners.values()
               if position and view.sma_window in o['sleeves'] and o['order']['type'] == 'STOP_LOSS'
               and o.get('native_status') in (TERMINAL - {'REJECTED'}) | {'NEW', 'PARTIALLY_FILLED'}
@@ -370,7 +366,7 @@ def decision_view(model, position, owners):
 
 def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capital_limit,
              crowding_source=None, decision_ms=None):
-    """ATR protection, exits first, bounded consensus allocation, then crowding once."""
+    """28% trail protection, exits first, then one crowding scale on a new buy."""
     from .crowding import evaluate
     price_views = views
     views = {w: decision_view(v, positions.get(w), owners) for w, v in views.items()}
@@ -414,7 +410,7 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
     for order in list(out['orders']):
         if order['side'] != 'BUY':
             continue
-        factor, diagnostic = evaluate(crowding_source, price_views[30], decision_ms)
+        factor, diagnostic = evaluate(crowding_source, price_views[next(iter(price_views))], decision_ms)
         def held(w):
             position = positions.get(w) or {}
             closed_dust = (position.get('dust') is True and bool(position.get('sell_applied'))

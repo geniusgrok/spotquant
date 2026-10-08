@@ -117,7 +117,7 @@ class ExecutionTests(TestCase):
             self.assertTrue(report['closeout_attempted'])
             self.assertFalse(report['pending_intents'])
             self.assertTrue(any(row['type'] == 'STOP_LOSS' and row['status'] == 'NEW'
-                                and D(row['stopPrice']) > D('91.80') for row in account.orders.values()))
+                                and D(row['stopPrice']) > D('73.44') for row in account.orders.values()))
 
     def test_bnb_fee_on_partial_sell_keeps_remainder_protectable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -152,7 +152,7 @@ class ExecutionTests(TestCase):
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
             self.assertTrue(any(row['type'] == 'STOP_LOSS' and row['status'] == 'NEW'
-                                and D(row['stopPrice']) > D('91.80') for row in venue.orders.values()))
+                                and D(row['stopPrice']) > D('73.44') for row in venue.orders.values()))
 
     def test_stop_fill_between_decision_and_write_requires_reconciliation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -229,7 +229,7 @@ class ExecutionTests(TestCase):
             with State(directory, config.scope) as state:
                 lifecycle = Lifecycle(state, venue, config)
                 decision = {'orders': [dict(symbol='BTCUSDT', side='BUY', type='MARKET',
-                                            quoteOrderQty='5.00', sleeves=[30])],
+                                            quoteOrderQty='5.00', sleeves=[40])],
                             'protections': [], 'sleeves': {}}
                 from spotquant.types import Blocked
                 with self.assertRaisesRegex(Blocked, 'net buy'):
@@ -244,14 +244,14 @@ class ExecutionTests(TestCase):
             def divergent(uid):
                 row = snapshot(uid)
                 row['avg_price'] = D('105')
-                row['last_price'] = D('85')
+                row['last_price'] = D('70')
                 return row
             venue.snapshot = divergent
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
             self.assertTrue(any(row['side'] == 'SELL' and row['type'] == 'MARKET'
                                 for row in venue.orders.values()))
-            self.assertFalse(any(row['status'] == 'NEW' and D(row['stopPrice']) > D('85')
+            self.assertFalse(any(row['status'] == 'NEW' and D(row['stopPrice']) > D('70')
                                  for row in venue.orders.values() if row['type'] == 'STOP_LOSS'))
 
     def test_price_crossing_during_replacement_reports_unprotected_btc(self):
@@ -263,7 +263,7 @@ class ExecutionTests(TestCase):
             original = venue.cancel
             def cancel(identity):
                 original(identity)
-                venue.price = D('85')
+                venue.price = D('70')
             venue.cancel = cancel
             observed = venue.snapshot
             def divergent(uid):
@@ -305,46 +305,21 @@ class ExecutionTests(TestCase):
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
             stops = [row for row in venue.orders.values() if row['status'] == 'NEW']
-            self.assertEqual(len(stops), 3)
-            # Remainder uses the canonical 10% decision distance and native floor.
-            self.assertTrue(all(D(row['stopPrice']) == D('91.80') for row in stops))
+            self.assertEqual(len(stops), 1)
+            # Remainder keeps the 28% trail under the fill peak.
+            self.assertTrue(all(D(row['stopPrice']) == D('73.44') for row in stops))
             self.assertLess(abs(sum(D(row['quantity']) for row in stops) - venue.btc), D('.00004'))
             before = len(venue.sent)
             run_day(config, venue)
             self.assertEqual(len(venue.sent), before)
 
-    def test_equal_size_groups_have_distinct_order_identity_and_sell_attribution(self):
-        from spotquant.execution import Lifecycle
+    def test_the_single_sleeve_stop_covers_the_position(self):
         with tempfile.TemporaryDirectory() as directory:
-            config, venue = self.entered(directory)
-            with State(directory, config.scope) as state:
-                lifecycle = Lifecycle(state, venue, config)
-                for identity, _, status, _ in lifecycle.rows():
-                    if status == 'resting':
-                        lifecycle.cancel(identity)
-                positions, follows = state.get('positions'), state.get('follows')
-                ids = []
-                for window, price in ((30, '70'), (40, '72'), (50, '74')):
-                    order = {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
-                             'quantity': str(D(positions[str(window)]['qty']).quantize(D('.00001'))),
-                             'stopPrice': price, 'sleeves': [window]}
-                    identity = lifecycle.prepare(order, venue.bars[-1][0], positions, follows)
-                    lifecycle.send(identity)
-                    ids.append(identity)
-                self.assertEqual(len(set(ids)), 3)
-                venue.now_ms += 2000
-                venue.trigger('73')  # Only the sleeve-50 stop triggers.
-                lifecycle.recover()
-                from spotquant.follow import apply_day, day_open
-                from spotquant.model import Model, SLEEVES
-                models = {w: Model.restore(state.get('models')[str(w)]) for w in SLEEVES}
-                old_ids = {trade['id'] for trade in venue.fills if trade['buyer']}
-                result, _, _, _ = apply_day(models, {w: positions[str(w)] for w in SLEEVES},
-                    {w: None for w in SLEEVES}, old_ids, day_open(venue.now_ms), venue.fills,
-                    lambda: venue.completed_daily(None), owners=lifecycle.owners())
-                self.assertEqual(result[30]['qty'], positions['30']['qty'])
-                self.assertEqual(result[40]['qty'], positions['40']['qty'])
-                self.assertLess(D(result[50]['qty']) if result[50] else D(0), D('.00001'))
+            _, venue = self.entered(directory)
+            stops = [row for row in venue.orders.values()
+                     if row['type'] == 'STOP_LOSS' and row['status'] == 'NEW']
+            self.assertEqual(len(stops), 1)
+            self.assertLess(abs(D(stops[0]['quantity']) - venue.btc), D('.00004'))
 
     def test_partial_entry_restart_stop_amend_and_trigger(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -368,13 +343,13 @@ class ExecutionTests(TestCase):
             self.assertEqual(len(active), 1)
             # Basis availability puts the fill outside the first-minute window:
             # the completed entry-day high cannot be treated as post-fill.
-            self.assertEqual(D(active[0]['stopPrice']), D('91.80'))
+            self.assertEqual(D(active[0]['stopPrice']), D('73.44'))
             add_day(venue, '104', '110')
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
             active = [row for row in venue.orders.values() if row['status'] == 'NEW']
             self.assertEqual(len(active), 1)
-            self.assertEqual(D(active[0]['stopPrice']), D('99.00'))
+            self.assertEqual(D(active[0]['stopPrice']), D('79.20'))
             venue.now_ms += 2000
             venue.trigger('70')
             report = run_day(config, venue)

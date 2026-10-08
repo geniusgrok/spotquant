@@ -1,11 +1,11 @@
-"""Causal BTC daily signals for SMA30/40/50 sleeves on one USDT pool.
+"""Causal BTC daily signals for one SMA40 sleeve on the whole USDT pool.
 
 New entries need two bullish closes, a fresh cross and the 252-day high filter.
-A 7% bounce after an 11% decline below half the 400-day high can enter repair.
-Repair holds until the SMA and high-distance handoff; other positions exit on
-SMA loss, 61% extension, or a 4% adverse close. There is no same-day re-entry.
-Fill catch-up retains a 28% trail; current decisions use clipped ATR14 stops
-and confirmed native stop floors. Completed bars and fill-owned peaks only.
+A 6% bounce after an 8% decline below half the 400-day high can enter repair.
+Repair holds until the SMA and the 20% high-distance handoff; other positions
+exit on SMA loss, 60% extension, or a 4% adverse close. There is no same-day
+re-entry. Protection is a 28% trail under the high since the fill, plus any
+confirmed native stop floor. Completed bars and fill-owned peaks only.
 """
 from __future__ import annotations
 
@@ -19,18 +19,18 @@ from .types import Blocked, number
 # 2019-01-01T00:00:00Z. Warmup for the 252-day high is inside this history.
 ORIGIN = 1546300800000
 DAY = 86_400_000
-SLEEVES = (30, 40, 50)
+SLEEVES = (40,)
 SMA_WINDOW = 40
 TRAIL = D('0.28')
 CONFIRM = 2
 CRASH = D('0.50')
 HIGH_WINDOW = 252
 FRESH = True
-EXTEND = D('0.61')
-CAP_DROP = D('0.11')
-CAP_BOUNCE = D('0.07')
+EXTEND = D('0.60')
+CAP_DROP = D('0.08')
+CAP_BOUNCE = D('0.06')
 CAP_DEPTH = D('0.50')
-CAP_HAND = D('0.11')
+CAP_HAND = D('0.20')
 CAP_WINDOW = 400
 ADVERSE = D('0.04')
 VERSION = 5
@@ -43,7 +43,7 @@ def percent(value) -> str:
 
 class Model:
     def __init__(self, sma_window: int = SMA_WINDOW):
-        if type(sma_window) is not int or sma_window not in SLEEVES:
+        if type(sma_window) is not int or sma_window not in (30, 40, 50):
             raise Blocked('SMA window must be 30, 40, or 50')
         self.sma_window = sma_window
         self.trail = TRAIL

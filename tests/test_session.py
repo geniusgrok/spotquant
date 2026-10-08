@@ -79,8 +79,8 @@ class SessionTests(unittest.TestCase):
             third = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(third['model_preview']['action'], 'enter')
         self.assertEqual(third['model_preview']['order']['side'], 'BUY')
-        self.assertEqual(third['model_preview']['order']['sleeves'], [30, 40, 50])
-        self.assertEqual(third['model_preview']['order']['quoteOrderQty'], '999.99')
+        self.assertEqual(third['model_preview']['order']['sleeves'], [40])
+        self.assertEqual(third['model_preview']['order']['quoteOrderQty'], '1000.00')
         self.assertEqual(venue.orders_sent, 0)
 
     def test_a_followed_buy_previews_the_fill_stop_and_a_failed_cycle_drops_the_old_view(self):
@@ -89,11 +89,11 @@ class SessionTests(unittest.TestCase):
             held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
             self.assertEqual(held['status'], 'read_only')
             self.assertTrue(held['followed_position'])
-            self.assertEqual(held['followed_sleeves'], [30, 40, 50])
+            self.assertEqual(held['followed_sleeves'], [40])
             self.assertEqual(held['model_preview']['action'], 'hold')
-            # ATR clips to 10%; the actual 111 fill is the peak, not the pre-fill wick.
-            self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '99.90')
-            self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [30, 40, 50])
+            # The 28% trail uses the 111 fill as the peak, not the pre-fill wick.
+            self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '79.92')
+            self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [40])
             self.assertIn('since the fill', held['model_preview']['sleeves']['40']['reason'])
             observed = venue.snapshot
             venue.snapshot = lambda uid: dict(observed(uid), btc=D(1))
@@ -141,9 +141,9 @@ class SessionTests(unittest.TestCase):
             venue.snapshot = healthy
             held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(held['status'], 'read_only')
-        # The 150 peak and completed true ranges catch up together after failure.
-        self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '132.85')
-        self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [30, 40, 50])
+        # The 150 peak is caught up after the failed cycle; the stop is 28% under it.
+        self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '108.00')
+        self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [40])
 
     def test_an_old_checkpoint_is_rejected_even_when_flat(self):
         with tempfile.TemporaryDirectory() as directory:

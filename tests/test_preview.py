@@ -50,9 +50,9 @@ class PreviewTests(unittest.TestCase):
         views = {w: model((70000,), w) for w in SLEEVES}
         for view in views.values():
             view.bull = False
-        dust = D('.00006')
-        result = portfolio(views, {w: dust for w in SLEEVES}, snapshot('1000', '.00018', '70000'),
+        dust = D('0.00008')
+        result = portfolio(views, {w: dust for w in SLEEVES}, snapshot('1000', '0.00008', '70000'),
                            entries_enabled=True, capital_limit=None)
         self.assertEqual(result['orders'][0]['side'], 'SELL')
-        self.assertEqual(result['orders'][0]['quantity'], '0.00018')
+        self.assertEqual(result['orders'][0]['quantity'], '0.00008')
         self.assertFalse(any(o['side'] == 'BUY' for o in result['orders']))
