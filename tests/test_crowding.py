@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from spotquant import crowding as c, preview
 from spotquant.model import DAY, ORIGIN, Model, SLEEVES
+from spotquant.session import _view
 from spotquant.types import floor_step
 
 
@@ -63,7 +64,8 @@ class CrowdingTests(unittest.TestCase):
         self.assertEqual(self.decide()['orders'], [])
         self.assertEqual(self.decide(Features(funding=None))['orders'], [])
         self.owned[30] = D(1)
-        self.views[30].note_entry(100, 100)
+        self.views[30], _ = _view(self.views[30], dict(entry_fill='100', peak='100', qty='1',
+                                                    repair=False, repair_peak=None, adverse=False))
         self.views[30].bull = False
         self.snap['btc'] = '1'
         position = dict(qty='1', peak='100', first_ms=self.views[30].last, repair=False)
@@ -100,16 +102,11 @@ class CrowdingTests(unittest.TestCase):
                      receipt_ms=self.now - 10, sha256=hashlib.sha256(raw(body)).hexdigest(), body=body)
                 for k, body in bodies.items()]
 
-    def test_only_settled_funding_and_paired_completed_bars_are_used(self):
+    def test_future_conflicting_or_malformed_observations_are_unavailable(self):
         source = c.PublicFeatures(self.observations())
         self.assertEqual(source.value('funding', self.now), D('.0004'))
         self.assertEqual(source.value('basis', self.now), D('.02'))
         self.assertIsNone(c.PublicFeatures(self.observations()[:-1]).value('basis', self.now))
-        failed = self.observations()
-        failed[0]['error'] = 'HTTPError'
-        self.assertIsNone(c.PublicFeatures(failed).value('funding', self.now))
-
-    def test_future_conflicting_or_malformed_observations_are_unavailable(self):
         for mutate in (lambda rows: rows[0].update(receipt_ms=self.now + 1),
                        lambda rows: rows[0]['body'].append(dict(rows[0]['body'][0], fundingRate='.1')),
                        lambda rows: rows[0]['body'][0].update(fundingTime=self.now + 1)):

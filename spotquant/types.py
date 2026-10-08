@@ -5,7 +5,6 @@ from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from typing import Any
 
 D = Decimal
-ZERO = D(0)
 
 
 class Blocked(RuntimeError):

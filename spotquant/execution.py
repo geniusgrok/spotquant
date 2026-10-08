@@ -134,8 +134,7 @@ class Lifecycle:
         return identity
 
     def send(self, identity):
-        saved = next(row for row in self.rows() if row[0] == identity)
-        _, payload, status, result = saved
+        _, payload, status, result = next(row for row in self.rows() if row[0] == identity)
         if status == 'rejected':
             raise Blocked('durable order was rejected; owner review is required')
         if status != 'prepared':
@@ -159,8 +158,7 @@ class Lifecycle:
         return True
 
     def cancel(self, identity):
-        saved = next(row for row in self.rows() if row[0] == identity)
-        _, payload, status, result = saved
+        _, payload, status, result = next(row for row in self.rows() if row[0] == identity)
         if status == 'settled':
             return
         self.save(identity, payload, 'canceling', result)

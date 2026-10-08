@@ -10,40 +10,14 @@ from .types import Unknown, floor_step, serial
 MIN_NOTIONAL = D('5')
 QUOTE_STEP = D('0.01')
 BASE_STEP = D('0.00001')
-MIN_QTY = D('0.00001')
 PRICE_STEP = D('0.01')
-
-
-def preview(model: Model, snapshot: dict, *, entries_enabled: bool, capital_limit: D | None,
-            owned_btc: D = D(0)) -> dict:
-    """Build a preview for the explicitly authorized executor. The caller must not submit it.
-
-    ``owned_btc`` is coins this system has a confirmed fill for. Any other BTC
-    at or above the minimum notional is external and blocks a new order.
-    """
-    if model.close is None:
-        return _flat('no completed daily close is available')
-    price = D(snapshot.get('last_price') or model.close)
-    btc = D(snapshot['btc'])
-    external = btc - owned_btc
-    if external * price >= MIN_NOTIONAL:
-        raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
-    adding = entries_enabled and not snapshot.get('open_orders')
-    spend = D(snapshot['usdt_free'])
-    if capital_limit is not None:
-        spend = min(spend, max(capital_limit - owned_btc * price, D(0)))
-    decision = _decide(model, snapshot, entries_enabled=adding, owned_btc=owned_btc, budget=spend)
-    if snapshot.get('open_orders') and decision['action'] == 'flat':
-        decision['reason'] = decision['reason'] + '; an open order blocks a new buy'
-    return decision
 
 
 def _decide(model: Model, snapshot: dict, *, entries_enabled: bool, owned_btc: D, budget: D) -> dict:
     """One sleeve. ``budget`` is the USDT this sleeve may spend on an entry."""
-    price = model.close
     owned = floor_step(owned_btc, BASE_STEP)
     if owned > 0:
-        return _position_decision(model, snapshot, owned, price)
+        return _position_decision(model, snapshot, owned)
     armed = model.enter or model.cap_enter
     if not armed:
         if model.sma is None:
@@ -76,7 +50,7 @@ def _decide(model: Model, snapshot: dict, *, entries_enabled: bool, owned_btc: D
     }
 
 
-def _position_decision(model: Model, snapshot: dict, owned: D, price: D) -> dict:
+def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
     """A sleeve with any coins is a position, even below the minimum notional.
 
     Dust is not a flat sleeve and is not a place to add risk. An exit is reported
@@ -84,7 +58,7 @@ def _position_decision(model: Model, snapshot: dict, owned: D, price: D) -> dict
     those exits before the minimum is applied.
     """
     breached = getattr(model, 'protection', 'resting') in ('breached', 'through_close')
-    stop_through = model.position_peak is not None and model.stop_price(model.position_peak) >= price
+    stop_through = model.position_peak is not None and model.stop_price(model.position_peak) >= model.close
     if breached or stop_through:
         return _exit(
             model, owned,
@@ -209,8 +183,6 @@ def _annotate_venue(order: dict, model: Model, snapshot: dict) -> None:
             notional_ok = False
     qty_ok = _qty_ok(order.get('quantity'), snapshot)
     order['placeable'] = bool(price_ok and notional_ok and qty_ok)
-    if 'price' in order:
-        del order['price']
 
 
 def _qty_ok(quantity, snapshot: dict) -> bool:
@@ -357,18 +329,14 @@ def consensus_allocation(decision, views, snapshot, capital_limit):
 def _merge_protections(decisions: dict, views: dict, snapshot: dict) -> list:
     """Same stop price and the same side can be one order. Different prices stay separate."""
     groups: dict[str, list] = {}
-    order = []
     for window in sorted(views):
         item = decisions[window]
         if item['action'] not in ('hold', 'enter') or not item.get('protection'):
             continue
         key = item['protection']['stopPrice']
-        if key not in groups:
-            order.append(key)
         groups.setdefault(key, []).append(window)
     merged = []
-    for key in order:
-        windows = groups[key]
+    for windows in groups.values():
         sample = dict(decisions[windows[0]]['protection'])
         quantity = sum(
             (D(decisions[window]['protection']['quantity']) for window in windows
@@ -379,7 +347,6 @@ def _merge_protections(decisions: dict, views: dict, snapshot: dict) -> list:
             sample['quantity'] = _step(quantity, BASE_STEP)
             _annotate_venue(sample, views[windows[0]], snapshot)
         sample['sleeves'] = windows
-        sample.pop('sleeve', None)
         merged.append(sample)
     return merged
 

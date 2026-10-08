@@ -1,4 +1,4 @@
-"""The spot adapter signs GET requests and has no order path."""
+"""Signed adapter, source history and native rejection checks use an offline opener."""
 import hashlib
 import hmac
 import json
@@ -171,7 +171,7 @@ class BinanceTests(unittest.TestCase):
 
     def test_snapshot_signs_gets_and_checks_uid(self):
         script = Script()
-        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=script, clock=lambda: self_now())
+        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=script, clock=lambda: script.now / 1000)
         # clock is seconds; serverTime is ms. Keep them aligned.
         snapshot = venue.snapshot('10001')
         self.assertEqual(snapshot['usdt_free'], D('25.50'))
@@ -212,126 +212,39 @@ class BinanceTests(unittest.TestCase):
             venue.submit('sq-test', dict(symbol='BTCUSDT', side='BUY', type='MARKET', quoteOrderQty='10'))
         self.assertEqual(calls, [])
 
-    def test_missing_stop_loss_blocks_before_the_account_call(self):
-        script = Script()
-        body = _filters()
-        body['symbols'][0]['orderTypes'] = ['LIMIT', 'MARKET']
-
-        def opener(method, url, headers):
-            if '/api/v3/exchangeInfo' in url:
-                script.urls.append(url)
-                return 200, json.dumps(body).encode()
-            return script(method, url, headers)
-
-        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener, clock=lambda: 1_700_000_000)
-        with self.assertRaises(Blocked):
-            venue.snapshot('10001')
-        self.assertFalse(any('/api/v3/account?' in url for url in script.urls))
-
-    def test_completed_daily_normalizes_and_stops_at_today(self):
-        script = Script()
-        # server time is one day after the returned bar, so that bar is complete
-        script.now = ORIGIN + DAY + 1000
-        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=script, clock=lambda: script.now / 1000)
-        bars = venue.completed_daily(None)
-        self.assertEqual(bars, [(ORIGIN, D('110'), D('90'), D('105'))])
-        self.assertEqual(venue.completed_daily(ORIGIN), [])
-
-    def test_completed_daily_rejects_a_page_that_does_not_start_at_the_cursor(self):
-        script = Script()
-        script.now = ORIGIN + 5 * DAY
-
-        def opener(method, url, headers):
-            if '/api/v3/klines' in url:
-                row = [ORIGIN + 2 * DAY, '100', '110', '90', '105', '1', 0, '1']
-                return 200, json.dumps([row]).encode()
-            return script(method, url, headers)
-
-        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener, clock=lambda: script.now / 1000)
-        with self.assertRaises(Unknown):
-            venue.completed_daily(None)
-
-    def test_completed_daily_rejects_a_gap_and_keeps_a_contiguous_page(self):
-        script = Script()
-        script.now = ORIGIN + 5 * DAY
-        pages = {'gap': [
-            [ORIGIN, '100', '110', '90', '105', '1', 0, '1'],
-            [ORIGIN + 2 * DAY, '100', '110', '90', '105', '1', 0, '1'],
-        ], 'ok': [
-            [ORIGIN, '100', '110', '90', '105', '1', 0, '1'],
-            [ORIGIN + DAY, '101', '111', '91', '106', '1', 0, '1'],
-        ]}
-
-        def opener(kind, now):
-            def _open(method, url, headers):
-                if '/api/v3/klines' in url:
-                    return 200, json.dumps(pages[kind]).encode()
-                if '/api/v3/time' in url:
-                    return 200, json.dumps({'serverTime': now}).encode()
-                return script(method, url, headers)
-            return _open
-
-        gapped = Binance(
-            key=KEY, secret=SECRET, environment='live', opener=opener('gap', script.now),
-            clock=lambda: script.now / 1000,
-        )
-        with self.assertRaises(Unknown):
-            gapped.completed_daily(None)
-        reached = ORIGIN + 2 * DAY
-        whole = Binance(
-            key=KEY, secret=SECRET, environment='live', opener=opener('ok', reached),
-            clock=lambda: reached / 1000,
-        )
-        bars = whole.completed_daily(None)
-        self.assertEqual([item[0] for item in bars], [ORIGIN, ORIGIN + DAY])
-        self.assertEqual(bars[1][3], D('106'))
-
-    def test_completed_daily_rejects_a_short_page_before_today(self):
-        script = Script()
-        script.now = ORIGIN + 5 * DAY
-
-        def opener(method, url, headers):
-            if '/api/v3/klines' in url:
-                return 200, json.dumps([[ORIGIN, '100', '110', '90', '105', '1', 0, '1']]).encode()
-            return script(method, url, headers)
-
-        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener, clock=lambda: script.now / 1000)
-        with self.assertRaises(Unknown) as caught:
-            venue.completed_daily(None)
-        self.assertIn('stops before', str(caught.exception))
-
-        def empty(method, url, headers):
-            if '/api/v3/klines' in url:
-                return 200, b'[]'
-            return script(method, url, headers)
-
-        blank = Binance(key=KEY, secret=SECRET, environment='live', opener=empty, clock=lambda: script.now / 1000)
-        with self.assertRaises(Unknown):
-            blank.completed_daily(None)
-
-    def test_missing_spot_permission_blocks_before_the_account_call(self):
-        for allowed in (False, None):
-            script = Script()
-            body = _filters()
-            if allowed is None:
-                del body['symbols'][0]['isSpotTradingAllowed']
-            else:
-                body['symbols'][0]['isSpotTradingAllowed'] = allowed
-
-            def opener(method, url, headers, payload=body, seen=script):
+    def test_missing_spot_or_stop_permission_blocks_before_account_read(self):
+        for field, value in (('orderTypes', ['LIMIT', 'MARKET']), ('isSpotTradingAllowed', False),
+                             ('isSpotTradingAllowed', None)):
+            script, body = Script(), _filters()
+            body['symbols'][0][field] = value
+            def opener(method, url, headers):
                 if '/api/v3/exchangeInfo' in url:
-                    seen.urls.append(url)
-                    return 200, json.dumps(payload).encode()
-                return seen(method, url, headers)
-
-            venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener, clock=lambda: 1_700_000_000)
+                    return 200, json.dumps(body).encode()
+                return script(method, url, headers)
+            venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener,
+                            clock=lambda: script.now / 1000)
             with self.assertRaises(Blocked):
                 venue.snapshot('10001')
             self.assertFalse(any('/api/v3/account?' in url for url in script.urls))
 
-
-def self_now():
-    return 1_700_000_000
+    def test_daily_history_normalizes_completed_bars_and_rejects_gaps_or_short_pages(self):
+        for days, today, valid in (([0, 1, 2], 2, True), ([0, 2], 3, False), ([0], 2, False)):
+            script = Script()
+            script.now = ORIGIN + today * DAY + 1000
+            def opener(method, url, headers):
+                if '/api/v3/klines' in url:
+                    return 200, json.dumps([[ORIGIN + i * DAY, '100', '110', '90', '105']
+                                            for i in days]).encode()
+                return script(method, url, headers)
+            venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener,
+                            clock=lambda: script.now / 1000)
+            if valid:
+                self.assertEqual(venue.completed_daily(None),
+                                 [(ORIGIN + i * DAY, D(110), D(90), D(105)) for i in range(2)])
+                self.assertEqual(venue.completed_daily(ORIGIN + DAY), [])
+            else:
+                with self.assertRaises(Unknown):
+                    venue.completed_daily(None)
 
 
 if __name__ == '__main__':

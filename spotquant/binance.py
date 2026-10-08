@@ -70,7 +70,7 @@ class Binance:
         self.base = HOSTS[environment]
         self._opener = opener or (lambda method, url, headers: _default_opener(
             method, url, headers, self._remaining(10)))
-        self._clock = clock or time.time
+        self.clock = clock or time.time
         self._offset_ms = None
         self._clock_retried = False
         self._stop = None
@@ -92,9 +92,6 @@ class Binance:
                                       getattr(self, '_risk_stop', self._stop),
                                       lambda: self._remaining(5, risk=True))
         return self._crowding_source
-
-    def clock(self) -> float:
-        return self._clock()
 
     def query(self, identity):
         row = self._get('/api/v3/order', {'symbol': 'BTCUSDT', 'origClientOrderId': identity}, signed=True)
@@ -305,7 +302,8 @@ class Binance:
             cursor = after_open_ms + DAY
         if cursor < ORIGIN or (cursor - ORIGIN) % DAY:
             raise Blocked('daily cursor is not on the UTC day grid')
-        today = self._today_open()
+        now = self._timestamp()
+        today = now - (now % DAY)
         bars = []
         while cursor < today:
             payload = self._get('/api/v3/klines', {
@@ -380,16 +378,12 @@ class Binance:
         if 'STOP_LOSS' not in types or 'MARKET' not in types:
             raise Blocked('BTCUSDT must support market orders and fixed stop protection')
 
-    def _today_open(self) -> int:
-        now = self._timestamp()
-        return now - (now % DAY)
-
     def _timestamp(self) -> int:
         if self._offset_ms is None:
             payload = self._get('/api/v3/time', signed=False)
             server = int(payload['serverTime'])
-            self._offset_ms = server - int(self._clock() * 1000)
-        return int(self._clock() * 1000) + self._offset_ms
+            self._offset_ms = server - int(self.clock() * 1000)
+        return int(self.clock() * 1000) + self._offset_ms
 
     def _get(self, path: str, params: dict | None = None, *, signed: bool, method='GET'):
         if method != 'GET' and (not self.execution_authorized or self.environment != 'demo'
