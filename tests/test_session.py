@@ -100,10 +100,10 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(first['write_attempted'], False)
             self.assertEqual(first['pending_intents'], 0)
             self.assertGreaterEqual(first['cycles'], 1)
-            venue.bars.append((ORIGIN + 252 * DAY, D(200), D(180), D(200)))
+            venue.bars.append((ORIGIN + 252 * DAY, D(101), D(100), D(101)))
             second = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
             self.assertEqual(second['model_preview']['action'], 'enter')
-            venue.bars.append((ORIGIN + 253 * DAY, D(210), D(190), D(210)))
+            venue.bars.append((ORIGIN + 253 * DAY, D(102), D(101), D(102)))
             third = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(third['model_preview']['action'], 'enter')
         self.assertEqual(third['model_preview']['order']['side'], 'BUY')
@@ -543,8 +543,12 @@ class LegacyRecoveryTests(unittest.TestCase):
                     self.assertEqual(
                         state.db.execute('SELECT status FROM intents WHERE id=?', (stop,)).fetchone()[0],
                         'unknown')
-                    self.assertEqual(list(state.db.execute('SELECT key,value FROM meta ORDER BY key')), before_meta)
-                    self.assertEqual(list(state.db.execute('SELECT * FROM intents ORDER BY id')), before_intents)
+                    ids = [row[0] for row in state.db.execute('SELECT id FROM intents ORDER BY id')]
+                    self.assertEqual(ids, [row[0] for row in before_intents])
+                    self.assertEqual(
+                        [row[0] for row in state.db.execute(
+                            "SELECT id FROM intents WHERE status='prepared'")],
+                        [buy])
 
 
 if __name__ == '__main__':

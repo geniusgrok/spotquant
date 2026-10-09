@@ -35,6 +35,8 @@ def _decide(model: Model, snapshot: dict, *, entries_enabled: bool, owned_btc: D
     if spend < D(snapshot.get('min_notional') or MIN_NOTIONAL):
         return _flat('available cash or capital ceiling is below the current venue minimum notional')
     repair = bool(model.cap_enter if not model.shadow_in or blocked is not None else model.shadow_repair)
+    if not repair and model.extended:
+        return _flat('completed daily close is already in the overextended exit region')
     last = snapshot.get('last_price')
     if (not repair and model.shadow_in and model.bull and not model.extended
             and last is not None and model.sma is not None
@@ -310,7 +312,7 @@ def decision_view(model, position, owners):
         return False
     proven = [D(o['order']['stopPrice']) for o in owners.values()
               if position and view.sma_window in o['sleeves'] and o['order']['type'] == 'STOP_LOSS'
-              and o.get('native_status') in (TERMINAL - {'REJECTED'}) | {'NEW', 'PARTIALLY_FILLED'}
+              and o.get('native_status') in (TERMINAL - {'REJECTED'}) | {'NEW', 'PARTIALLY_FILLED', 'ABSENT'}
               and same_position(o)]
     view._stop_floor = max(proven, default=D(0))
     view.protection = 'resting'

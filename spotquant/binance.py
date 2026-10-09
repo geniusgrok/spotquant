@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import time
 import urllib.error
 import urllib.parse
@@ -75,6 +76,8 @@ class Binance:
         self._clock_retried = False
         self._stop = None
         self._retry_after_at = 0
+        self._rate_limits = {}
+        self._state = None
         self.min_price = None
         self.max_price = None
         self.min_qty = None
@@ -85,11 +88,42 @@ class Binance:
         self.max_notional = None
         self.min_notional = None
 
+    def bind_state(self, state):
+        """Keep venue backoff in the locked account directory across invocations."""
+        saved = state.get('rate_limits')
+        hosts = {urllib.parse.urlsplit(url).netloc for url in HOSTS.values()} | {'fapi.binance.com'}
+        if saved is not None and (not isinstance(saved, dict) or any(
+                host not in hosts or type(until) is not int or until < 0
+                for host, until in saved.items())):
+            raise Blocked('persisted rate limit state is invalid')
+        self._state = state
+        for host, until in (saved or {}).items():
+            self._rate_limits[host] = max(self._rate_limits.get(host, 0), until)
+        host = urllib.parse.urlsplit(self.base).netloc
+        delay = max(0, (self._rate_limits.get(host, 0) - int(self.clock() * 1000)) / 1000)
+        self._retry_after_at = max(self._retry_after_at,
+                                  getattr(self, '_monotonic', time.monotonic)() + delay)
+
+    def _remember_backoff(self, host, delay):
+        until = int(self.clock() * 1000) + math.ceil(delay * 1000)
+        self._rate_limits[host] = max(self._rate_limits.get(host, 0), until)
+        if host == urllib.parse.urlsplit(self.base).netloc:
+            self._retry_after_at = max(self._retry_after_at,
+                                      getattr(self, '_monotonic', time.monotonic)() + delay)
+        if self._state is not None:
+            self._state.set('rate_limits', self._rate_limits)
+
     def crowding_features(self):
         from .crowding import PublicFeatures
         self._check_deadline()
         if not hasattr(self, '_crowding_source'):
-            self._crowding_source = PublicFeatures(clock=self._timestamp)
+            self._crowding_source = PublicFeatures(clock=self._timestamp,
+                                                   on_rate_limit=self._remember_backoff)
+        for host, until in self._rate_limits.items():
+            delay = max(0, until - int(self.clock() * 1000))
+            if delay:
+                self._crowding_source.retry_after[host] = max(
+                    self._crowding_source.retry_after.get(host, 0), self._timestamp() + delay)
         self._crowding_source.refresh(self._timestamp(),
                                       getattr(self, '_risk_stop', self._stop),
                                       lambda: self._remaining(5, risk=True))
@@ -474,6 +508,9 @@ class Binance:
             if method != 'GET':
                 raise NotSent(str(exc)) from exc
             raise
+        if (method == 'POST' and (params or {}).get('side') == 'BUY'
+                and getattr(self, '_risk_stop', lambda: False)()):
+            raise NotSent('entry deadline reached before order dispatch')
         if method != 'GET':
             self.write_attempted = True
         opened = self._opener(method, url, headers)
@@ -485,9 +522,11 @@ class Binance:
             retry = _header(response_headers, 'Retry-After')
             try:
                 delay = max(1, float(number(retry, 'Retry-After', positive=True)))
+                if not math.isfinite(delay * 1000):
+                    raise Blocked('invalid Retry-After')
             except (Blocked, OverflowError):
                 delay = 60
-            self._retry_after_at = getattr(self, '_monotonic', time.monotonic)() + delay
+            self._remember_backoff(urllib.parse.urlsplit(self.base).netloc, delay)
             raise Unknown(f'Binance rate limit HTTP {status}; retry after {delay:g} seconds')
         try:
             payload = json.loads(body.decode())
