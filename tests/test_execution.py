@@ -409,6 +409,34 @@ class ExecutionTests(TestCase):
             with State(directory, config.scope) as state:
                 self.assertEqual(D(state.get('positions')['40']['peak']), D('150'))
 
+    def test_deadline_keeps_native_stop_with_proven_native_position_time(self):
+        from spotquant.execution import Lifecycle
+        with tempfile.TemporaryDirectory() as directory:
+            config, account = self.entered(directory)
+            add_day(account, '103')
+            stop = next(row for row in account.orders.values() if row['status'] == 'NEW')
+            sent = list(account.sent)
+            with State(directory, config.scope) as state:
+                lifecycle = Lifecycle(state, account, config)
+                identity, payload, status, result = next(row for row in lifecycle.rows() if row[0] == stop['clientOrderId'])
+                payload.pop('position_first_ms')
+                self.assertGreaterEqual(result['time'], state.get('positions')['40']['first_ms'])
+                lifecycle.save(identity, payload, status, result)
+            adapter, count = OrderAdapter(account, None), 0
+            def deadline_snapshot(uid):
+                nonlocal count
+                count += 1
+                if count == 2:
+                    account.now_ms += 1000
+                    account.price = D('150')
+                return account.snapshot(uid)
+            adapter.snapshot = deadline_snapshot
+            report = run(config, adapter, execute=True, monotonic=adapter.monotonic, wait=adapter.wait)
+            self.assertEqual(report['errors'], [])
+            self.assertFalse(report['pending_intents'])
+            self.assertEqual(stop['status'], 'NEW')
+            self.assertEqual(account.sent, sent)
+
     def test_deadline_keeps_native_stop_over_prepared_raise_then_reuses_only_the_unsent_target(self):
         from spotquant.execution import Lifecycle
         with tempfile.TemporaryDirectory() as directory:
