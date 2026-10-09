@@ -142,3 +142,31 @@ class CrowdingTests(unittest.TestCase):
             source.refresh(self.now + 60000, lambda: True)
             opener.assert_not_called()
             self.assertIsNone(source.value('funding', self.now + 60000))
+
+    def test_collection_uses_the_venue_clock_despite_local_clock_skew(self):
+        bodies = {r['url']: raw(r['body']) for r in self.observations()}
+        class Response(io.BytesIO):
+            def __init__(self, url):
+                super().__init__(bodies[url])
+                self.url = url
+            def geturl(self):
+                return self.url
+        source = c.PublicFeatures(clock=lambda: self.now - 1)
+        with patch.object(c, 'urlopen', side_effect=lambda url, timeout: Response(url)), \
+                patch.object(c.time, 'time_ns', return_value=(self.now + 120000) * 1000000):
+            source.refresh(self.now - 1)
+        self.assertEqual(source.value('basis', self.now), D('.02'))
+        self.assertEqual(source.value('funding', self.now), D('.0004'))
+        self.assertTrue(all(row['request_ms'] == row['receipt_ms'] == self.now - 1
+                            for row in source.observations))
+
+    def test_shared_availability_rechecks_every_public_receipt_at_dispatch_time(self):
+        source = c.PublicFeatures(self.observations())
+        self.assertIsNotNone(source.value('basis', self.now))
+        record = dict(source.last_lookup)
+        self.assertIsNotNone(c.value_at('basis', record, self.now + 59990)[0])
+        self.assertEqual(c.value_at('basis', record, self.now + 59991)[1],
+                         'stale_or_invalid_public_receipt')
+        record['provenance'][-1]['receipt_ms'] = self.now
+        record['receipt_ms'] = self.now
+        self.assertIsNone(c.value_at('basis', record, self.now + 59991)[0])

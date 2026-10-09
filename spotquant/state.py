@@ -2,7 +2,7 @@
 
 The database is a recovery aid, never an authority for balances. One persistent
 directory belongs to one spot account on one machine. This module does not
-submit orders. Explicit Demo execution records stable intents before dispatch.
+submit orders. Explicit execution records stable intents before dispatch.
 """
 from __future__ import annotations
 
@@ -107,7 +107,8 @@ class State:
                 "('unknown','partial','prepared','canceling','resting') ORDER BY updated"):
             payload = json.loads(encoded)
             order = payload.get('order', {})
-            if status == 'resting' and order.get('type') != 'MARKET':
+            if (status == 'resting' and order.get('type') != 'MARKET'
+                    and json.loads(result).get('status') != 'PARTIALLY_FILLED'):
                 continue
             if (status == 'prepared' and order.get('side') == 'BUY'
                     and order.get('type') == 'MARKET' and json.loads(result).get('not_sent') is True):
@@ -118,7 +119,7 @@ class State:
     def trades(self, venue, since_ms: int) -> list[dict]:
         """Retain immutable fills; refresh a one-day overlap after the last read.
 
-        A gap beyond the last stored fill id still has no page to continue.
+        A long gap resumes from the last immutable fill ID when one is stored.
         No balance anchor is replaced, and identical timestamps retain every ID.
         """
         def observed_ms():
@@ -152,8 +153,8 @@ class State:
                 if type(row.get('id')) is not int or type(row.get('time')) is not int:
                     raise Unknown('fill identity or timestamp is invalid')
                 if row['time'] > observed_ms() or (
-                        resume_id is not None and row['id'] >= resume_id and anchor_time is not None
-                        and row['time'] < anchor_time) or (
+                        resume_id is not None and (row['id'] < resume_id
+                            or anchor_time is not None and row['time'] < anchor_time)) or (
                         resume_id is None and row['time'] < start):
                     raise Unknown('fill lies outside the requested observation')
                 payload = json.dumps(serial(row), sort_keys=True, allow_nan=False)

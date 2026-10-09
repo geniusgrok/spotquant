@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from decimal import Decimal as D
 from .model import DAY, ORIGIN, SMA_WINDOW, Model
-from .preview import BASE_STEP, MIN_NOTIONAL
+from .preview import BASE_STEP, MIN_NOTIONAL, decision_view
 from .types import Blocked, Unknown, floor_step, number
 
 def _rearm(model, position: dict, owner: dict, window: int) -> bool:
@@ -18,7 +18,8 @@ def _rearm(model, position: dict, owner: dict, window: int) -> bool:
     order = owner.get('order', {})
     return bool(order.get('side') == 'SELL' and order.get('type') == 'MARKET'
                 and owner.get('rearm', {}).get(str(window)) is True
-                and getattr(model, 'shadow_in', False) and not position.get('repair'))
+                and getattr(model, 'shadow_in', False) and not getattr(model, 'need_reset', False)
+                and not position.get('repair') and not position.get('sell_stop_breached'))
 
 
 def day_open(timestamp: int) -> int:
@@ -108,15 +109,20 @@ def replay(bars, *, entry_fill: D, first_ms: int, repair: bool, window: int = SM
 def normalize_trade(row: dict) -> dict:
     if not isinstance(row, dict):
         raise Unknown('trade row is incomplete')
+    if 'symbol' in row and row['symbol'] != 'BTCUSDT':
+        raise Unknown('trade symbol differs from BTCUSDT')
     try:
         if 'commission' not in row or 'isBuyer' not in row or 'orderId' not in row:
             raise Unknown('trade row is incomplete')
         if type(row['isBuyer']) is not bool:
             raise Unknown('trade row is incomplete')
         commission = number(row['commission'], 'commission', nonnegative=True)
-        trade_id = int(row['id'])
-        order_id = int(row['orderId'])
-        trade_time = int(row['time'])
+        trade_id = row['id']
+        order_id = row['orderId']
+        trade_time = row['time']
+        if (any(type(value) is not int for value in (trade_id, order_id, trade_time))
+                or trade_id < 0 or order_id <= 0 or trade_time < 0):
+            raise Unknown('trade row has invalid native identity or time')
         qty = number(row['qty'], 'qty', positive=True)
         quote = number(row['quoteQty'], 'quote', positive=True)
         price = number(row['price'], 'price', positive=True)
@@ -245,6 +251,9 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
         owner = owners.get(str(trade['order_id']))
         if owner is None:
             raise Unknown('account trade has no durable order allocation')
+        if (type(trade.get('buyer')) is not bool
+                or owner.get('order', {}).get('side') != ('BUY' if trade['buyer'] else 'SELL')):
+            raise Unknown('trade side differs from its durable order allocation')
         group = owner['sleeves']
         weights = {int(k): D(v) for k, v in owner['weights'].items()}
         total = sum(weights.values(), D(0))
@@ -291,6 +300,11 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
             else:
                 if prior is None or qty > D(prior['qty']) + BASE_STEP:
                     raise Unknown('allocated sell exceeds its recorded sleeve')
+                stop = decision_view(models[window], prior, owners).stop_price(D(prior['peak']))
+                if trade['price'] <= stop:
+                    # A touch sale that fills through protection consumes the old
+                    # signal, including when a later partial fill recovers in price.
+                    prior = dict(prior, sell_stop_breached=True)
                 remaining = max(D(0), D(prior['qty']) - qty)
                 if remaining < BASE_STEP:
                     # A floored native sell does not remove fractional coins.

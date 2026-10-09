@@ -79,18 +79,21 @@ class CliTests(unittest.TestCase):
             self.assertFalse(saved['observation_current'])
             self.assertEqual(saved['runtime_identity'], {'rule': RULE, 'source_sha': 'test-source-sha'})
 
-    def test_snapshot_totals_partial_native_protection_and_rejects_stale_collection(self):
+    def test_snapshot_separates_dormant_stops_from_triggered_remainders_and_rejects_staleness(self):
         snapshot = dict(usdt_free=D(20), usdt_locked=D(5), btc=D(2), other_assets=[], orders=[
             dict(side='SELL', type='STOP_LOSS', status='PARTIALLY_FILLED', stop_price='90',
-                 orig_qty='1.5', executed_qty='.5')])
+                 orig_qty='1.5', executed_qty='.5'),
+            dict(side='SELL', type='STOP_LOSS', status='NEW', stop_price='90',
+                 orig_qty='.75', executed_qty='0')])
         ticks = iter((1, 2))
         venue = SimpleNamespace(clock=lambda: next(ticks), snapshot=lambda uid: snapshot,
                                 _get=lambda *args, **kw: {'price': '100'})
         config = Config('10001', '/unused', environment='demo')
         report = export(config, venue)
         self.assertEqual(D(report['equity_usdt']), D(225))
-        self.assertEqual(D(report['native_stop_quantity_btc']), D(1))
-        self.assertEqual(D(report['btc_without_native_stop']), D(1))
+        self.assertEqual(D(report['native_stop_quantity_btc']), D('.75'))
+        self.assertEqual(D(report['btc_without_native_stop']), D('1.25'))
+        self.assertEqual(D(report['triggered_stop_remaining_btc']), D(1))
         self.assertFalse(report['write_attempted'])
         ticks = iter((1, 7))
         with self.assertRaises(Unknown):

@@ -540,9 +540,11 @@ class LegacyRecoveryTests(unittest.TestCase):
                     self.assertEqual(
                         state.db.execute('SELECT status FROM intents WHERE id=?', (buy,)).fetchone()[0],
                         'prepared')
-                    self.assertNotIn(
+                    self.assertEqual(
                         state.db.execute('SELECT status FROM intents WHERE id=?', (stop,)).fetchone()[0],
-                        ('unknown',))
+                        'unknown')
+                    self.assertEqual(list(state.db.execute('SELECT key,value FROM meta ORDER BY key')), before_meta)
+                    self.assertEqual(list(state.db.execute('SELECT * FROM intents ORDER BY id')), before_intents)
 
 
 if __name__ == '__main__':

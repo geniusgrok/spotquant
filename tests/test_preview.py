@@ -299,3 +299,16 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(result['orders'][0]['side'], 'SELL')
         self.assertEqual(result['orders'][0]['quantity'], '0.00008')
         self.assertFalse(any(o['side'] == 'BUY' for o in result['orders']))
+
+    def test_exit_reason_uses_current_notional_price_and_venue_minimum(self):
+        view = model()
+        view.bull = False
+        quantity = D('.049')
+        for price, minimum, tradable in (('110', '5', True), ('110', '6', False), ('90', '5', False)):
+            with self.subTest(price=price, minimum=minimum):
+                current = dict(snapshot('0', str(quantity), price=price), min_notional=D(minimum))
+                result = portfolio({40: view}, {40: quantity}, current,
+                                   entries_enabled=True, capital_limit=None)
+                self.assertEqual(bool(result['orders']), tradable)
+                self.assertEqual(result['untradeable'], not tradable)
+                self.assertEqual('below the minimum notional' in result['reason'], not tradable)

@@ -3,12 +3,12 @@ from decimal import Decimal as D
 import json
 import unittest
 
-from spotquant.follow import advance, apply_day, day_open, replay, unexplained
+from spotquant.follow import advance, apply_day, day_open, normalize_trade, replay, unexplained
 from spotquant.model import DAY, ORIGIN, Model
 from spotquant.types import Unknown
 
 
-class _Model:
+class _Model(Model):
     def note_flat(self, *, rearm=False):
         self.flat = True
         self.rearm = rearm
@@ -31,6 +31,61 @@ def _position(qty, first_ms, entry='100'):
 
 
 class FollowTests(unittest.TestCase):
+    def test_native_trade_identity_and_time_are_not_lossily_coerced(self):
+        row = dict(id=0, orderId=1, time=0, qty='1', quoteQty='100', price='100',
+                   commission='0', commissionAsset='BTC', isBuyer=True)
+        self.assertEqual(normalize_trade(row)['id'], 0)
+        for field in ('id', 'orderId', 'time'):
+            for value in (True, False, 1.9, '1', -1, None):
+                with self.subTest(field=field, value=value), self.assertRaises(Unknown):
+                    normalize_trade(dict(row, **{field: value}))
+        with self.assertRaises(Unknown):
+            normalize_trade(dict(row, orderId=0))
+        self.assertEqual(normalize_trade(dict(row, symbol='BTCUSDT'))['id'], 0)
+        for symbol in ('ETHUSDT', None):
+            with self.subTest(symbol=symbol), self.assertRaisesRegex(Unknown, 'trade symbol differs'):
+                normalize_trade(dict(row, symbol=symbol))
+
+    def test_touch_sale_below_native_stop_consumes_signal_across_partial_fills(self):
+        first = ORIGIN + 10 * DAY
+        models = {40: _Model()}
+        models[40].shadow_in = True
+        positions = {40: _position('1', first)}
+        owners = {
+            '7': dict(order=dict(side='SELL', type='MARKET'), sleeves=[40], weights={'40': '1'},
+                      repair={'40': False}, rearm={'40': True}),
+            '6': dict(order=dict(side='SELL', type='STOP_LOSS', stopPrice='95'), sleeves=[40],
+                      native_status='CANCELED', position_first_ms={'40': first}),
+        }
+        low = _trade(1, first + 1000, '.5', '45', buyer=False, order_id=7)
+        positions, follows, accounted, closed = apply_day(
+            models, positions, {40: None}, set(), first, [low], lambda: [], owners=owners)
+        self.assertEqual(closed, [])
+        self.assertTrue(positions[40]['sell_stop_breached'])
+        # Restarted accounting must keep the first lower fill even if the final
+        # fill is above both the fixed trail and the stronger accepted stop.
+        positions = {40: json.loads(json.dumps(positions[40]))}
+        high = _trade(2, first + 2000, '.5', '50', buyer=False, order_id=7)
+        _, _, _, closed = apply_day(models, positions, follows, accounted, first,
+                                   [low, high], lambda: [], owners=owners)
+        self.assertEqual(closed, [40])
+        self.assertFalse(models[40].rearm)
+
+    def test_read_only_attribution_rejects_opposite_side_with_a_known_order_id(self):
+        first = ORIGIN + 10 * DAY
+        for buyer, owner_side in ((True, 'SELL'), (False, 'BUY')):
+            with self.subTest(buyer=buyer):
+                model = _Model()
+                position = _position('1', first)
+                owner = dict(order=dict(side=owner_side, type='MARKET'), sleeves=[40],
+                             weights={'40': '1'}, repair={'40': False})
+                trade = _trade(1, first + 1000, '1', '100', buyer=buyer, order_id=7)
+                with self.assertRaisesRegex(Unknown, 'trade side differs'):
+                    apply_day({40: model}, {40: position}, {40: None}, set(), first,
+                              [trade], lambda: [], owners={'7': owner})
+                self.assertEqual(position['qty'], '1')
+                self.assertFalse(getattr(model, 'flat', False))
+
     def test_actual_rounded_close_keeps_owned_dust_and_new_buy_keeps_net_quantity(self):
         first = ORIGIN + 10 * DAY + 60_000
         position = _position('1.000009', first)

@@ -77,7 +77,7 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
                and model.stop_price(model.position_peak) >= D(last if last is not None else model.close))
     if breached or crossed:
         return _exit(
-            model, owned,
+            snapshot, owned,
             'the protection price is already crossed; the session sells',
         )
     if model.repair:
@@ -92,7 +92,7 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
         }
     if model.adverse:
         return _exit(
-            model, owned,
+            snapshot, owned,
             (
                 f'completed daily close is at least {percent(model.adverse_stop)} under the entry fill; '
                 f'the session sells, so the loss is not capped at {percent(model.adverse_stop)}'
@@ -106,17 +106,17 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
                 'order': None,
                 'protection': _protection(model, owned, snapshot),
             }
-        return _exit(model, owned, 'the daily book is flat; the session sells')
+        return _exit(snapshot, owned, 'the daily book is flat; the session sells')
     if model.extended:
         return _exit(
-            model, owned,
+            snapshot, owned,
             f'completed daily close is extended at least {percent(model.extend)} above its SMA',
         )
     if not model.bull:
-        return _exit(model, owned, 'completed daily close is not above its SMA')
+        return _exit(snapshot, owned, 'completed daily close is not above its SMA')
     if last is not None and model.sma is not None and D(last) <= model.sma * (D(1) + model.touch):
         return _exit(
-            model, owned,
+            snapshot, owned,
             f'session price is within {percent(model.touch)} of the SMA while the daily book stays long',
             rearm=True,
         )
@@ -138,8 +138,8 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
     }
 
 
-def _exit(model: Model, owned: D, reason: str, *, rearm: bool = False) -> dict:
-    tradable = owned * model.close >= MIN_NOTIONAL
+def _exit(snapshot: dict, owned: D, reason: str, *, rearm: bool = False) -> dict:
+    tradable = owned * D(snapshot['avg_price']) >= D(snapshot.get('min_notional') or MIN_NOTIONAL)
     order = None
     if tradable:
         order = {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': _step(owned, BASE_STEP)}

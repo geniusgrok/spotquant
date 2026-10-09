@@ -8,7 +8,7 @@ from urllib.request import urlopen
 DAY = 86400000
 FUNDING_LAG = 28800000
 BASIS_LAG = 60000
-RULE = '2026-10-09-verified-realtime-peak-v1'
+RULE = '2026-10-09-spot-safety-recovery-v2'
 PUBLIC_URLS = {
     'funding': 'https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=10',
     'spot_bars': 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=2',
@@ -20,13 +20,16 @@ def value_at(name, record, now):
     """Shared availability contract; modeled lags never replace actual receipt time."""
     cause = record.get('cause')
     observed, available = record.get('observation_ms'), record.get('available_ms')
+    receipt = record.get('receipt_ms')
     if not cause:
         lag = FUNDING_LAG if name == 'funding' else BASIS_LAG
         if (type(now) is not int or type(observed) is not int or type(available) is not int
                 or available != observed + lag or observed < 0
                 or (name == 'basis' and observed % DAY)):
             cause = 'invalid_feature_timestamps'
-        elif available > now or record.get('receipt_ms', 0) > now:
+        elif receipt is not None and type(receipt) is not int:
+            cause = 'invalid_feature_timestamps'
+        elif available > now or (receipt is not None and receipt > now):
             cause = 'not_yet_available'
         elif name == 'funding' and now - available >= FUNDING_LAG:
             cause = 'stale_funding'
@@ -34,6 +37,14 @@ def value_at(name, record, now):
             cause = 'stale_basis'
         elif name == 'basis' and available // DAY != now // DAY:
             cause = 'basis_availability_date_mismatch'
+    if not cause and 'provenance' in record:
+        provenance = record['provenance']
+        if not isinstance(provenance, list) or any(
+                not isinstance(row, dict)
+                or type(row.get('request_ms')) is not int or type(row.get('receipt_ms')) is not int
+                or not 0 <= row['receipt_ms'] - row['request_ms'] <= 60000
+                or not 0 <= now - row['receipt_ms'] <= 60000 for row in provenance):
+            cause = 'stale_or_invalid_public_receipt'
     value = None
     if not cause:
         try:
@@ -82,8 +93,9 @@ class PublicFeatures:
 
     Failed or malformed public responses remain missing inputs.
     """
-    def __init__(self, observations=None):
+    def __init__(self, observations=None, *, clock=None):
         self.observations = [] if observations is None else observations
+        self.clock = clock or (lambda: time.time_ns() // 1000000)
         self.last_lookup = None
         self.fetched = None
 
@@ -95,10 +107,6 @@ class PublicFeatures:
             provenance = [{k: r[k] for k in ('category', 'url', 'request_ms', 'receipt_ms', 'sha256')} for r in selected]
             record.update(provenance=provenance, receipt_ms=max((r['receipt_ms'] for r in selected), default=0))
             for r in selected:
-                if (type(r['request_ms']) is not int or type(r['receipt_ms']) is not int
-                        or not 0 <= r['receipt_ms'] - r['request_ms'] <= 60000
-                        or not 0 <= now - r['receipt_ms'] <= 60000):
-                    raise ValueError('stale/future public receipt')
                 if r.get('error'): raise ValueError('public_endpoint_' + r['error'])
             if name == 'funding':
                 rows = {}
@@ -147,7 +155,7 @@ class PublicFeatures:
         if self.fetched is None or now - self.fetched >= 60000:
             observations = []
             for category, url in PUBLIC_URLS.items():
-                request = time.time_ns() // 1000000
+                request = self.clock()
                 record = dict(category=category, url=url, request_ms=request)
                 try:
                     if stopping is not None and stopping(): raise ValueError('session deadline')
@@ -159,7 +167,7 @@ class PublicFeatures:
                 except (OSError, ValueError) as exc:
                     raw = str(type(exc).__name__).encode()
                     record.update(body=None, error=type(exc).__name__, sha256=hashlib.sha256(raw).hexdigest())
-                record['receipt_ms'] = time.time_ns() // 1000000
+                record['receipt_ms'] = self.clock()
                 observations.append(record)
             self.observations, self.fetched = observations, now
 

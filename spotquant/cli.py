@@ -1,4 +1,4 @@
-"""Binance spot read-only entrypoint and bounded owner-operated Demo check."""
+"""Binance spot observation and explicitly capped owner-operated sessions."""
 from __future__ import annotations
 
 import argparse

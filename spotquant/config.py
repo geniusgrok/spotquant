@@ -17,7 +17,7 @@ class Config:
     poll_seconds: int = 5
     # demo uses Binance spot demo hosts and a separate state scope.
     environment: str = 'live'
-    # Optional USDT ceiling for sizing previews. It is not a loss limit.
+    # Optional for observation; required for execution. It is not a loss limit.
     capital_limit_usdt: str | None = None
 
     def __post_init__(self):
