@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from spotquant.cli import main
 from spotquant.config import Config, load
+from spotquant.crowding import RULE
 from spotquant.snapshot import export
 from spotquant.types import Blocked, Unknown
 
@@ -36,7 +37,8 @@ class CliTests(unittest.TestCase):
                 'environment': 'demo',
             }))
             stdout, stderr = io.StringIO(), io.StringIO()
-            with patch('spotquant.cli.connect', side_effect=Unknown('no route')):
+            with patch('spotquant.cli.connect', side_effect=Unknown('no route')), \
+                    patch.dict('os.environ', {'SPOTQUANT_SOURCE_SHA': 'test-source-sha'}):
                 with redirect_stdout(stdout), redirect_stderr(stderr):
                     code = main(['status', '--config', str(path)])
             self.assertEqual(code, 2)
@@ -45,6 +47,7 @@ class CliTests(unittest.TestCase):
             self.assertIn('no route', saved['reason'])
             self.assertNotIn('model_bull', saved)
             self.assertFalse(saved['observation_current'])
+            self.assertEqual(saved['runtime_identity'], {'rule': RULE, 'source_sha': 'test-source-sha'})
 
     def test_snapshot_totals_partial_native_protection_and_rejects_stale_collection(self):
         snapshot = dict(usdt_free=D(20), usdt_locked=D(5), btc=D(2), other_assets=[], orders=[

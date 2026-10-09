@@ -3,21 +3,15 @@
 External BTC, a deposit, or a balance drop that no account sell explains stays
 unknown. Sleeves that were previewed on the same signal day share one cohort:
 their buys are one fill, and each sleeve records an equal part of it. The
-recorded peak starts at the fill. A daily high is included only when that bar
-opens after the fill, or when the fill is within the first minute of the bar.
-A wick from before the fill is not the stop.
+recorded peak starts at the fill and rises only on later fills or verified
+session quotes. A completed daily high is not an observed post-fill quote.
 """
 from __future__ import annotations
 
 from decimal import Decimal as D
-from itertools import combinations
-
 from .model import DAY, ORIGIN, SMA_WINDOW, Model
 from .preview import BASE_STEP, MIN_NOTIONAL
 from .types import Blocked, Unknown, floor_step, number
-
-OPEN_FILL_MS = 60_000
-
 
 def _rearm(model, position: dict, owner: dict, window: int) -> bool:
     """Only this durable touch sale permits rejoining the still-long book."""
@@ -31,12 +25,6 @@ def day_open(timestamp: int) -> int:
     if type(timestamp) is not int or timestamp < ORIGIN:
         raise Unknown('fill time is before the model origin')
     return ORIGIN + (timestamp - ORIGIN) // DAY * DAY
-
-
-def _high_counts(open_ms: int, first_ms: int) -> bool:
-    if open_ms > first_ms:
-        return True
-    return open_ms <= first_ms < open_ms + OPEN_FILL_MS
 
 
 def _base_delta(trade: dict) -> D:
@@ -57,22 +45,15 @@ def advance(position: dict, step: dict, model: Model) -> dict:
         return position
     if position['through'] is not None and open_ms <= position['through']:
         return position
-    high = step['high']
     low = step.get('low')
     close = step['close']
     peak = D(position['peak'])
     repair = position['repair']
     repair_peak = None if position['repair_peak'] is None else D(position['repair_peak'])
-    prior_stop = peak * (D(1) - model.trail)
-    breached = low is not None and low <= prior_stop
-    if _high_counts(open_ms, position['first_ms']):
-        peak = max(peak, high)
-        if repair and repair_peak is not None:
-            repair_peak = max(repair_peak, high)
-    updated_stop = peak * (D(1) - model.trail)
-    if breached:
+    stop = peak * (D(1) - model.trail)
+    if low is not None and low <= stop:
         protection = 'breached'
-    elif close <= updated_stop:
+    elif close <= stop:
         protection = 'through_close'
     else:
         protection = 'resting'
@@ -179,21 +160,15 @@ def _region_buy(buys):
 
 
 def _closed(held: dict, sells: list, sold: D, tolerance: D):
-    """The sleeves whose coins the sells left. Two matches are unknown."""
+    """An unallocated account sale must close the sole recorded position."""
     _one_order(sells)
-    matches = []
-    for size in range(1, len(held) + 1):
-        for group in combinations(sorted(held), size):
-            total = sum((D(held[window]['qty']) for window in group), D(0))
-            if abs(total - sold) > tolerance:
-                continue
-            earliest = min(int(held[window]['first_ms']) for window in group)
-            if any(trade['time'] < earliest for trade in sells):
-                continue
-            matches.append(group)
-    if len(matches) != 1:
+    if len(held) != 1:
         raise Unknown('a sell on the account does not match one recorded sleeve group; refusing new risk')
-    return list(matches[0])
+    window, position = next(iter(held.items()))
+    if (abs(D(position['qty']) - sold) > tolerance
+            or any(trade['time'] < int(position['first_ms']) for trade in sells)):
+        raise Unknown('a sell on the account does not match one recorded sleeve group; refusing new risk')
+    return [window]
 
 
 def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open_ms: int,
@@ -263,44 +238,6 @@ def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open
     return positions, follows, accounted, closed
 
 
-def grouped_close_dust(owner, remaining, price, applied):
-    """Only a fully applied rounded full-group close can leave extra step dust."""
-    if applied is None:
-        return False
-    intended = D(owner['order']['quantity'])
-    rounded = sum((floor_step(D(v), BASE_STEP) for v in owner['weights'].values()), D(0))
-    remainder = (intended == rounded and abs(applied - intended) <= D('1e-24')
-                 and BASE_STEP <= remaining < BASE_STEP * len(owner['sleeves'])
-                 and remaining * price < MIN_NOTIONAL)
-    if remainder and (owner.get('native_status') != 'FILLED'
-                      or owner.get('native_executed_qty') is None
-                      or D(owner['native_executed_qty']) != intended):
-        # Do not commit/account this fold before terminal readback arrives:
-        # the next cycle must replay the fill with confirmed native metadata.
-        raise Unknown('rounded group close awaits consistent terminal native readback')
-    return remainder
-
-
-def _sell_applied(positions, owner, order_id, quantity):
-    """Gross fills applied through this trade, retained across restarts.
-
-    A legacy partial position without a counter has incomplete history; it
-    cannot qualify for the enlarged residual branch by guessing earlier fills.
-    """
-    stored = [(positions.get(w) or {}).get('sell_applied', {}).get(order_id, 'absent')
-              for w in owner['sleeves']]
-    known = [value for value in stored if value != 'absent']
-    if known:
-        if any(value != known[0] for value in known):
-            raise Unknown('durable applied sell amounts differ across sleeves')
-        previous = None if known[0] is None else D(known[0])
-    else:
-        untouched = all(abs(D((positions.get(w) or {}).get('qty', '0')) - D(owner['weights'][str(w)]))
-                        <= D('1e-24') for w in owner['sleeves'])
-        previous = D(0) if untouched else None
-    return None if previous is None else previous + quantity
-
-
 def _owned_fills(models, positions, follows, accounted, trades, owners, history):
     """Attribute fills by the order's durable allocation, including partial fills."""
     closed = []
@@ -313,8 +250,6 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
         total = sum(weights.values(), D(0))
         if total <= 0 or set(weights) != set(group):
             raise Unknown('invalid durable sleeve allocation')
-        order_id = str(trade['order_id'])
-        applied = None if trade['buyer'] else _sell_applied(positions, owner, order_id, trade['qty'])
         delta = abs(_base_delta(trade))
         given = D(0)
         gross_given = D(0)
@@ -337,8 +272,6 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
                     # never the original closed buy's full gross allocation.
                     built['entry_gross_qty'] = format(old_qty + gross_qty, 'f')
                     built['qty'] = format(old_qty + qty, 'f')
-                    if prior and 'sell_applied' in prior:
-                        built['sell_applied'] = dict(prior['sell_applied'])
                     positions[window] = built
                 else:
                     old_qty = D(prior['qty'])
@@ -359,10 +292,7 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
                 if prior is None or qty > D(prior['qty']) + BASE_STEP:
                     raise Unknown('allocated sell exceeds its recorded sleeve')
                 remaining = max(D(0), D(prior['qty']) - qty)
-                counters = dict(prior.get('sell_applied', {}))
-                counters[order_id] = None if applied is None else format(applied, 'f')
-                prior = dict(prior, sell_applied=counters)
-                if remaining < BASE_STEP or grouped_close_dust(owner, remaining, trade['price'], applied):
+                if remaining < BASE_STEP:
                     # A floored native sell does not remove fractional coins.
                     # Retain their proven sleeve ownership across restarts and
                     # reuse it at the next genuine entry; never infer a deposit.

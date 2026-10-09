@@ -170,8 +170,8 @@ class SessionTests(unittest.TestCase):
             venue.snapshot = healthy
             held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertEqual(held['status'], 'read_only')
-        # The 150 peak is caught up after the failed cycle; the stop is 28% under it.
-        self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '108.00')
+        # Completed bars still advance signals, but unobserved highs cannot raise actual protection.
+        self.assertEqual(held['model_preview']['protections'][0]['stopPrice'], '79.92')
         self.assertEqual(held['model_preview']['protections'][0]['sleeves'], [40])
 
     def test_an_old_checkpoint_is_rejected_even_when_flat(self):
@@ -186,6 +186,128 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(held['status'], 'blocked')
         self.assertIn('another rule', held['reason'])
         self.assertNotIn('model_preview', held)
+
+
+class SessionRiskTests(unittest.TestCase):
+    def test_intraday_verified_quotes_persist_peak_and_repair_peak_without_public_features(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = SessionTests()._held_venue(directory)
+            original = venue.snapshot
+            quote = D(150)
+            stamp = int(venue.clock() * 1000)
+            venue.snapshot = lambda uid: dict(original(uid), last_price=quote, quote_observed_ms=stamp)
+            venue.crowding_features = Mock(side_effect=AssertionError('held risk cannot wait on public features'))
+            with State(directory, config.scope) as state:
+                positions = state.get('positions')
+                positions['40'].update(repair=True, repair_peak='111')
+                state.set('positions', positions)
+                current = cycle(venue, state, config)
+                self.assertEqual(current['model_preview']['protections'][0]['stopPrice'], '108.00')
+                self.assertEqual(state.get('positions')['40']['repair_peak'], '150')
+            # Restart with a lower quote. The observed high survives, without claiming native coverage.
+            quote = D(140)
+            with State(directory, config.scope) as state:
+                current = cycle(venue, state, config)
+                self.assertEqual(state.get('positions')['40']['peak'], '150')
+                self.assertEqual(current['risk_state']['covered_btc'], D(0))
+                before = state.get('positions')
+                quote = D(200)
+                stamp -= 1
+                with self.assertRaisesRegex(Unknown, 'backwards'):
+                    cycle(venue, state, config)
+                self.assertEqual(state.get('positions'), before)
+            venue.crowding_features.assert_not_called()
+
+    def test_quote_before_fill_and_future_quote_cannot_raise_peak(self):
+        from spotquant.session import _observe_quotes
+        position = dict(qty='1', first_ms=ORIGIN + DAY + 1000, peak='100',
+                        repair=True, repair_peak='100')
+        snapshot = dict(last_price=D(200), quote_observed_ms=ORIGIN + DAY)
+        observed = _observe_quotes({40: position}, snapshot, ORIGIN + 2 * DAY)
+        self.assertEqual(observed[40]['peak'], '100')
+        snapshot['quote_observed_ms'] = ORIGIN + 2 * DAY + 1
+        with self.assertRaisesRegex(Unknown, 'invalid'):
+            _observe_quotes({40: position}, snapshot, ORIGIN + 2 * DAY)
+
+    def test_unknown_buy_requested_stop_marks_future_exposure_unknown_but_not_sent_does_not(self):
+        from spotquant.types import NotSent
+        from test_execution import venue_before_entry, add_day, run_day
+        for outcome in (Unknown, NotSent):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                config = Config('1', directory, 1, 1, 'demo', '1000')
+                venue = venue_before_entry()
+                run_day(config, venue)
+                add_day(venue, '101')
+                attempted = []
+                def submit(identity, order, **kwargs):
+                    attempted.append((identity, order))
+                    raise outcome('dispatch outcome')
+                venue.submit = submit
+                report = run(config, venue, execute=True, monotonic=venue.monotonic, wait=venue.wait,
+                             stopping=lambda: bool(attempted))
+                self.assertEqual(report['stop_reason'], 'requested')
+                self.assertEqual(report['risk_state']['btc'], D(0))
+                if outcome is Unknown:
+                    self.assertEqual(report['pending_intents'], 1)
+                    self.assertEqual(report['risk_state']['direction'], 'unknown')
+                    self.assertIsNone(report['risk_state']['unprotected_btc'])
+                    self.assertTrue(report['risk_state']['manual_takeover'])
+                    self.assertTrue(report['manual_takeover'])
+                else:
+                    self.assertEqual(report['pending_intents'], 0)
+                    self.assertEqual(report['risk_state']['direction'], 'flat')
+                    self.assertEqual(report['risk_state']['unprotected_btc'], D(0))
+                    self.assertFalse(report['risk_state']['manual_takeover'])
+
+    def test_public_entry_read_is_followed_by_new_spot_observation_and_risk_skips_it(self):
+        from test_execution import venue_before_entry, add_day
+        from venue_fixture import KnownFeatures
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            with State(directory, config.scope) as state:
+                cycle(venue, state, config)
+                add_day(venue, '101')
+                cycle(venue, state, config)
+                add_day(venue, '102')
+                def public():
+                    venue.now_ms += 15000
+                    venue.price = D('100.4')
+                    return KnownFeatures()
+                venue.crowding_features = Mock(side_effect=public)
+                report = cycle(venue, state, config)
+                self.assertEqual(report['actual']['last_price'], D('100.4'))
+                self.assertFalse(report['model_preview']['orders'])
+                venue.crowding_features.assert_called_once()
+
+    def test_matching_v7_upgrade_rebuilds_proven_peak_and_expires_only_prepared_buy(self):
+        from spotquant.crowding import RULE
+        from spotquant.execution import Lifecycle
+        from spotquant.session import COMPATIBLE_RULES
+        from test_execution import ExecutionTests
+        for rule in COMPATIBLE_RULES:
+            with self.subTest(rule=rule), tempfile.TemporaryDirectory() as directory:
+                config, venue = ExecutionTests().entered(directory)
+                with State(directory, config.scope) as state:
+                    lifecycle = Lifecycle(state, venue, config)
+                    bar = state.get('models')['40']['body']['last']
+                    prepared = lifecycle.prepare(dict(symbol='BTCUSDT', side='BUY', type='MARKET',
+                                                       quoteOrderQty='10', sleeves=[40]),
+                                                 bar, state.get('positions'), state.get('follows'))
+                    positions = state.get('positions')
+                    positions['40']['peak'] = '250'  # Old whole-day source is not proof of personal observation.
+                    state.set_many({'rule': rule, 'positions': positions})
+                    original_btc = venue.btc
+                    report = cycle(venue, state, config, execute=True)
+                    self.assertEqual(report['status'], 'demo_execution')
+                    self.assertEqual(state.get('rule'), RULE)
+                    self.assertEqual(state.get('positions')['40']['peak'], '102')
+                    self.assertEqual(venue.btc, original_btc)
+                    row = state.db.execute('SELECT status,result FROM intents WHERE id=?', (prepared,)).fetchone()
+                    self.assertEqual(row[0], 'settled')
+                    self.assertTrue(json.loads(row[1])['not_sent'])
+                    self.assertEqual(len([row for row in venue.orders.values() if row['side'] == 'BUY']), 1)
+
 
 
 class LegacyRecoveryTests(unittest.TestCase):
@@ -296,46 +418,48 @@ class LegacyRecoveryTests(unittest.TestCase):
         venue.cancel = Mock(side_effect=AssertionError('recovery must not cancel'))
         return config, venue, stop, buy, queried
 
-    def test_known_legacy_only_reads_original_order_and_keeps_protection_and_preparation(self):
-        for rule, version in ((None, 5), (None, 6), (KNOWN_OLD_RULE, 5),
-                              (KNOWN_OLD_RULE, 6), (KNOWN_OLD_RULE, 7)):
-            with (self.subTest(rule=rule, version=version), tempfile.TemporaryDirectory() as directory,
-                  patch('spotquant.session._cycle', side_effect=AssertionError('recovery must not run strategy')) as strategy):
+    def test_unsupported_v5_v6_never_read_or_write_native_orders(self):
+        for rule, version in ((None, 5), (None, 6), (KNOWN_OLD_RULE, 5), (KNOWN_OLD_RULE, 6)):
+            with self.subTest(rule=rule, version=version), tempfile.TemporaryDirectory() as directory:
                 config, venue, stop, buy, queried = self.seed(directory, version, rule)
                 with State(directory, config.scope) as state:
                     before = list(state.db.execute('SELECT key,value FROM meta ORDER BY key'))
-                    prepared = state.db.execute('SELECT * FROM intents WHERE id=?', (buy,)).fetchone()
-                    stop_payload = state.db.execute('SELECT payload FROM intents WHERE id=?', (stop,)).fetchone()
-                    sent = list(venue.sent)
-                    with self.assertRaises(Blocked):
-                        cycle(venue, state, config)
+                    intents = list(state.db.execute('SELECT * FROM intents ORDER BY id'))
+                    for execute in (False, True):
+                        with self.assertRaises(Blocked):
+                            cycle(venue, state, config, execute=execute)
                     self.assertEqual(queried, [])
-                    with self.assertRaisesRegex(Blocked, 'readback only'):
-                        cycle(venue, state, config, execute=True)
-                    self.assertEqual(queried, [stop])
-                    self.assertEqual(venue.sent, sent)
-                    self.assertEqual(venue.orders[stop]['status'], 'NEW')
-                    self.assertEqual(dict(state.db.execute('SELECT id,status FROM intents')),
-                                     {stop: 'resting', buy: 'prepared'})
                     self.assertEqual(list(state.db.execute('SELECT key,value FROM meta ORDER BY key')), before)
-                    self.assertEqual(state.db.execute('SELECT * FROM intents WHERE id=?', (buy,)).fetchone(), prepared)
-                    self.assertEqual(state.db.execute('SELECT payload FROM intents WHERE id=?', (stop,)).fetchone(), stop_payload)
-                report = run(config, venue, execute=True, monotonic=venue.monotonic, wait=venue.wait)
-                self.assertTrue(report['recovery_only'])
-                self.assertTrue(report['manual_takeover'])
-                self.assertTrue(report['risk_state']['manual_takeover'])
-                self.assertEqual(report['risk_state']['covered_btc'], D(1))
-                self.assertFalse(report['write_attempted'])
-                self.assertNotIn('model_preview', report)
+                    self.assertEqual(list(state.db.execute('SELECT * FROM intents ORDER BY id')), intents)
+                self.assertEqual(venue.orders[stop]['status'], 'NEW')
                 self.assertEqual(venue.submit.call_count, 0)
                 self.assertEqual(venue.cancel.call_count, 0)
-                self.assertEqual(strategy.call_count, 0)
+
+    def test_matching_v7_without_owned_buy_proof_retains_stop_and_needs_reconciliation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue, stop, buy, queried = self.seed(directory, 7, KNOWN_OLD_RULE)
+            with State(directory, config.scope) as state:
+                state.set('execution_anchor', {'cash': '1000', 'btc': '1', 'at_ms': venue.now_ms})
+                before = {key: state.get(key) for key in ('models', 'positions', 'rule', 'execution_anchor')}
+                with self.assertRaisesRegex(Blocked, 'reconciliation'):
+                    cycle(venue, state, config)
+                self.assertEqual(queried, [])
+                with self.assertRaisesRegex(Blocked, 'first BUY fill'):
+                    cycle(venue, state, config, execute=True)
+                self.assertEqual(queried, [stop])
+                self.assertTrue(state._recovery_only)
+                self.assertEqual(state.get('rule'), KNOWN_OLD_RULE)
+                self.assertEqual({key: state.get(key) for key in before}, before)
+                self.assertEqual({row['id']: row['status'] for row in state.pending()}, {buy: 'prepared'})
+            self.assertEqual(venue.orders[stop]['status'], 'NEW')
+            self.assertEqual(venue.submit.call_count, 0)
+            self.assertEqual(venue.cancel.call_count, 0)
 
     def test_damaged_legacy_and_foreign_rule_never_query_native_orders(self):
         cases = ('bad_hash', 'missing_field', 'wrong_parameter', 'wrong_sleeve', 'unsupported_version', 'foreign_rule',
                  'wrong_identity', 'invalid_stop_rearm', 'missing_position', 'missing_stop_position_key',
                  'invalid_stop_position_time', 'market_position_map')
-        for version, case in ((version, case) for version in (6, 7) for case in cases):
+        for version, case in ((7, case) for case in cases):
             with self.subTest(version=version, case=case), tempfile.TemporaryDirectory() as directory:
                 config, venue, stop, buy, queried = self.seed(directory, version, KNOWN_OLD_RULE if version == 7 else None)
                 with State(directory, config.scope) as state:
@@ -387,7 +511,7 @@ class LegacyRecoveryTests(unittest.TestCase):
                     self.assertEqual(list(state.db.execute('SELECT * FROM intents ORDER BY id')), before_intents)
 
     def test_legacy_unknown_readback_never_retries_or_dispatches_prepared_buy(self):
-        for rule, version in ((None, 6), (KNOWN_OLD_RULE, 7)):
+        for rule, version in ((KNOWN_OLD_RULE, 7),):
             with self.subTest(rule=rule, version=version), tempfile.TemporaryDirectory() as directory:
                 config, venue, stop, buy, queried = self.seed(directory, version, rule)
                 venue.orders.pop(stop)

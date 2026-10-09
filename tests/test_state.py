@@ -1,6 +1,7 @@
 """One directory stays bound to one spot account."""
 import tempfile
 import unittest
+import json
 from decimal import Decimal as D
 
 from spotquant.state import State, client_id
@@ -8,6 +9,23 @@ from spotquant.types import Blocked, Unknown
 
 
 class StateTests(unittest.TestCase):
+    def test_only_nonterminal_market_orders_and_unsent_risk_actions_are_pending(self):
+        with tempfile.TemporaryDirectory() as directory, State(directory, 'test') as state:
+            for identity, status, side, order_type, result in (
+                    ('sent-buy', 'unknown', 'BUY', 'MARKET', {}),
+                    ('open-buy', 'resting', 'BUY', 'MARKET', {}),
+                    ('open-stop', 'resting', 'SELL', 'STOP_LOSS', {}),
+                    ('unsubmitted-buy', 'prepared', 'BUY', 'MARKET', {}),
+                    ('vetoed-buy', 'prepared', 'BUY', 'MARKET', {'not_sent': True}),
+                    ('vetoed-stop', 'prepared', 'SELL', 'STOP_LOSS', {'not_sent': True}),
+                    ('canceling', 'canceling', 'SELL', 'STOP_LOSS', {})):
+                state.db.execute('INSERT INTO intents VALUES (?,?,?,?,?,?)',
+                                 (identity, 'p4', json.dumps({'order': {'side': side, 'type': order_type}}),
+                                  status, json.dumps(result), 0))
+            state.db.commit()
+            self.assertEqual({row['id'] for row in state.pending()},
+                             {'sent-buy', 'open-buy', 'unsubmitted-buy', 'vetoed-stop', 'canceling'})
+
     def test_identity_mismatch_and_client_id_prefix(self):
         self.assertTrue(client_id('10001', 1577836800000, 'buy').startswith('sq-'))
         with tempfile.TemporaryDirectory() as directory:

@@ -7,7 +7,7 @@ from decimal import Decimal as D
 from time import time
 
 from .model import SLEEVES
-from .preview import BASE_STEP, MIN_NOTIONAL, _protection, _qty_ok, decision_view
+from .preview import BASE_STEP, MIN_NOTIONAL, _decide, _qty_ok
 from .state import client_id
 from .types import Blocked, Unknown, NotSent, floor_step, number, serial
 
@@ -52,11 +52,13 @@ class Lifecycle:
         for identity, payload, status, prior in self.rows():
             if status in ('prepared', 'rejected', 'settled'):
                 continue
-            row = self.venue.query(identity)
+            row = self.venue.query(prior.get('orderId') or identity)
             if row is None:
                 raise Unknown('sent order is not confirmed; stable identity is never resubmitted')
-            if row.get('clientOrderId') != identity:
+            if row.get('clientOrderId') not in {identity, payload.get('cancel_id')}:
                 raise Unknown('native order identity differs from its durable intent')
+            if prior.get('orderId') is not None and row.get('orderId') != prior['orderId']:
+                raise Unknown('native order ID changed after confirmation')
             for key, value in payload['order'].items():
                 actual = row.get(key)
                 if key in ('quantity', 'quoteOrderQty', 'stopPrice'):
@@ -74,8 +76,10 @@ class Lifecycle:
         return allocation_owners((payload, result) for _, payload, _, result in self.rows())
 
     def verify(self, snapshot):
-        known = {identity for identity, _, _, _ in self.rows()}
-        if any(row.get('client_id') not in known for row in snapshot['orders']):
+        known = {result.get('orderId'): {identity, payload.get('cancel_id')}
+                 for identity, payload, _, result in self.rows() if result.get('orderId') is not None}
+        if any(row.get('client_id') not in known.get(row.get('order_id'), set())
+               for row in snapshot['orders']):
             raise Unknown('external open order blocks execution')
         if any(status == 'resting' and payload['order']['type'] == 'MARKET'
                for _, payload, status, _ in self.rows()):
@@ -84,8 +88,9 @@ class Lifecycle:
         if anchor is None:
             if snapshot['orders'] or D(snapshot['btc']) * D(snapshot['last_price']) >= MIN_NOTIONAL:
                 raise Unknown('fresh execution state cannot adopt holdings or orders')
+            from .session import _now_ms
             anchor = serial({'cash': D(snapshot['usdt_free']) + D(snapshot['usdt_locked']),
-                             'btc': D(snapshot['btc']), 'at_ms': int(self.venue.clock() * 1000)})
+                             'btc': D(snapshot['btc']), 'at_ms': _now_ms(self.venue)})
             self.state.set('execution_anchor', anchor)
         cash, btc = D(anchor['cash']), D(anchor['btc'])
         owners = self.owners()
@@ -131,6 +136,14 @@ class Lifecycle:
             operation += '-' + hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()[:16]
         identity = client_id(self.state.identity, bar, operation)
         prior = next((row for row in self.rows() if row[0] == identity), None)
+        if (raw['side'] == 'SELL' and raw['type'] == 'MARKET' and prior is not None
+                and prior[2] in ('settled', 'rejected')
+                and number(raw['quantity']) < number(prior[1]['order']['quantity'])):
+            payload['reduction_after'] = identity
+            operation += '-remainder-' + hashlib.sha256(
+                (identity + '|' + format(number(raw['quantity']), 'f')).encode()).hexdigest()[:16]
+            identity = client_id(self.state.identity, bar, operation)
+            prior = next((row for row in self.rows() if row[0] == identity), None)
         if prior is None:
             self.save(identity, payload, 'prepared', {})
         elif (any(prior[1].get(key) != payload.get(key) for key in
@@ -152,15 +165,19 @@ class Lifecycle:
                 raise Unknown('desired protection is already terminal; no active coverage inferred')
             return False
         self.save(identity, payload, 'unknown', result)
+        self._retry_observation = False
         try:
-            self.venue.submit(identity, payload['order'])
+            self.venue.submit(identity, payload['order'],
+                              preflight=lambda snapshot: self._preflight(payload, snapshot))
         except NotSent:
             self.save(identity, payload, 'prepared', {'not_sent': True})
+            if self._retry_observation:
+                return True
             raise
         except Unknown:
             pass
         except Blocked:
-            # The adapter uses Blocked only for an explicit preflight/native refusal.
+            # Mutable preflight failures are NotSent; an explicit refusal requires review.
             self.save(identity, payload, 'rejected', {})
             raise
         self.recover()
@@ -170,28 +187,90 @@ class Lifecycle:
         _, payload, status, result = next(row for row in self.rows() if row[0] == identity)
         if status == 'settled':
             return
+        if type(result.get('orderId')) is not int or result['orderId'] <= 0:
+            raise Unknown('protection cancellation has no confirmed native order ID')
+        payload = dict(payload, cancel_id=payload.get('cancel_id') or
+                       'sq-' + hashlib.sha256((identity + '|cancel').encode()).hexdigest()[:30])
         self.save(identity, payload, 'canceling', result)
         try:
-            self.venue.cancel(identity)
-        except Unknown:
+            self.venue.cancel(identity, order_id=result['orderId'], cancel_id=payload['cancel_id'])
+        except (Unknown, Blocked):
             pass
         self.recover()
         row = next(row for row in self.rows() if row[0] == identity)
         if row[2] != 'settled':
             raise Unknown('protection cancellation is not confirmed')
 
+    @staticmethod
+    def account_key(row):
+        return (number(row['btc']), number(row['usdt_free']), number(row['usdt_locked']),
+                json.dumps(sorted(row['orders'], key=lambda order: order['order_id']), sort_keys=True))
+
+    def _record_quote(self, snapshot):
+        from .session import _now_ms, _observe_quotes
+        positions = self.state.get('positions') or {}
+        observed = _observe_quotes(positions, snapshot, _now_ms(self.venue))
+        if observed != positions:
+            self.state.set('positions', observed)
+        return any(observed[key] and positions.get(key)
+                   and (observed[key]['peak'], observed[key]['repair_peak']) !=
+                       (positions[key]['peak'], positions[key]['repair_peak']) for key in observed)
+
+    def _preflight(self, payload, snapshot):
+        """The adapter calls this after its final observation, before POST."""
+        self.verify(snapshot)
+        if getattr(self, '_observed', None) is not None and self.account_key(snapshot) != self.account_key(self._observed):
+            raise NotSent('account changed before dispatch; reconcile before any write')
+        order = payload['order']
+        raised_peak = self._record_quote(snapshot)
+        if raised_peak and order['type'] == 'STOP_LOSS':
+            self._retry_observation = True
+            raise NotSent('observed position peak changed; recalculate protection before dispatch')
+        positions = self.state.get('positions') or {}
+        if order['side'] == 'BUY':
+            if self.state.get('third_asset_fees_unvalued'):
+                raise NotSent('third-asset fees are unvalued; new buy needs owner reconciliation')
+            if D(snapshot['btc']) * D(snapshot['last_price']) + D(order['quoteOrderQty']) > self.config.capital_limit:
+                raise NotSent('buy exceeds whole-account capital ceiling at the latest price')
+            from .model import Model
+            for window in payload['sleeves']:
+                position = positions.get(str(window))
+                owned = D(0) if position is None or position.get('dust') else D(position['qty'])
+                fresh = _decide(Model.restore(self.state.get('models')[str(window)]), snapshot,
+                                entries_enabled=True, owned_btc=owned, budget=D(order['quoteOrderQty']))
+                if fresh['action'] != 'enter' or fresh['repair'] != payload['repair'][str(window)]:
+                    raise NotSent('buy signal changed at the latest price; entry is not dispatched')
+        else:
+            owned = sum((D((positions.get(str(w)) or {}).get('qty', '0')) for w in payload['sleeves']), D(0))
+            if D(order['quantity']) > owned or D(order['quantity']) > D(snapshot['btc_free']):
+                raise NotSent('sell exceeds the latest free and owned BTC; reconcile before dispatch')
+            if order['type'] == 'STOP_LOSS' and D(order['stopPrice']) >= D(snapshot['last_price']):
+                self._retry_observation = True
+                raise NotSent('desired stop is crossed at the latest price; reconcile before dispatch')
+
     def act(self, decision, bar, observed):
         """One action, then the session re-observes fills before sizing any buy."""
         snapshot = self.venue.snapshot(self.config.account_uid)
-        self._quote = {'last_price': str(snapshot['last_price']), 'observed_at_ms': int(self.venue.clock() * 1000)}
+        self._observed = snapshot
+        from .session import _now_ms
+        self._quote = {'last_price': str(snapshot['last_price']),
+                       'observed_at_ms': snapshot.get('quote_observed_ms', _now_ms(self.venue))}
         self.verify(snapshot)
-        def key(row):
-            return (number(row['btc']), number(row['usdt_free']), number(row['usdt_locked']),
-                    json.dumps(sorted(row['orders'], key=lambda order: order['order_id']), sort_keys=True))
-        if key(snapshot) != key(observed):
+        if self.account_key(snapshot) != self.account_key(observed):
             raise Unknown('account changed after decision; reconcile before any write')
+        self._record_quote(snapshot)
         positions = self.state.get('positions') or {}
         follows = self.state.get('follows') or {}
+        if any(position and not position.get('dust') for position in positions.values()):
+            from .session import _view
+            from .model import Model
+            from .preview import decision as decide
+            views, owned = {}, {}
+            for window in SLEEVES:
+                views[window], owned[window] = _view(Model.restore(self.state.get('models')[str(window)]),
+                                                    positions.get(str(window)))
+            decision = decide(views, owned, snapshot, entries_enabled=False, capital_limit=self.config.capital_limit,
+                              positions={w: positions.get(str(w)) for w in SLEEVES}, owners=self.owners())
         resting = [row for row in self.rows() if row[2] == 'resting']
         for identity, payload, status, _ in self.rows():
             if status != 'prepared' or payload['order']['type'] != 'MARKET':
@@ -205,12 +284,15 @@ class Lifecycle:
                 self.save(identity, payload, 'settled', {'not_sent': True, 'reason': 'owned fills already closed sleeves'})
                 continue
             if number(payload['order']['quantity']) > held:
-                raise Unknown('prepared reduction exceeds reconciled holdings; original identity is retained')
+                self.save(identity, payload, 'settled', {'not_sent': True,
+                          'reason': 'owned protection fills reduced the prepared sale'})
+                continue
             if not _qty_ok(payload['order']['quantity'], snapshot):
                 raise Blocked('prepared reduction fails native lot filters')
             for stop_id, stop, _, _ in resting:
                 if set(stop['sleeves']) & set(payload['sleeves']):
                     self.cancel(stop_id)
+                    return True
             return self.send(identity)
         sells = [order for order in decision['orders'] if order['side'] == 'SELL']
         for order in sells:
@@ -220,27 +302,21 @@ class Lifecycle:
                                     rearm={str(w): decision['sleeves'].get(str(w), {}).get('rearm', False)
                                            for w in order['sleeves']})
             row = next(row for row in self.rows() if row[0] == identity)
-            if row[2] in ('settled', 'rejected'):
+            if row[2] == 'rejected':
+                raise Blocked('durable reduction was rejected; owner review is required')
+            if row[2] == 'settled':
+                if row[3].get('executedQty') is not None and number(row[3]['executedQty']) == 0:
+                    raise Blocked('terminal reduction made no fill progress; owner review is required')
                 continue
             # Persist the sale before releasing any coins; restart resumes this exact intent.
             for stop_id, payload, _, _ in resting:
                 if set(payload['sleeves']) & set(order['sleeves']):
                     self.cancel(stop_id)
+                    return True
             return self.send(identity)
+        if any(item['action'] == 'exit' for item in decision['sleeves'].values()):
+            raise Blocked('remaining exit is below the venue minimum; owner takeover required')
         desired = [order for order in decision['protections'] if 'quantity' in order]
-        # A terminal partial sale leaves a position. Preserve a stop until a later
-        # signal can issue another sale; this signal's stable market ID is consumed.
-        from .session import _view
-        from .model import Model
-        for window in SLEEVES:
-            position = positions.get(str(window))
-            if position and decision['sleeves'][str(window)]['action'] == 'exit':
-                view, qty = _view(Model.restore(self.state.get('models')[str(window)]), position)
-                view = decision_view(view, position, getattr(self.state, '_execution_owners', None) or {})
-                stop = _protection(view, qty, snapshot)
-                if D(stop['stopPrice']) >= D(snapshot['last_price']):
-                    raise Unknown('partial exit remainder has a crossed stop; explicit reduction needed')
-                desired.append(dict(stop, sleeves=[window]))
         wanted = []
         for order in desired:
             if order.get('placeable') is False:
@@ -260,17 +336,7 @@ class Lifecycle:
                 raise Unknown('desired stop is crossed at the last price; protection needs manual reduction')
             for identity in sorted(active - set(wanted)):
                 self.cancel(identity)
-            if active - set(wanted):
-                refreshed = self.venue.snapshot(self.config.account_uid)
-                self._quote = {'last_price': str(refreshed['last_price']),
-                               'observed_at_ms': int(self.venue.clock() * 1000)}
-                self.verify(refreshed)
-                if key(refreshed) != key(snapshot):
-                    # Expected canceled stops may differ; balances must still agree.
-                    if any(refreshed[field] != snapshot[field] for field in ('btc', 'usdt_free', 'usdt_locked')):
-                        raise Unknown('account changed while replacing protection')
-                if any(D(order['stopPrice']) >= D(refreshed['last_price']) for order in desired):
-                    raise Unknown('last price crossed after stop cancellation; unprotected coins need manual reduction')
+                return True
             changed = False
             for identity in wanted:
                 try:
@@ -281,6 +347,7 @@ class Lifecycle:
                         raise
                     fresh = self.venue.snapshot(self.config.account_uid)
                     self.verify(fresh)
+                    self._observed = fresh
                     qty = floor_step(min(D(saved[1]['order']['quantity']), D(fresh['btc_free'])), BASE_STEP)
                     if qty <= 0 or qty * D(fresh['avg_price']) < D(fresh.get('min_notional') or MIN_NOTIONAL):
                         raise Unknown('stop rejected; unprotected BTC is too small for confirmed reduction')

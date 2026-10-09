@@ -12,12 +12,13 @@ from .follow import advance, apply_day, day_open, unexplained
 from .model import DAY, ORIGIN, SLEEVES, Model
 from .preview import MIN_NOTIONAL, decision
 from .state import State, client_id
-from .types import Blocked, Unknown
+from .types import Blocked, Unknown, number
 
 from .crowding import RULE
 
-# The prior policy permits original-order readback, never strategy takeover.
+# Matching single-SMA40 v7 policies retain their owned account and order state.
 KNOWN_OLD_RULE = '2026-10-03-atr-stop-crowding-interaction-v1'
+COMPATIBLE_RULES = (KNOWN_OLD_RULE, '2026-10-09-sma40-touch-entry-guard-v1')
 
 # Dropped when a cycle fails so the previous success cannot be read as current.
 STALE_REPORT_FIELDS = (
@@ -40,19 +41,7 @@ def clear_stale(report: dict) -> None:
 
 def cycle(venue, state: State, config, *, execute=False) -> dict:
     state._recovery_only = False
-    try:
-        _guard_state(state)
-    except Blocked:
-        if not execute:
-            raise
-        # Known old checkpoints can reconcile already sent identities, but never
-        # reach the new model, dispatch a preparation, or replace a native stop.
-        _guard_state(state, recovery_only=True)
-        _guard_venue(venue, config)
-        from .execution import Lifecycle
-        state._recovery_only = True
-        Lifecycle(state, venue, config).recover()
-        raise Blocked('legacy checkpoint allows order readback only; retain state and reconcile before strategy takeover')
+    _guard_state(state)
     _guard_venue(venue, config)
     lifecycle = None
     if execute:
@@ -86,12 +75,18 @@ def _guard_venue(venue, config):
         raise Blocked('exchange adapter and configuration differ in capital limit')
 
 
-def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
-    """Derive the whole observation in memory, then commit it once.
+def _now_ms(venue):
+    return venue._timestamp() if hasattr(venue, '_timestamp') else int(venue.clock() * 1000)
 
-    A failed snapshot or preview leaves the previous checkpoint and positions
-    where they were, so the next cycle replays the same bars onto both.
+
+def _cycle(venue, state: State, config, *, lifecycle=None, crowding_source=None, features_loaded=False) -> dict:
+    """Commit a verified spot observation and refresh it after optional entry inputs.
+
+    A failed observation never commits its partial model or positions. The
+    verified observation before a public entry read remains available for recovery.
     """
+    compatible = state.get('rule') in COMPATIBLE_RULES
+    state._recovery_only = compatible
     models, enabled, fresh = _load_models(state, venue)
     snapshot = venue.snapshot(config.account_uid)
     actual_snapshot = snapshot
@@ -100,6 +95,12 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
         # Confirmed owned STOP_LOSS orders reserve BTC, but do not consume the cash pool.
         snapshot = dict(snapshot, open_orders=sum(row['type'] != 'STOP_LOSS' for row in snapshot['orders']))
     positions, follows, exit_through = _fold(state, venue, models, snapshot)
+    if compatible:
+        if lifecycle is None:
+            state._recovery_only = True
+            raise Blocked('matching legacy checkpoint needs owned account reconciliation before strategy takeover')
+        positions = _legacy_peaks(state, positions)
+    positions = _observe_quotes(positions, snapshot, _now_ms(venue))
     if fresh:
         for model in models.values():
             model.note_flat()
@@ -110,14 +111,22 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
     owned = {}
     for window, model in models.items():
         views[window], owned[window] = _view(model, positions[window])
-    crowding = venue.crowding_features() if hasattr(venue, 'crowding_features') else None
-    proposed = decision(
-        views, owned, snapshot, entries_enabled=enabled, capital_limit=config.capital_limit,
+    proposed = decision(views, owned, snapshot,
+        entries_enabled=enabled, capital_limit=config.capital_limit,
         positions=positions, owners=getattr(state, '_execution_owners', None) or {},
-        crowding_source=crowding, decision_ms=int(venue.clock() * 1000))
+        crowding_source=crowding_source, decision_ms=_now_ms(venue))
     follows = _follow_after(proposed, models, positions, follows, exit_through)
     reference = models[SLEEVES[0]]
-    _commit(state, models, positions, follows, fresh, reference.last)
+    _commit(state, models, positions, follows, fresh, reference.last, expire_buys=compatible)
+    if compatible:
+        lifecycle._rows = None
+        state._recovery_only = False
+    if (not features_loaded and hasattr(venue, 'crowding_features')
+            and any(item.get('blocked_reason') != 'held_sleeve_no_topup' for item in proposed['crowding'])):
+        # Keep the verified account observation, then refresh spot after the public read.
+        source = venue.crowding_features()
+        return _cycle(venue, state, config, lifecycle=lifecycle,
+                      crowding_source=source, features_loaded=True)
     return {
         'status': 'read_only',
         'model_preview': proposed,
@@ -133,6 +142,54 @@ def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
         'recorded_limits': dict(RECORDED_LIMITS),
         'write_attempted': False,
     }
+
+
+def _observe_quotes(positions, snapshot, now_ms):
+    """Raise only the actual position's target from a verified post-fill quote."""
+    if snapshot.get('last_price') is None:
+        return positions
+    price = number(snapshot['last_price'], 'observed last price', positive=True)
+    stamp = snapshot.get('quote_observed_ms', now_ms)
+    if type(stamp) is not int or stamp > now_ms or stamp < ORIGIN:
+        raise Unknown('quote observation time is invalid')
+    out = dict(positions)
+    for window, position in positions.items():
+        if position is None or position.get('dust'):
+            continue
+        if stamp < position.get('quote_through_ms', stamp):
+            raise Unknown('quote observation clock moved backwards')
+        if stamp < position['first_ms']:
+            continue
+        out[window] = dict(position, peak=format(max(D(position['peak']), price), 'f'), quote_through_ms=stamp)
+        if position['repair'] and position['repair_peak'] is not None:
+            out[window]['repair_peak'] = format(max(D(position['repair_peak']), price), 'f')
+    return out
+
+
+def _legacy_peaks(state, positions):
+    """Discard unproven daily peaks; confirmed native floors remain separate."""
+    out = dict(positions)
+    owners = getattr(state, '_execution_owners', None) or {}
+    for window, position in positions.items():
+        if position is None or position.get('dust'):
+            continue
+        prices = []
+        first_proven = False
+        for encoded, in state.db.execute('SELECT payload FROM fills WHERE time_ms>=?', (position['first_ms'],)):
+            fill = json.loads(encoded)
+            owner = owners.get(str(fill['order_id'])) or {}
+            if (fill['buyer'] and window in owner.get('sleeves', [])
+                    and owner.get('order', {}).get('side') == 'BUY'):
+                prices.append(number(fill['price'], 'owned fill price', positive=True))
+                first_proven |= fill['time'] == position['first_ms']
+        if not first_proven:
+            state._recovery_only = True
+            raise Blocked('legacy position has no proven first BUY fill; retain native protection and reconcile')
+        out[window] = dict(position, peak=format(max(prices), 'f'))
+        out[window].pop('quote_through_ms', None)
+        if position['repair']:
+            out[window]['repair_peak'] = out[window]['peak']
+    return out
 
 
 def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sleep, stopping=lambda: False):
@@ -153,7 +210,7 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
         'leverage': '0',
         'sleeves': list(SLEEVES),
         'stop_reason': 'deadline',
-        'session_started_at_ms': int(venue.clock() * 1000),
+        'session_started_at_ms': _now_ms(venue),
         'runtime_identity': {'rule': RULE, 'source_sha': os.environ.get('SPOTQUANT_SOURCE_SHA')},
         'session_ended': False,
         'stops_while_down': 'this process does not amend a stop while it is stopped',
@@ -204,6 +261,7 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
                 if report['pending_intents']:
                     report.update(status='unknown', reason='Durable intents require recovery', observation_current=False)
                     clear_stale(report)
+                    _mark_unknown_exposure(report, state)
                 state.report(report)
                 remaining = deadline - monotonic()
                 if remaining > 0 and not stopping():
@@ -237,6 +295,7 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
             if report['pending_intents']:
                 report.update(status='unknown', reason='Durable execution requires recovery', observation_current=False)
                 clear_stale(report)
+                _mark_unknown_exposure(report, state)
             report.update(account_uid=config.account_uid,
                           environment=config.environment, capital_limit_usdt=str(config.capital_limit),
                           execution_enabled=execute)
@@ -255,43 +314,40 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
     return report
 
 
-def _guard_state(state, *, recovery_only=False):
+def _mark_unknown_exposure(report, state):
+    if any(row['status'] != 'prepared' for row in state.pending()):
+        risk = report.setdefault('risk_state', {})
+        risk.setdefault('last_observed_direction', risk.get('direction'))
+        risk.update(direction='unknown', unprotected_btc=None, manual_takeover=True,
+                    observation_current=False)
+        report['manual_takeover'] = True
+
+
+def _guard_state(state):
     """Read-only migration boundary, before any lifecycle recovery or venue request."""
     if any(state.get(key) is not None for key in (
             'lifecycle_identity', 'alpha_identity', 'edge_identity', 'adoption_risk')):
         raise Blocked('state belongs to an incompatible strategy')
     saved, rule = state.get('models'), state.get('rule')
-    allowed_rule = rule == RULE or recovery_only and rule == KNOWN_OLD_RULE
+    compatible = rule in COMPATIBLE_RULES
+    allowed_rule = rule == RULE or compatible
     if rule is not None and not allowed_rule:
         raise Blocked('state was written for another rule; a new directory is not a flat account')
     if saved is None:
         if (rule is not None or state.get('positions') is not None or state.get('follows') is not None
-                or state.db.execute('SELECT 1 FROM intents LIMIT 1').fetchone() or recovery_only):
+                or state.db.execute('SELECT 1 FROM intents LIMIT 1').fetchone()):
             raise Blocked('missing model checkpoint for durable state')
         return None
     if not allowed_rule or type(saved) is not dict or set(saved) != {str(w) for w in SLEEVES}:
         raise Blocked('state rule or sleeve checkpoint identity mismatch')
-    models = None if recovery_only else {w: Model.restore(saved[str(w)]) for w in SLEEVES}
-    if recovery_only:
-        for checkpoint in saved.values():
-            if rule == KNOWN_OLD_RULE:
-                try:
-                    Model.restore(checkpoint)
-                except Blocked:
-                    Model.validate_recovery(checkpoint)
-            else:
-                Model.validate_recovery(checkpoint)
-    windows = {w: saved[str(w)]['body']['sma_window'] for w in SLEEVES}
-    lasts = {saved[str(w)]['body']['last'] for w in SLEEVES}
-    if any(window != w for w, window in windows.items()):
+    model = Model.restore(saved[str(SLEEVES[0])])
+    if model.sma_window != SLEEVES[0]:
         raise Blocked('model checkpoint sleeve mismatch')
-    if len(lasts) != 1:
-        raise Blocked('sleeve checkpoints are not on the same daily bar')
     try:
         positions, follows = state.get('positions'), state.get('follows')
         keys = {str(w) for w in SLEEVES}
         anchor = state.get('entries_after')
-        last = next(iter(lasts))
+        last = model.last
         if (type(positions) is not dict or set(positions) != keys
                 or type(follows) is not dict or set(follows) != keys
                 or type(anchor) is not int or last is None or anchor > last or anchor != day_open(anchor)):
@@ -307,6 +363,8 @@ def _guard_state(state, *, recovery_only=False):
                 if (any(not value.is_finite() or value <= 0 for value in values)
                         or position['entry_open_ms'] != day_open(position['first_ms'])
                         or any(type(position[k]) is not bool for k in ('repair', 'adverse'))
+                        or ('quote_through_ms' in position and (type(position['quote_through_ms']) is not int
+                            or position['quote_through_ms'] < position['first_ms']))
                         or (position['through'] is not None and (type(position['through']) is not int
                             or position['through'] > last or position['through'] != day_open(position['through'])))):
                     raise ValueError('position')
@@ -321,11 +379,11 @@ def _guard_state(state, *, recovery_only=False):
     try:
         for identity, kind, encoded, status in state.db.execute(
                 "SELECT id,kind,payload,status FROM intents WHERE status NOT IN ('settled','rejected') OR ?",
-                (recovery_only,)):
+                (compatible,)):
             payload = json.loads(encoded)
             group, order = payload['sleeves'], payload['order']
             allowed = {'prepared', 'unknown', 'resting', 'canceling'}
-            if recovery_only:
+            if compatible:
                 allowed |= {'settled', 'rejected'}
             if (kind != 'p4' or status not in allowed
                     or type(group) is not list or not group or group != sorted(set(group))
@@ -355,20 +413,42 @@ def _guard_state(state, *, recovery_only=False):
                 quantities.append(order['stopPrice'])
             if any(not D(v).is_finite() or D(v) <= 0 for v in quantities):
                 raise ValueError('quantity')
-            if recovery_only:
+            cancel_id = payload.get('cancel_id')
+            if cancel_id is not None and (order['type'] != 'STOP_LOSS' or cancel_id != 'sq-' +
+                    hashlib.sha256((identity + '|cancel').encode()).hexdigest()[:30]):
+                raise ValueError('cancellation identity')
+            reduction = payload.get('reduction_after')
+            operation = order['side'] + '-' + order['type'] + '-' + ','.join(map(str, group))
+            if reduction is not None:
+                base = client_id(state.identity, payload['signal_ms'], operation)
+                prior = state.db.execute('SELECT kind,payload,status FROM intents WHERE id=?', (base,)).fetchone()
+                if (order['side'] != 'SELL' or order['type'] != 'MARKET' or reduction != base
+                        or prior is None or prior[0] != 'p4' or prior[2] not in ('settled', 'rejected')):
+                    raise ValueError('reduction parent')
+                original = json.loads(prior[1])
+                if (original['sleeves'] != group or original['signal_ms'] != payload['signal_ms']
+                        or original['order']['symbol'] != 'BTCUSDT'
+                        or original['order']['side'] != 'SELL' or original['order']['type'] != 'MARKET'
+                        or not D(original['order']['quantity']).is_finite()
+                        or D(original['order']['quantity']) <= D(order['quantity'])):
+                    raise ValueError('reduction amount')
+                operation += '-remainder-' + hashlib.sha256(
+                    (base + '|' + format(D(order['quantity']), 'f')).encode()).hexdigest()[:16]
+                if identity != client_id(state.identity, payload['signal_ms'], operation):
+                    raise ValueError('reduction identity')
+            if compatible:
                 fields = {'symbol', 'side', 'type', 'quoteOrderQty' if order['side'] == 'BUY' else 'quantity'}
                 if order['type'] == 'STOP_LOSS':
                     fields.add('stopPrice')
                 if set(order) != fields:
                     raise ValueError('native order fields')
-                operation = order['side'] + '-' + order['type'] + '-' + ','.join(map(str, group))
                 if order['type'] == 'STOP_LOSS':
                     operation += '-' + hashlib.sha256(json.dumps(order, sort_keys=True).encode()).hexdigest()[:16]
                 if identity != client_id(state.identity, payload['signal_ms'], operation):
                     raise ValueError('durable order identity')
     except (KeyError, TypeError, ValueError, ArithmeticError, Unknown) as exc:
         raise Blocked('incompatible durable pending allocation') from exc
-    return models
+    return {SLEEVES[0]: model}
 
 
 def _load_models(state: State, venue):
@@ -383,7 +463,7 @@ def _load_models(state: State, venue):
     if models[SLEEVES[0]].last is None:
         raise Unknown('no completed daily bar is available to anchor the model')
     open_ms = models[SLEEVES[0]].last + DAY
-    if open_ms > int(venue.clock() * 1000):
+    if open_ms > _now_ms(venue):
         raise Unknown('daily open has not arrived')
     if any(model.shadow_open_ms != open_ms for model in models.values()):
         observed_ms, open_price = venue.daily_open(open_ms)
@@ -408,7 +488,7 @@ def _entries_blocked(models: dict, exit_through: dict) -> bool:
 
 def _consume_bar(state, venue, models, open_ms, open_price, high, low, close):
     """Fills of this day land on the model as it stood before the bar."""
-    if open_ms + DAY > int(venue.clock() * 1000):
+    if open_ms + DAY > _now_ms(venue):
         raise Unknown('daily bar is not completed')
     for model in models.values():
         model.advance_open(open_ms, open_price)
@@ -524,7 +604,7 @@ def _cursor_after(trades, accounted, cursor):
     return new_cursor, keep
 
 
-def _commit(state, models, positions, follows, fresh, last):
+def _commit(state, models, positions, follows, fresh, last, *, expire_buys=False):
     _, _, accounted, exit_through, cursor = _stored(state)
     values = {
         'rule': RULE,
@@ -537,7 +617,15 @@ def _commit(state, models, positions, follows, fresh, last):
     }
     if fresh:
         values['entries_after'] = last
-    state.set_many(values)
+    with state.db:
+        if expire_buys:
+            for identity, encoded in state.db.execute(
+                    "SELECT id,payload FROM intents WHERE kind='p4' AND status='prepared'"):
+                if json.loads(encoded)['order']['side'] == 'BUY':
+                    state.db.execute("UPDATE intents SET status='settled',result=?,updated=? WHERE id=?",
+                                     (json.dumps({'not_sent': True, 'reason': 'entry policy upgraded'}),
+                                      time.time(), identity))
+        state.set_many(values)
     state._staged = None
 
 
@@ -614,7 +702,7 @@ def _risk_state(state, snapshot, venue):
             covered += max(D(0), D(row['orig_qty']) - D(row['executed_qty']))
     unprotected = max(D(0), btc - covered)
     unvalued = state.get('third_asset_fees_unvalued') or []
-    return {'account_uid': snapshot['account_uid'], 'environment': snapshot['environment'],
+    risk = {'account_uid': snapshot['account_uid'], 'environment': snapshot['environment'],
             'symbol': 'BTCUSDT', 'direction': 'long' if btc else 'flat',
             'btc': btc, 'usdt': D(snapshot['usdt_free']) + D(snapshot['usdt_locked']),
             'last_price': snapshot.get('last_price'), 'covered_btc': min(btc, covered),
@@ -622,7 +710,9 @@ def _risk_state(state, snapshot, venue):
             'manual_takeover': unprotected > 0 or getattr(state, '_recovery_only', False),
             'recovery_only': getattr(state, '_recovery_only', False),
             'fee_valuation_complete': not bool(unvalued), 'unvalued_fee_assets': unvalued,
-            'observed_at_ms': int(venue.clock() * 1000), 'observation_current': True}
+            'observed_at_ms': _now_ms(venue), 'observation_current': True}
+    _mark_unknown_exposure({'risk_state': risk}, state)
+    return risk
 
 
 def _execution_evidence(state, snapshot):
