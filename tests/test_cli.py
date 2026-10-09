@@ -27,6 +27,36 @@ class CliTests(unittest.TestCase):
         self.assertIn('execution is unavailable', report['reason'])
         self.assertNotIn('configuration', report['reason'])
 
+    def test_live_execute_needs_a_ceiling_and_matching_uid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': '10001', 'state_dir': directory,
+                'environment': 'live', 'capital_limit_usdt': '100',
+            }))
+            wrong = Path(directory) / 'demo.json'
+            wrong.write_text(json.dumps({
+                'account_uid': '10001', 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '100',
+            }))
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = main(['run', '--execute', '--authorize-uid', '10001', '--config', str(wrong)])
+            self.assertEqual(code, 2)
+            self.assertIn('live environment', json.loads(stdout.getvalue())['reason'])
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = main(['run', '--execute', '--authorize-uid', '999', '--config', str(path)])
+            self.assertEqual(code, 2)
+            self.assertIn('matching --authorize-uid', json.loads(stdout.getvalue())['reason'])
+            with patch('spotquant.cli.connect', return_value=object()) as connect, \
+                    patch('spotquant.cli.run', return_value={'status': 'read_only', 'reason': 'gated'}):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    code = main(['run', '--execute', '--authorize-uid', '10001', '--config', str(path)])
+            self.assertEqual(code, 0)
+            self.assertTrue(connect.called)
+
     def test_status_persists_a_failed_observation(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / 'state'

@@ -3,8 +3,8 @@ from decimal import Decimal as D
 import json
 import unittest
 
-from spotquant.follow import apply_day, day_open, replay, unexplained
-from spotquant.model import DAY, ORIGIN
+from spotquant.follow import advance, apply_day, day_open, replay, unexplained
+from spotquant.model import DAY, ORIGIN, Model
 from spotquant.types import Unknown
 
 
@@ -280,6 +280,25 @@ class FollowTests(unittest.TestCase):
         self.assertEqual(D(position['qty']), D('1.999001'))
         self.assertEqual(position['first_ms'], first)
         self.assertFalse(position.get('dust', False))
+
+    def test_entry_day_low_does_not_mark_a_stop_breach(self):
+        model = Model(40)
+        opened = {
+            'entry_fill': '100', 'first_ms': ORIGIN + 60_000, 'entry_open_ms': ORIGIN,
+            'peak': '100', 'repair': False, 'repair_peak': None, 'adverse': False,
+            'through': None, 'qty': '1', 'protection': 'resting',
+        }
+        same_day = advance(opened, {
+            'open_ms': ORIGIN, 'low': D('70'), 'close': D('100'), 'high': D('100'),
+            'bull': True, 'cap_high': None,
+        }, model)
+        self.assertEqual(same_day['protection'], 'resting')
+        later = dict(same_day, through=None)
+        nxt = advance(later, {
+            'open_ms': ORIGIN + DAY, 'low': D('70'), 'close': D('100'), 'high': D('100'),
+            'bull': True, 'cap_high': None,
+        }, model)
+        self.assertEqual(nxt['protection'], 'breached')
 
 
 if __name__ == '__main__':

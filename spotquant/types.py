@@ -19,6 +19,10 @@ class NotSent(Unknown):
     """The adapter proves this order never reached its write transport."""
 
 
+class NotFound(Unknown):
+    """The venue reports that this order identity does not exist."""
+
+
 def number(value: Any, name: str = 'number', *, positive: bool = False, nonnegative: bool = False) -> D:
     try:
         result = D(str(value))

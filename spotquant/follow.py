@@ -51,7 +51,7 @@ def advance(position: dict, step: dict, model: Model) -> dict:
     repair = position['repair']
     repair_peak = None if position['repair_peak'] is None else D(position['repair_peak'])
     stop = peak * (D(1) - model.trail)
-    if low is not None and low <= stop:
+    if low is not None and low <= stop and open_ms != position['entry_open_ms']:
         protection = 'breached'
     elif close <= stop:
         protection = 'through_close'

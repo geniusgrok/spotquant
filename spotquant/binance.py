@@ -16,7 +16,7 @@ import urllib.request
 from decimal import Decimal as D
 
 from .follow import normalize_trade
-from .types import Blocked, Unknown, NotSent, number
+from .types import Blocked, Unknown, NotFound, NotSent, number
 
 HOSTS = {
     'live': 'https://api.binance.com',
@@ -60,11 +60,11 @@ class Binance:
         self.environment = environment
         self.capital_limit = capital_limit
         self.write_attempted = False
-        if demo_execution_uid is not None and (environment != 'demo' or capital_limit is None
+        if demo_execution_uid is not None and (environment not in ('demo', 'live') or capital_limit is None
                 or number(capital_limit, positive=True) <= 0
                 or not isinstance(demo_execution_uid, str) or not demo_execution_uid.isascii()
                 or not demo_execution_uid.isdigit() or int(demo_execution_uid) <= 0):
-            raise Blocked('Demo execution needs explicit UID and capital ceiling')
+            raise Blocked('execution needs explicit UID and capital ceiling')
         self.demo_execution_uid = demo_execution_uid
         self.execution_authorized = demo_execution_uid is not None
         self.base = HOSTS[environment]
@@ -270,11 +270,18 @@ class Binance:
             'max_notional': self.max_notional,
         }
 
-    def trades(self, since_ms: int) -> list[dict]:
-        """BTCUSDT fills at or after ``since_ms``. A page that does not advance is unknown."""
+    def trades(self, since_ms: int, from_id: int | None = None) -> list[dict]:
+        """BTCUSDT fills at or after ``since_ms``. A page that does not advance is unknown.
+
+        ``from_id`` pages with the trade id alone. Binance rejects combining it
+        with ``startTime``.
+        """
         if type(since_ms) is not int:
             raise Blocked('trade cursor must be an integer millisecond timestamp')
-        params = {'symbol': 'BTCUSDT', 'startTime': str(since_ms), 'limit': '1000'}
+        if from_id is not None and (type(from_id) is not int or from_id <= 0):
+            raise Blocked('trade id cursor must be a positive integer')
+        params = ({'symbol': 'BTCUSDT', 'fromId': str(from_id), 'limit': '1000'} if from_id is not None
+                  else {'symbol': 'BTCUSDT', 'startTime': str(since_ms), 'limit': '1000'})
         found = []
         seen = set()
         while True:
@@ -287,7 +294,7 @@ class Binance:
             for row in payload:
                 trade = normalize_trade(row)
                 ids.append(trade['id'])
-                if trade['time'] >= since_ms and trade['id'] not in seen:
+                if (from_id is not None or trade['time'] >= since_ms) and trade['id'] not in seen:
                     seen.add(trade['id'])
                     found.append(trade)
             if len(payload) < 1000:
@@ -418,7 +425,7 @@ class Binance:
         return int(self.clock() * 1000) + self._offset_ms
 
     def _get(self, path: str, params: dict | None = None, *, signed: bool, method='GET'):
-        if method != 'GET' and (not self.execution_authorized or self.environment != 'demo'
+        if method != 'GET' and (not self.execution_authorized
                 or path != '/api/v3/order' or method not in ('POST', 'DELETE') or not signed):
             raise Blocked('only explicitly enabled Demo order writes are supported')
         if not path.startswith('/'):
@@ -464,6 +471,8 @@ class Binance:
             raise Unknown(f'Binance rate limit HTTP {status}; retry after {retry or "unknown"}')
         if status != 200:
             code = payload.get('code') if isinstance(payload, dict) else None
+            if method == 'GET' and code == -2013:
+                raise NotFound(f'Binance {path} has no order HTTP {status} code {code}')
             if method == 'GET' and signed and code == -1021 and not self._clock_retried:
                 self._clock_retried = True
                 self._offset_ms = None

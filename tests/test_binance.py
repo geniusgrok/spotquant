@@ -8,7 +8,7 @@ import unittest
 
 from spotquant.binance import Binance, ORIGIN, DAY
 from spotquant.preview import _qty_ok
-from spotquant.types import Blocked, Unknown, NotSent
+from spotquant.types import Blocked, Unknown, NotSent, NotFound
 
 
 SECRET = 'test-secret'
@@ -317,6 +317,21 @@ class BinanceTests(unittest.TestCase):
                         clock=lambda: script.now / 1000)
         with self.assertRaisesRegex(Unknown, 'OHLC'):
             venue.completed_daily(None)
+
+    def test_missing_order_is_distinct_from_a_transport_timeout(self):
+        venue = Binance(key=KEY, secret=SECRET, environment='live', clock=lambda: 1_700_000_000)
+        venue._offset_ms = 0
+        def opener(method, url, headers):
+            return 400, b'{"code":-2013,"msg":"Order does not exist"}'
+        venue._opener = opener
+        with self.assertRaises(NotFound):
+            venue.query('sq-missing')
+        def timeout(method, url, headers):
+            return 504, b'{"code":-1007,"msg":"timeout"}'
+        venue._opener = timeout
+        with self.assertRaises(Unknown) as caught:
+            venue.query('sq-missing')
+        self.assertNotIsInstance(caught.exception, NotFound)
 
 
 if __name__ == '__main__':

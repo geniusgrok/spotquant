@@ -42,8 +42,11 @@ class TestVenue:
     def daily_open(self, open_ms):
         return open_ms, getattr(self, 'open_price', self.bars[-1][3])
 
-    def trades(self, since):
-        return [trade for trade in self.fills if trade['time'] >= since]
+    def trades(self, since, from_id=None):
+        rows = self.fills if from_id is None else [row for row in self.fills if row['id'] >= from_id]
+        if from_id is None:
+            rows = [row for row in rows if row['time'] >= since]
+        return rows
 
     def query(self, identity):
         if self.unknown_query:

@@ -118,7 +118,7 @@ class State:
     def trades(self, venue, since_ms: int) -> list[dict]:
         """Retain immutable fills; refresh a one-day overlap after the last read.
 
-        A gap beyond the supported observation window requires owner reconciliation.
+        A gap beyond the last stored fill id still has no page to continue.
         No balance anchor is replaced, and identical timestamps retain every ID.
         """
         def observed_ms():
@@ -129,20 +129,32 @@ class State:
         watermark = self.get('fill_watermark')
         if watermark and now_ms < watermark['through_ms']:
             raise Unknown('fill observation clock moved backwards')
+        resume_id = None
         if watermark and now_ms - watermark['through_ms'] > 80 * 86400000:
-            raise Unknown('fill observation gap exceeds supported recovery window')
+            row = self.db.execute('SELECT MAX(id) FROM fills').fetchone()
+            if not row or row[0] is None:
+                raise Unknown('fill observation gap exceeds supported recovery window')
+            resume_id = int(row[0])
         start = since_ms if watermark is None else max(
             watermark['from_ms'], watermark['through_ms'] - 86400000)
         # Older requested fills remain available locally. Only an uncovered prefix
         # requires a historical request; empty responses do not adopt holdings.
         if watermark and since_ms < watermark['from_ms']:
             start = since_ms
-        observed = list(venue.trades(start))
+        observed = (list(venue.trades(start, from_id=resume_id)) if resume_id is not None
+                    else list(venue.trades(start)))
+        anchor_time = None
+        if resume_id is not None:
+            stored = self.db.execute('SELECT time_ms FROM fills WHERE id=?', (resume_id,)).fetchone()
+            anchor_time = None if stored is None else stored[0]
         with self.db:
             for row in observed:
                 if type(row.get('id')) is not int or type(row.get('time')) is not int:
                     raise Unknown('fill identity or timestamp is invalid')
-                if row['time'] < start or row['time'] > observed_ms():
+                if row['time'] > observed_ms() or (
+                        resume_id is not None and row['id'] >= resume_id and anchor_time is not None
+                        and row['time'] < anchor_time) or (
+                        resume_id is None and row['time'] < start):
                     raise Unknown('fill lies outside the requested observation')
                 payload = json.dumps(serial(row), sort_keys=True, allow_nan=False)
                 prior = self.db.execute('SELECT payload FROM fills WHERE id=?', (row['id'],)).fetchone()

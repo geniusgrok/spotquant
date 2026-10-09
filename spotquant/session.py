@@ -10,9 +10,9 @@ from decimal import Decimal as D
 
 from .follow import advance, apply_day, day_open, unexplained
 from .model import DAY, ORIGIN, SLEEVES, Model
-from .preview import MIN_NOTIONAL, decision
+from .preview import MIN_NOTIONAL, BASE_STEP, decision
 from .state import State, client_id
-from .types import Blocked, Unknown, number
+from .types import Blocked, Unknown, floor_step, number
 
 from .crowding import RULE
 
@@ -305,9 +305,8 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
             report.setdefault('risk_state', {'direction': 'unknown', 'unprotected_btc': None,
                                               'manual_takeover': execute, 'observation_current': False})
             report['risk_state']['observation_current'] = False
-            unprotected = report['risk_state'].get('unprotected_btc')
-            if execute and (unprotected is None or unprotected > 0 or getattr(state, '_recovery_only', False)):
-                report['manual_takeover'] = True
+            if execute:
+                report['manual_takeover'] = bool(report['risk_state'].get('manual_takeover'))
             if getattr(state, '_recovery_only', False):
                 report['recovery_only'] = True
             state.report(report)
@@ -494,10 +493,9 @@ def _consume_bar(state, venue, models, open_ms, open_price, high, low, close):
         model.advance_open(open_ms, open_price)
     positions, follows, accounted, exit_through, cursor = _stored(state)
     trades = _trades_for(state, venue, positions, follows, cursor)
-    positions, follows, accounted, closed = apply_day(
-        models, positions, follows, accounted, open_ms, trades,
+    positions, follows, accounted, closed = _apply_book(
+        state, models, positions, follows, accounted, open_ms, trades,
         lambda: (bar for bar in venue.completed_daily(None) if bar[0] < open_ms),
-        owners=getattr(state, '_execution_owners', None),
     )
     for window in closed:
         exit_through[str(window)] = models[window].last
@@ -519,6 +517,22 @@ def _consume_bar(state, venue, models, open_ms, open_price, high, low, close):
     state._staged = (positions, follows, accounted, exit_through, cursor)
 
 
+def _book_owners(state):
+    owners = getattr(state, '_execution_owners', None)
+    return {} if owners is None else owners
+
+
+def _apply_book(state, models, positions, follows, accounted, open_ms, trades, history):
+    """Fills without a durable allocation stay external and drop any armed follow."""
+    try:
+        return apply_day(models, positions, follows, accounted, open_ms, trades, history,
+                         owners=_book_owners(state))
+    except Unknown as exc:
+        if 'no durable order allocation' in str(exc):
+            state.set('follows', {str(window): None for window in SLEEVES})
+        raise
+
+
 def _fold(state, venue, models, snapshot):
     """Fills after the last completed bar, then the balance check.
 
@@ -534,9 +548,9 @@ def _fold(state, venue, models, snapshot):
         if trade['id'] not in accounted and (last is None or day_open(trade['time']) > last)
     })
     for open_ms in later:
-        positions, follows, accounted, closed = apply_day(
-            models, positions, follows, accounted, open_ms, trades, lambda: venue.completed_daily(None),
-            owners=getattr(state, '_execution_owners', None),
+        positions, follows, accounted, closed = _apply_book(
+            state, models, positions, follows, accounted, open_ms, trades,
+            lambda: venue.completed_daily(None),
         )
         for window in closed:
             exit_through[str(window)] = models[window].last
@@ -701,13 +715,19 @@ def _risk_state(state, snapshot, venue):
                 and row['status'] in ('NEW', 'PARTIALLY_FILLED')):
             covered += max(D(0), D(row['orig_qty']) - D(row['executed_qty']))
     unprotected = max(D(0), btc - covered)
+    price = snapshot.get('last_price')
+    sellable = floor_step(btc, BASE_STEP)
+    gap = max(D(0), sellable - min(covered, sellable))
+    minimum = D(snapshot.get('min_notional') or MIN_NOTIONAL)
+    tradable_gap = gap > 0 and (price is None or gap * D(price) >= minimum)
     unvalued = state.get('third_asset_fees_unvalued') or []
     risk = {'account_uid': snapshot['account_uid'], 'environment': snapshot['environment'],
             'symbol': 'BTCUSDT', 'direction': 'long' if btc else 'flat',
             'btc': btc, 'usdt': D(snapshot['usdt_free']) + D(snapshot['usdt_locked']),
             'last_price': snapshot.get('last_price'), 'covered_btc': min(btc, covered),
             'unprotected_btc': unprotected,
-            'manual_takeover': unprotected > 0 or getattr(state, '_recovery_only', False),
+            'residual_btc': D(0) if tradable_gap else unprotected,
+            'manual_takeover': tradable_gap or getattr(state, '_recovery_only', False),
             'recovery_only': getattr(state, '_recovery_only', False),
             'fee_valuation_complete': not bool(unvalued), 'unvalued_fee_assets': unvalued,
             'observed_at_ms': _now_ms(venue), 'observation_current': True}

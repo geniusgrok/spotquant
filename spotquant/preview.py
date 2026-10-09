@@ -99,7 +99,7 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
             ),
         )
     if not model.shadow_in:
-        if model.bull and not model.extended:
+        if model.bull and not model.extended and not model.need_reset:
             return {
                 'action': 'hold',
                 'reason': 'early entry is waiting for the daily book to join or for the close to lose the SMA',

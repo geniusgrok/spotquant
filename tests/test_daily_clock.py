@@ -27,7 +27,7 @@ class DailyVenue:
         self.open_calls += 1
         return stamp, self.open_price
 
-    def trades(self, since):
+    def trades(self, since, from_id=None):
         raise AssertionError('price-only history must not query account trades')
 
 

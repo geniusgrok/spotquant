@@ -243,6 +243,40 @@ class PreviewTests(unittest.TestCase):
         allowed = portfolio({40: view}, {}, snapshot(price='104'),
                             entries_enabled=True, capital_limit=None)
         self.assertEqual(allowed['action'], 'enter')
+
+    def test_shadow_exit_sells_and_an_unjoined_early_entry_still_holds(self):
+        view = Model(40)
+        for index in range(400):
+            view.advance_open(ORIGIN + index * DAY, 100)
+            view.update(ORIGIN + index * DAY, 100, 100, 100)
+        view.advance_open(view.last + DAY, 101)
+        view.update(view.last + DAY, 101, 101, 101)
+        view.advance_open(view.last + DAY, 102)
+        view.update(view.last + DAY, 102, 102, 102)
+        signal = view.last
+        view.advance_open(signal + DAY, 150)
+        view.update(signal + DAY, 155, 139, 140)
+        view.advance_open(view.last + DAY, 137)
+        self.assertTrue(view.need_reset)
+        self.assertFalse(view.shadow_in)
+        position = dict(entry_fill='102', peak='140', qty='1', first_ms=view.last,
+                        repair=False, repair_peak=None, adverse=False)
+        held, qty = _view(view, position)
+        result = decision({40: held}, {40: qty}, dict(snapshot('0', '1', price='137'), last_price=D(137)),
+                          positions={40: position}, owners={}, entries_enabled=True, capital_limit=None,
+                          decision_ms=view.last + DAY)
+        self.assertEqual(result['action'], 'exit')
+        self.assertFalse(result['sleeves']['40']['rearm'])
+        early = model((101,), 40)
+        early_position = dict(entry_fill='101', peak='101', qty='1', first_ms=early.last,
+                              repair=False, repair_peak=None, adverse=False)
+        early_held, early_qty = _view(early, early_position)
+        held_early = decision({40: early_held}, {40: early_qty},
+                              dict(snapshot('0', '1', price='101'), last_price=D(101)),
+                              positions={40: early_position}, owners={}, entries_enabled=True,
+                              capital_limit=None, decision_ms=early.last + DAY)
+        self.assertEqual(held_early['action'], 'hold')
+
     def test_single_position_buy_uses_free_cash_and_capital_ceiling(self):
         views = {40: model()}
         pooled = portfolio(views, {}, snapshot('100.01'), entries_enabled=True, capital_limit=D(50))
