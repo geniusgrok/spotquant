@@ -56,6 +56,8 @@ def observe(config_path) -> dict:
     with State(config.state_dir, config.scope) as state:
         try:
             venue = connect(config)
+            if hasattr(venue, 'bind_state'):
+                venue.bind_state(state)
             current = cycle(venue, state, config)
             report = _base_report(config)
             report.update(current)
@@ -103,7 +105,11 @@ def main(argv=None):
         if args.command == 'snapshot':
             from .snapshot import export
             config = load(args.config)
-            report = dict(export(config, connect(config)), status='read_only')
+            with State(config.state_dir, config.scope) as state:
+                venue = connect(config)
+                if hasattr(venue, 'bind_state'):
+                    venue.bind_state(state)
+                report = dict(export(config, venue), status='read_only')
             with args.out.open('x') as stream:
                 json.dump(report, stream, indent=2)
                 stream.write('\n')

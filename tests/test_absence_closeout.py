@@ -8,7 +8,8 @@ from spotquant.execution import Lifecycle
 from spotquant.session import PREVIOUS_RULE, cycle, run
 from spotquant.state import State
 from spotquant.types import Blocked, NotFound, Unknown
-from test_execution import ExecutionTests, add_day, run_day, venue_before_entry
+from test_execution import add_day, run_day, venue_before_entry
+import test_execution as execution_fixture
 from unittest import TestCase
 
 
@@ -19,7 +20,7 @@ def _new_stops(venue):
 class AbsenceTests(TestCase):
     def test_missing_stop_is_replaced_only_after_a_later_confirming_read(self):
         with tempfile.TemporaryDirectory() as directory:
-            config, venue = ExecutionTests().entered(directory)
+            config, venue = execution_fixture.ExecutionTests().entered(directory)
             original = next(row for row in _new_stops(venue))
             original_id, order_id = original['clientOrderId'], original['orderId']
             before_btc, before_sent = venue.btc, list(venue.sent)
@@ -60,7 +61,7 @@ class AbsenceTests(TestCase):
 
     def test_same_millisecond_reread_does_not_arm_a_successor(self):
         with tempfile.TemporaryDirectory() as directory:
-            config, venue = ExecutionTests().entered(directory)
+            config, venue = execution_fixture.ExecutionTests().entered(directory)
             original = next(row for row in _new_stops(venue))
             venue.orders.pop(original['clientOrderId'])
             with State(directory, config.scope) as state:
@@ -76,7 +77,7 @@ class AbsenceTests(TestCase):
 
     def test_visible_order_and_durable_fill_are_not_treated_as_absence(self):
         with tempfile.TemporaryDirectory() as directory:
-            config, venue = ExecutionTests().entered(directory)
+            config, venue = execution_fixture.ExecutionTests().entered(directory)
             original = next(row for row in _new_stops(venue))
             query = venue.query
 
@@ -104,7 +105,7 @@ class AbsenceTests(TestCase):
 
     def test_unknown_buy_is_never_closed_as_absent(self):
         with tempfile.TemporaryDirectory() as directory:
-            config, venue = ExecutionTests().entered(directory)
+            config, venue = execution_fixture.ExecutionTests().entered(directory)
             with State(directory, config.scope) as state:
                 lifecycle = Lifecycle(state, venue, config)
                 identity, payload, _, _ = next(row for row in lifecycle.rows()
@@ -128,7 +129,7 @@ class AbsenceTests(TestCase):
 
     def test_reappeared_stop_is_reclaimed_and_its_successor_is_canceled(self):
         with tempfile.TemporaryDirectory() as directory:
-            config, venue = ExecutionTests().entered(directory)
+            config, venue = execution_fixture.ExecutionTests().entered(directory)
             live = next(row for row in _new_stops(venue))
             original = dict(live)
             live['status'] = 'EXPIRED'
@@ -158,7 +159,7 @@ class AbsenceTests(TestCase):
 
     def test_previous_safety_rule_keeps_its_peak_when_upgraded(self):
         with tempfile.TemporaryDirectory() as directory:
-            config, venue = ExecutionTests().entered(directory)
+            config, venue = execution_fixture.ExecutionTests().entered(directory)
             with State(directory, config.scope) as state:
                 positions = state.get('positions')
                 positions['40']['peak'] = '110'

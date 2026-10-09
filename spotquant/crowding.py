@@ -2,6 +2,7 @@
 from decimal import Decimal as D
 import hashlib
 import json
+import math
 import time
 from urllib.request import urlopen
 from urllib.error import HTTPError
@@ -95,12 +96,13 @@ class PublicFeatures:
 
     Failed or malformed public responses remain missing inputs.
     """
-    def __init__(self, observations=None, *, clock=None):
+    def __init__(self, observations=None, *, clock=None, on_rate_limit=None):
         self.observations = [] if observations is None else observations
         self.clock = clock or (lambda: time.time_ns() // 1000000)
         self.last_lookup = None
         self.fetched = None
         self.retry_after = {}
+        self.on_rate_limit = on_rate_limit
 
     def value(self, name, now):
         record = dict(name=name, value=None, cause='missing_public_' + name)
@@ -173,12 +175,15 @@ class PublicFeatures:
                     if isinstance(exc, HTTPError):
                         if exc.code in (418, 429):
                             try:
-                                delay = _decimal((exc.headers or {}).get('Retry-After', '60'))
-                                if delay <= 0: raise ValueError('invalid Retry-After')
-                                delay_ms = int(max(D(1), delay) * 1000)
+                                delay = float(_decimal((exc.headers or {}).get('Retry-After', '60')))
+                                if delay <= 0 or not math.isfinite(delay * 1000):
+                                    raise ValueError('invalid Retry-After')
+                                delay_ms = math.ceil(max(1, delay) * 1000)
                             except (ValueError, ArithmeticError):
                                 delay_ms = 60000
                             self.retry_after[host] = self.clock() + delay_ms
+                            if self.on_rate_limit is not None:
+                                self.on_rate_limit(host, delay_ms / 1000)
                         exc.close()
                     raw = str(type(exc).__name__).encode()
                     record.update(body=None, error=type(exc).__name__, sha256=hashlib.sha256(raw).hexdigest())
