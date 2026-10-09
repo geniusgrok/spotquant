@@ -4,7 +4,7 @@ import unittest
 
 from spotquant.model import DAY, ORIGIN, Model, SLEEVES
 from spotquant.preview import decision_view, portfolio
-from spotquant.session import _follow_after, _view
+from spotquant.session import _entries_blocked, _follow_after, _view
 
 
 def model(prices=(98, 101, 102), window=30):
@@ -21,6 +21,55 @@ def snapshot(usdt='1000', btc='0', price='102', orders=0):
 
 
 class PreviewTests(unittest.TestCase):
+    def test_shadow_long_entry_waits_until_price_leaves_touch_and_keeps_actual_exit_lock(self):
+        view = model((98, 101, 102, 103), 40)
+        self.assertTrue(view.shadow_in)
+        current = snapshot(price='103')
+        current['last_price'] = view.sma * (1 + view.touch)
+        result = portfolio({40: view}, {}, current, entries_enabled=True, capital_limit=None)
+        self.assertEqual(result['action'], 'flat')
+        current['last_price'] += D('.01')
+        result = portfolio({40: view}, {}, current, entries_enabled=True, capital_limit=None)
+        self.assertEqual(result['action'], 'enter')
+
+        # A real touch sale still consumes this bar, even after price recovers.
+        view.note_flat(rearm=True)
+        exit_through = {'40': view.last}
+        self.assertTrue(_entries_blocked({40: view}, exit_through))
+        blocked = portfolio({40: view}, {}, current,
+                            entries_enabled=not _entries_blocked({40: view}, exit_through), capital_limit=None)
+        self.assertEqual(blocked['action'], 'flat')
+        self.assertIsNone(_follow_after(result, {40: view}, {40: None}, {40: None}, exit_through)[40])
+        next_bar = view.last + DAY
+        view.advance_open(next_bar, D(104))
+        view.update(next_bar, D(104), D(104), D(104))
+        current['last_price'] = D(104)
+        allowed = portfolio({40: view}, {}, current,
+                            entries_enabled=not _entries_blocked({40: view}, exit_through), capital_limit=None)
+        self.assertEqual(allowed['action'], 'enter')
+
+    def test_touch_entry_guard_exempts_early_and_bullish_repair_entries(self):
+        early = model((101,), 40)
+        repair = model((40,) * 40 + (45, 40, D('42.4')), 40)
+        self.assertTrue(repair.cap_enter)
+        for view in (early, repair):
+            self.assertFalse(view.shadow_in)
+            self.assertTrue(view.bull)
+            current = snapshot(price=str(view.close))
+            current['last_price'] = view.sma * (1 + view.touch)
+            result = portfolio({40: view}, {}, current, entries_enabled=True, capital_limit=None)
+            self.assertEqual(result['action'], 'enter')
+            self.assertEqual(result['sleeves']['40']['repair'], view is repair)
+        next_bar = repair.last + DAY
+        repair.advance_open(next_bar, repair.close)
+        repair.update(next_bar, repair.close, repair.close, repair.close)
+        self.assertTrue(repair.shadow_repair)
+        self.assertFalse(repair.cap_enter)
+        current['last_price'] = repair.sma * (1 + repair.touch)
+        result = portfolio({40: repair}, {}, current, entries_enabled=True, capital_limit=None)
+        self.assertEqual(result['action'], 'enter')
+        self.assertTrue(result['sleeves']['40']['repair'])
+
     def test_one_close_can_buy_before_the_shadow_book_joins(self):
         view = model((101,))
         self.assertFalse(view.enter)

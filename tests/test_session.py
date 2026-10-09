@@ -5,11 +5,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from spotquant.config import Config
 from spotquant.model import DAY, ORIGIN, Model
-from spotquant.session import cycle, run
+from spotquant.session import KNOWN_OLD_RULE, cycle, run
 from spotquant.state import State, client_id
 from spotquant.types import Blocked, Unknown
 
@@ -243,8 +243,9 @@ class LegacyRecoveryTests(unittest.TestCase):
             model.update(*bar)
         body = model.checkpoint()['body']
         body['version'] = version
-        body.pop('shadow_open_ms', None)
-        body.pop('shadow_blocked', None)
+        if version < 7:
+            body.pop('shadow_open_ms', None)
+            body.pop('shadow_blocked', None)
         if version == 5:
             for key in ('touch', 'shadow_in', 'shadow_repair', 'shadow_adverse', 'shadow_entry'):
                 body.pop(key)
@@ -254,7 +255,7 @@ class LegacyRecoveryTests(unittest.TestCase):
     def rehash(body):
         return {'body': body, 'sha256': hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()}
 
-    def seed(self, directory, version):
+    def seed(self, directory, version, rule=None):
         from spotquant.crowding import RULE
         from spotquant.execution import Lifecycle
         from venue_fixture import TestVenue
@@ -268,7 +269,7 @@ class LegacyRecoveryTests(unittest.TestCase):
                         entry_open_ms=last + DAY, peak='100', repair=False,
                         repair_peak=None, adverse=False, through=None, protection='resting')
         with State(directory, config.scope) as state:
-            state.set_many(dict(rule=RULE, models={'40': checkpoint}, positions={'40': position},
+            state.set_many(dict(rule=RULE if rule is None else rule, models={'40': checkpoint}, positions={'40': position},
                                 follows={'40': None}, entries_after=last))
             lifecycle = Lifecycle(state, venue, config)
             stop = lifecycle.prepare(dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
@@ -291,15 +292,24 @@ class LegacyRecoveryTests(unittest.TestCase):
             queried.append(identity)
             return query(identity)
         venue.query = readback
+        venue.submit = Mock(side_effect=AssertionError('recovery must not submit'))
+        venue.cancel = Mock(side_effect=AssertionError('recovery must not cancel'))
         return config, venue, stop, buy, queried
 
     def test_known_legacy_only_reads_original_order_and_keeps_protection_and_preparation(self):
-        for version in (5, 6):
-            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
-                config, venue, stop, buy, queried = self.seed(directory, version)
+        for rule, version in ((None, 5), (None, 6), (KNOWN_OLD_RULE, 5),
+                              (KNOWN_OLD_RULE, 6), (KNOWN_OLD_RULE, 7)):
+            with (self.subTest(rule=rule, version=version), tempfile.TemporaryDirectory() as directory,
+                  patch('spotquant.session._cycle', side_effect=AssertionError('recovery must not run strategy')) as strategy):
+                config, venue, stop, buy, queried = self.seed(directory, version, rule)
                 with State(directory, config.scope) as state:
-                    before = {key: state.get(key) for key in ('models', 'positions', 'follows', 'entries_after')}
+                    before = list(state.db.execute('SELECT key,value FROM meta ORDER BY key'))
+                    prepared = state.db.execute('SELECT * FROM intents WHERE id=?', (buy,)).fetchone()
+                    stop_payload = state.db.execute('SELECT payload FROM intents WHERE id=?', (stop,)).fetchone()
                     sent = list(venue.sent)
+                    with self.assertRaises(Blocked):
+                        cycle(venue, state, config)
+                    self.assertEqual(queried, [])
                     with self.assertRaisesRegex(Blocked, 'readback only'):
                         cycle(venue, state, config, execute=True)
                     self.assertEqual(queried, [stop])
@@ -307,7 +317,9 @@ class LegacyRecoveryTests(unittest.TestCase):
                     self.assertEqual(venue.orders[stop]['status'], 'NEW')
                     self.assertEqual(dict(state.db.execute('SELECT id,status FROM intents')),
                                      {stop: 'resting', buy: 'prepared'})
-                    self.assertEqual({key: state.get(key) for key in before}, before)
+                    self.assertEqual(list(state.db.execute('SELECT key,value FROM meta ORDER BY key')), before)
+                    self.assertEqual(state.db.execute('SELECT * FROM intents WHERE id=?', (buy,)).fetchone(), prepared)
+                    self.assertEqual(state.db.execute('SELECT payload FROM intents WHERE id=?', (stop,)).fetchone(), stop_payload)
                 report = run(config, venue, execute=True, monotonic=venue.monotonic, wait=venue.wait)
                 self.assertTrue(report['recovery_only'])
                 self.assertTrue(report['manual_takeover'])
@@ -315,14 +327,17 @@ class LegacyRecoveryTests(unittest.TestCase):
                 self.assertEqual(report['risk_state']['covered_btc'], D(1))
                 self.assertFalse(report['write_attempted'])
                 self.assertNotIn('model_preview', report)
+                self.assertEqual(venue.submit.call_count, 0)
+                self.assertEqual(venue.cancel.call_count, 0)
+                self.assertEqual(strategy.call_count, 0)
 
     def test_damaged_legacy_and_foreign_rule_never_query_native_orders(self):
-        cases = ('bad_hash', 'missing_field', 'wrong_parameter', 'unsupported_version', 'foreign_rule',
+        cases = ('bad_hash', 'missing_field', 'wrong_parameter', 'wrong_sleeve', 'unsupported_version', 'foreign_rule',
                  'wrong_identity', 'invalid_stop_rearm', 'missing_position', 'missing_stop_position_key',
                  'invalid_stop_position_time', 'market_position_map')
-        for case in cases:
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
-                config, venue, stop, buy, queried = self.seed(directory, 6)
+        for version, case in ((version, case) for version in (6, 7) for case in cases):
+            with self.subTest(version=version, case=case), tempfile.TemporaryDirectory() as directory:
+                config, venue, stop, buy, queried = self.seed(directory, version, KNOWN_OLD_RULE if version == 7 else None)
                 with State(directory, config.scope) as state:
                     saved = state.get('models')
                     if case == 'bad_hash':
@@ -332,6 +347,9 @@ class LegacyRecoveryTests(unittest.TestCase):
                         saved['40'] = self.rehash(saved['40']['body'])
                     elif case == 'wrong_parameter':
                         saved['40']['body']['trail'] = '0.01'
+                        saved['40'] = self.rehash(saved['40']['body'])
+                    elif case == 'wrong_sleeve':
+                        saved['40']['body']['sma_window'] = 30
                         saved['40'] = self.rehash(saved['40']['body'])
                     elif case == 'unsupported_version':
                         saved['40']['body']['version'] = 4
@@ -356,24 +374,35 @@ class LegacyRecoveryTests(unittest.TestCase):
                         with state.db:
                             state.db.execute('UPDATE intents SET payload=? WHERE id=?', (json.dumps(payload), identity))
                     state.set('models', saved)
+                    before_meta = list(state.db.execute('SELECT key,value FROM meta ORDER BY key'))
+                    before_intents = list(state.db.execute('SELECT * FROM intents ORDER BY id'))
                     sent = list(venue.sent)
                     with self.assertRaises(Blocked):
                         cycle(venue, state, config, execute=True)
                     self.assertEqual(queried, [])
                     self.assertEqual(venue.sent, sent)
+                    self.assertEqual(venue.submit.call_count, 0)
+                    self.assertEqual(venue.cancel.call_count, 0)
+                    self.assertEqual(list(state.db.execute('SELECT key,value FROM meta ORDER BY key')), before_meta)
+                    self.assertEqual(list(state.db.execute('SELECT * FROM intents ORDER BY id')), before_intents)
 
     def test_legacy_unknown_readback_never_retries_or_dispatches_prepared_buy(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config, venue, stop, buy, queried = self.seed(directory, 6)
-            venue.orders.pop(stop)
-            with State(directory, config.scope) as state:
-                sent = list(venue.sent)
-                with self.assertRaisesRegex(Unknown, 'never resubmitted'):
-                    cycle(venue, state, config, execute=True)
-                self.assertEqual(queried, [stop])
-                self.assertEqual(venue.sent, sent)
-                self.assertEqual({item['id']: item['status'] for item in state.pending()},
-                                 {stop: 'unknown', buy: 'prepared'})
+        for rule, version in ((None, 6), (KNOWN_OLD_RULE, 7)):
+            with self.subTest(rule=rule, version=version), tempfile.TemporaryDirectory() as directory:
+                config, venue, stop, buy, queried = self.seed(directory, version, rule)
+                venue.orders.pop(stop)
+                with State(directory, config.scope) as state:
+                    before_meta = list(state.db.execute('SELECT key,value FROM meta ORDER BY key'))
+                    before_intents = list(state.db.execute('SELECT * FROM intents ORDER BY id'))
+                    sent = list(venue.sent)
+                    with self.assertRaisesRegex(Unknown, 'never resubmitted'):
+                        cycle(venue, state, config, execute=True)
+                    self.assertEqual(queried, [stop])
+                    self.assertEqual(venue.sent, sent)
+                    self.assertEqual(venue.submit.call_count, 0)
+                    self.assertEqual(venue.cancel.call_count, 0)
+                    self.assertEqual(list(state.db.execute('SELECT key,value FROM meta ORDER BY key')), before_meta)
+                    self.assertEqual(list(state.db.execute('SELECT * FROM intents ORDER BY id')), before_intents)
 
 
 if __name__ == '__main__':

@@ -14,8 +14,10 @@ from .preview import MIN_NOTIONAL, decision
 from .state import State, client_id
 from .types import Blocked, Unknown
 
-# A different rule is never recovered or silently re-anchored, even while flat.
 from .crowding import RULE
+
+# The prior policy permits original-order readback, never strategy takeover.
+KNOWN_OLD_RULE = '2026-10-03-atr-stop-crowding-interaction-v1'
 
 # Dropped when a cycle fails so the previous success cannot be read as current.
 STALE_REPORT_FIELDS = (
@@ -259,19 +261,26 @@ def _guard_state(state, *, recovery_only=False):
             'lifecycle_identity', 'alpha_identity', 'edge_identity', 'adoption_risk')):
         raise Blocked('state belongs to an incompatible strategy')
     saved, rule = state.get('models'), state.get('rule')
-    if rule is not None and rule != RULE:
+    allowed_rule = rule == RULE or recovery_only and rule == KNOWN_OLD_RULE
+    if rule is not None and not allowed_rule:
         raise Blocked('state was written for another rule; a new directory is not a flat account')
     if saved is None:
         if (rule is not None or state.get('positions') is not None or state.get('follows') is not None
                 or state.db.execute('SELECT 1 FROM intents LIMIT 1').fetchone() or recovery_only):
             raise Blocked('missing model checkpoint for durable state')
         return None
-    if rule != RULE or type(saved) is not dict or set(saved) != {str(w) for w in SLEEVES}:
+    if not allowed_rule or type(saved) is not dict or set(saved) != {str(w) for w in SLEEVES}:
         raise Blocked('state rule or sleeve checkpoint identity mismatch')
     models = None if recovery_only else {w: Model.restore(saved[str(w)]) for w in SLEEVES}
     if recovery_only:
         for checkpoint in saved.values():
-            Model.validate_recovery(checkpoint)
+            if rule == KNOWN_OLD_RULE:
+                try:
+                    Model.restore(checkpoint)
+                except Blocked:
+                    Model.validate_recovery(checkpoint)
+            else:
+                Model.validate_recovery(checkpoint)
     windows = {w: saved[str(w)]['body']['sma_window'] for w in SLEEVES}
     lasts = {saved[str(w)]['body']['last'] for w in SLEEVES}
     if any(window != w for w, window in windows.items()):

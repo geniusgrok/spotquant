@@ -8,7 +8,7 @@ from urllib.request import urlopen
 DAY = 86400000
 FUNDING_LAG = 28800000
 BASIS_LAG = 60000
-RULE = '2026-10-03-atr-stop-crowding-interaction-v1'
+RULE = '2026-10-09-sma40-touch-entry-guard-v1'
 PUBLIC_URLS = {
     'funding': 'https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=10',
     'spot_bars': 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=2',
