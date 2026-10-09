@@ -2,13 +2,15 @@
 from decimal import Decimal as D
 import hashlib
 import json
+from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 from spotquant.config import Config
 from spotquant.model import DAY, ORIGIN, Model
 from spotquant.session import cycle, run
-from spotquant.state import State
+from spotquant.state import State, client_id
 from spotquant.types import Blocked, Unknown
 
 
@@ -187,6 +189,54 @@ class SessionTests(unittest.TestCase):
 
 
 class LegacyRecoveryTests(unittest.TestCase):
+    def test_actual_main_three_sleeve_v5_is_blocked_before_native_readback_and_keeps_state(self):
+        from spotquant.crowding import RULE
+        from venue_fixture import TestVenue
+        fixture = json.loads((Path(__file__).parent / 'fixtures' / 'main-v5-three-sleeve-checkpoint.json').read_text())
+        self.assertEqual(fixture['source_sha'], '314c57c5f8eb3da1eb4bca1202115cb6847aac13')
+        self.assertEqual(set(fixture['models']), {'30', '40', '50'})
+        parameters = dict(version=5, trail='0.28', confirm=2, crash='0.50', high_window=252,
+                          fresh=True, extend='0.61', cap_drop='0.11', cap_bounce='0.07',
+                          cap_depth='0.50', cap_hand='0.11', cap_window=400, adverse_stop='0.04')
+        for key, checkpoint in fixture['models'].items():
+            self.assertEqual(checkpoint, self.rehash(checkpoint['body']))
+            self.assertEqual(checkpoint['body']['sma_window'], int(key))
+            self.assertEqual({field: checkpoint['body'][field] for field in parameters}, parameters)
+        last = fixture['models']['40']['body']['last']
+        position = dict(qty='0.3', entry_fill='102', first_ms=last + DAY + 60_000,
+                        entry_open_ms=last + DAY, peak='102', repair=False,
+                        repair_peak=None, adverse=False, through=None, protection='resting')
+        order = dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS', quantity='0.9', stopPrice='73.44')
+        payload = dict(order=order, sleeves=[30, 40, 50], weights={key: '0.3' for key in fixture['models']},
+                       signal_ms=last, repair={key: False for key in fixture['models']})
+        venue = TestVenue(bars(254, 100))
+        venue.now_ms += 120_000
+        venue.btc = D('0.9')
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            operation = 'SELL-STOP_LOSS-30,40,50-' + hashlib.sha256(json.dumps(order, sort_keys=True).encode()).hexdigest()[:16]
+            identity = client_id(config.scope, last, operation)
+            venue.submit(identity, order)
+            venue.query = Mock(side_effect=AssertionError('main v5 must not query'))
+            venue.submit = Mock(side_effect=AssertionError('main v5 must not submit'))
+            venue.cancel = Mock(side_effect=AssertionError('main v5 must not cancel'))
+            with State(directory, config.scope) as state:
+                state.set_many(dict(rule=RULE, models=fixture['models'],
+                                    positions={key: position for key in fixture['models']},
+                                    follows={key: None for key in fixture['models']}, entries_after=last))
+                with state.db:
+                    state.db.execute('INSERT INTO intents VALUES (?,?,?,?,?,?)',
+                                     (identity, 'p4', json.dumps(payload), 'unknown', '{}', 0))
+                before_meta = list(state.db.execute('SELECT key,value FROM meta ORDER BY key'))
+                before_intents = list(state.db.execute('SELECT * FROM intents ORDER BY id'))
+                with self.assertRaisesRegex(Blocked, 'sleeve checkpoint identity mismatch'):
+                    cycle(venue, state, config, execute=True)
+                self.assertEqual(venue.query.call_count, 0)
+                self.assertEqual(venue.submit.call_count, 0)
+                self.assertEqual(venue.cancel.call_count, 0)
+                self.assertEqual(list(state.db.execute('SELECT key,value FROM meta ORDER BY key')), before_meta)
+                self.assertEqual(list(state.db.execute('SELECT * FROM intents ORDER BY id')), before_intents)
+
     def checkpoint(self, version):
         model = Model()
         for bar in bars(400, 100):
