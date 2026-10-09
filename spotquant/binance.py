@@ -286,7 +286,7 @@ class Binance:
         found.sort(key=lambda item: (item['time'], item['id']))
         return found
 
-    def completed_daily(self, after_open_ms: int | None) -> list[tuple[int, D, D, D]]:
+    def completed_daily(self, after_open_ms: int | None) -> list[tuple[int, D, D, D, D]]:
         """Completed UTC daily bars strictly after ``after_open_ms`` (or from the origin).
 
         Each page must begin on the requested open and step one UTC day at a
@@ -324,8 +324,11 @@ class Binance:
                 open_ms = _millis(row[0])
                 if open_ms < cursor or open_ms >= today:
                     continue
-                page.append((open_ms, number(row[2], 'high', positive=True),
-                             number(row[3], 'low', positive=True), number(row[4], 'close', positive=True)))
+                price, high, low, close = (number(row[index], name, positive=True)
+                                           for index, name in ((1, 'open'), (2, 'high'), (3, 'low'), (4, 'close')))
+                if not low <= price <= high or not low <= close <= high:
+                    raise Unknown('invalid completed daily OHLC')
+                page.append((open_ms, price, high, low, close))
             if not page:
                 break
             if page[0][0] != cursor:
@@ -340,6 +343,22 @@ class Binance:
         if cursor < today:
             raise Unknown('completed daily history stops before the current UTC day')
         return bars
+
+    def daily_open(self, open_ms: int) -> tuple[int, D]:
+        """Observe the requested arrived UTC open; unfinished HLC is unused."""
+        if type(open_ms) is not int or open_ms < ORIGIN or (open_ms - ORIGIN) % DAY:
+            raise Blocked('daily open is not on the UTC day grid')
+        if open_ms > self._timestamp():
+            raise Unknown('daily open has not arrived')
+        payload = self._get('/api/v3/klines', {
+            'symbol': 'BTCUSDT', 'interval': '1d', 'startTime': str(open_ms),
+            'endTime': str(open_ms + DAY - 1), 'limit': '1',
+        }, signed=False)
+        if (not isinstance(payload, list) or len(payload) != 1
+                or not isinstance(payload[0], list) or len(payload[0]) < 2
+                or _millis(payload[0][0]) != open_ms):
+            raise Unknown('daily open response does not match the requested day')
+        return open_ms, number(payload[0][1], 'daily open', positive=True)
 
     def _filters(self) -> None:
         info = self._get('/api/v3/exchangeInfo', {'symbol': 'BTCUSDT'}, signed=False)

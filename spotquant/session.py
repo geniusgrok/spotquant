@@ -4,13 +4,14 @@ from __future__ import annotations
 import time
 import json
 import os
+import hashlib
 from copy import copy
 from decimal import Decimal as D
 
 from .follow import advance, apply_day, day_open, unexplained
-from .model import DAY, SLEEVES, Model
+from .model import DAY, ORIGIN, SLEEVES, Model
 from .preview import MIN_NOTIONAL, decision
-from .state import State
+from .state import State, client_id
 from .types import Blocked, Unknown
 
 # A different rule is never recovered or silently re-anchored, even while flat.
@@ -23,7 +24,7 @@ STALE_REPORT_FIELDS = (
 )
 
 RECORDED_LIMITS = {
-    'adverse_exit': 'next_open',
+    'adverse_exit': 'next_session',
     'adverse_loss_capped': False,
     'execution': 'explicit Demo only; live blocked',
     'public_features': 'funding lag/expiry8h; paired UTC closes lag60s; missing blocks new BUY',
@@ -36,7 +37,21 @@ def clear_stale(report: dict) -> None:
 
 
 def cycle(venue, state: State, config, *, execute=False) -> dict:
-    _guard_state(state)
+    state._recovery_only = False
+    try:
+        _guard_state(state)
+    except Blocked:
+        if not execute:
+            raise
+        # Known old checkpoints can reconcile already sent identities, but never
+        # reach the new model, dispatch a preparation, or replace a native stop.
+        _guard_state(state, recovery_only=True)
+        _guard_venue(venue, config)
+        from .execution import Lifecycle
+        state._recovery_only = True
+        Lifecycle(state, venue, config).recover()
+        raise Blocked('legacy checkpoint allows order readback only; retain state and reconcile before strategy takeover')
+    _guard_venue(venue, config)
     lifecycle = None
     if execute:
         from .execution import Lifecycle
@@ -62,16 +77,19 @@ def _writes(venue):
                 or len(getattr(venue, 'sent', ())) > getattr(venue, '_session_sent_start', 0))
 
 
+def _guard_venue(venue, config):
+    if getattr(venue, 'environment', None) != config.environment:
+        raise Blocked('exchange adapter and configuration differ in environment')
+    if getattr(venue, 'capital_limit', None) != config.capital_limit:
+        raise Blocked('exchange adapter and configuration differ in capital limit')
+
+
 def _cycle(venue, state: State, config, *, lifecycle=None) -> dict:
     """Derive the whole observation in memory, then commit it once.
 
     A failed snapshot or preview leaves the previous checkpoint and positions
     where they were, so the next cycle replays the same bars onto both.
     """
-    if getattr(venue, 'environment', None) != config.environment:
-        raise Blocked('exchange adapter and configuration differ in environment')
-    if getattr(venue, 'capital_limit', None) != config.capital_limit:
-        raise Blocked('exchange adapter and configuration differ in capital limit')
     models, enabled, fresh = _load_models(state, venue)
     snapshot = venue.snapshot(config.account_uid)
     actual_snapshot = snapshot
@@ -227,13 +245,15 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
                                               'manual_takeover': execute, 'observation_current': False})
             report['risk_state']['observation_current'] = False
             unprotected = report['risk_state'].get('unprotected_btc')
-            if execute and (unprotected is None or unprotected > 0):
+            if execute and (unprotected is None or unprotected > 0 or getattr(state, '_recovery_only', False)):
                 report['manual_takeover'] = True
+            if getattr(state, '_recovery_only', False):
+                report['recovery_only'] = True
             state.report(report)
     return report
 
 
-def _guard_state(state):
+def _guard_state(state, *, recovery_only=False):
     """Read-only migration boundary, before any lifecycle recovery or venue request."""
     if any(state.get(key) is not None for key in (
             'lifecycle_identity', 'alpha_identity', 'edge_identity', 'adoption_risk')):
@@ -243,21 +263,26 @@ def _guard_state(state):
         raise Blocked('state was written for another rule; a new directory is not a flat account')
     if saved is None:
         if (rule is not None or state.get('positions') is not None or state.get('follows') is not None
-                or state.db.execute('SELECT 1 FROM intents LIMIT 1').fetchone()):
+                or state.db.execute('SELECT 1 FROM intents LIMIT 1').fetchone() or recovery_only):
             raise Blocked('missing model checkpoint for durable state')
         return None
     if rule != RULE or type(saved) is not dict or set(saved) != {str(w) for w in SLEEVES}:
         raise Blocked('state rule or sleeve checkpoint identity mismatch')
-    models = {w: Model.restore(saved[str(w)]) for w in SLEEVES}
-    if any(model.sma_window != w for w, model in models.items()):
+    models = None if recovery_only else {w: Model.restore(saved[str(w)]) for w in SLEEVES}
+    if recovery_only:
+        for checkpoint in saved.values():
+            Model.validate_recovery(checkpoint)
+    windows = {w: saved[str(w)]['body']['sma_window'] for w in SLEEVES}
+    lasts = {saved[str(w)]['body']['last'] for w in SLEEVES}
+    if any(window != w for w, window in windows.items()):
         raise Blocked('model checkpoint sleeve mismatch')
-    if len({m.last for m in models.values()}) != 1:
+    if len(lasts) != 1:
         raise Blocked('sleeve checkpoints are not on the same daily bar')
     try:
         positions, follows = state.get('positions'), state.get('follows')
         keys = {str(w) for w in SLEEVES}
         anchor = state.get('entries_after')
-        last = next(iter(models.values())).last
+        last = next(iter(lasts))
         if (type(positions) is not dict or set(positions) != keys
                 or type(follows) is not dict or set(follows) != keys
                 or type(anchor) is not int or last is None or anchor > last or anchor != day_open(anchor)):
@@ -266,6 +291,8 @@ def _guard_state(state):
             position, follow = positions[key], follows[key]
             if position is not None:
                 values = [D(position[k]) for k in ('qty', 'entry_fill', 'peak')]
+                if 'entry_gross_qty' in position:
+                    values.append(D(position['entry_gross_qty']))
                 if position['repair_peak'] is not None:
                     values.append(D(position['repair_peak']))
                 if (any(not value.is_finite() or value <= 0 for value in values)
@@ -283,11 +310,15 @@ def _guard_state(state):
     # Pending dispatch/recovery must never run on malformed or foreign allocations.
     from .execution import FIELDS
     try:
-        for kind, encoded, status in state.db.execute(
-                "SELECT kind,payload,status FROM intents WHERE status NOT IN ('settled','rejected')"):
+        for identity, kind, encoded, status in state.db.execute(
+                "SELECT id,kind,payload,status FROM intents WHERE status NOT IN ('settled','rejected') OR ?",
+                (recovery_only,)):
             payload = json.loads(encoded)
             group, order = payload['sleeves'], payload['order']
-            if (kind != 'p4' or status not in ('prepared', 'unknown', 'resting', 'canceling')
+            allowed = {'prepared', 'unknown', 'resting', 'canceling'}
+            if recovery_only:
+                allowed |= {'settled', 'rejected'}
+            if (kind != 'p4' or status not in allowed
                     or type(group) is not list or not group or group != sorted(set(group))
                     or any(type(w) is not int or w not in SLEEVES for w in group)
                     or set(payload['weights']) != {str(w) for w in group}
@@ -299,12 +330,33 @@ def _guard_state(state):
                     or order['side'] not in ('BUY', 'SELL') or order['type'] not in ('MARKET', 'STOP_LOSS')
                     or (order['type'] == 'STOP_LOSS' and order['side'] != 'SELL')):
                 raise ValueError('allocation')
+            rearm = payload.get('rearm')
+            if 'rearm' in payload and (type(rearm) is not dict or set(rearm) != {str(w) for w in group}
+                    or any(type(v) is not bool for v in rearm.values())
+                    or (order['side'] != 'SELL' or order['type'] != 'MARKET') and any(rearm.values())):
+                raise ValueError('rearm permission')
+            first = payload.get('position_first_ms')
+            if 'position_first_ms' in payload and (order['type'] != 'STOP_LOSS'
+                    or type(first) is not dict or set(first) != {str(w) for w in group}
+                    or any(type(stamp) is not int or stamp < ORIGIN for stamp in first.values())):
+                raise ValueError('protection position identity')
             quantities = list(payload['weights'].values())
             quantities.append(order['quoteOrderQty'] if order['side'] == 'BUY' else order['quantity'])
             if order['type'] == 'STOP_LOSS':
                 quantities.append(order['stopPrice'])
             if any(not D(v).is_finite() or D(v) <= 0 for v in quantities):
                 raise ValueError('quantity')
+            if recovery_only:
+                fields = {'symbol', 'side', 'type', 'quoteOrderQty' if order['side'] == 'BUY' else 'quantity'}
+                if order['type'] == 'STOP_LOSS':
+                    fields.add('stopPrice')
+                if set(order) != fields:
+                    raise ValueError('native order fields')
+                operation = order['side'] + '-' + order['type'] + '-' + ','.join(map(str, group))
+                if order['type'] == 'STOP_LOSS':
+                    operation += '-' + hashlib.sha256(json.dumps(order, sort_keys=True).encode()).hexdigest()[:16]
+                if identity != client_id(state.identity, payload['signal_ms'], operation):
+                    raise ValueError('durable order identity')
     except (KeyError, TypeError, ValueError, ArithmeticError, Unknown) as exc:
         raise Blocked('incompatible durable pending allocation') from exc
     return models
@@ -317,10 +369,19 @@ def _load_models(state: State, venue):
     anchor = state.get('entries_after')
     models = _guard_state(state) or {window: Model(window) for window in SLEEVES}
     last = models[SLEEVES[0]].last
-    for open_ms, high, low, close in venue.completed_daily(None if saved is None else last):
-        _consume_bar(state, venue, models, open_ms, high, low, close)
+    for open_ms, open_price, high, low, close in venue.completed_daily(None if saved is None else last):
+        _consume_bar(state, venue, models, open_ms, open_price, high, low, close)
     if models[SLEEVES[0]].last is None:
         raise Unknown('no completed daily bar is available to anchor the model')
+    open_ms = models[SLEEVES[0]].last + DAY
+    if open_ms > int(venue.clock() * 1000):
+        raise Unknown('daily open has not arrived')
+    if any(model.shadow_open_ms != open_ms for model in models.values()):
+        observed_ms, open_price = venue.daily_open(open_ms)
+        if observed_ms != open_ms:
+            raise Unknown('daily open response does not match the model clock')
+        for model in models.values():
+            model.advance_open(observed_ms, open_price)
     enabled = saved is not None and anchor is not None and models[SLEEVES[0]].last > int(anchor)
     return models, enabled, saved is None
 
@@ -336,12 +397,17 @@ def _entries_blocked(models: dict, exit_through: dict) -> bool:
     return True
 
 
-def _consume_bar(state, venue, models, open_ms, high, low, close):
+def _consume_bar(state, venue, models, open_ms, open_price, high, low, close):
     """Fills of this day land on the model as it stood before the bar."""
+    if open_ms + DAY > int(venue.clock() * 1000):
+        raise Unknown('daily bar is not completed')
+    for model in models.values():
+        model.advance_open(open_ms, open_price)
     positions, follows, accounted, exit_through, cursor = _stored(state)
     trades = _trades_for(state, venue, positions, follows, cursor)
     positions, follows, accounted, closed = apply_day(
-        models, positions, follows, accounted, open_ms, trades, lambda: venue.completed_daily(None),
+        models, positions, follows, accounted, open_ms, trades,
+        lambda: (bar for bar in venue.completed_daily(None) if bar[0] < open_ms),
         owners=getattr(state, '_execution_owners', None),
     )
     for window in closed:
@@ -483,11 +549,11 @@ def _follow_after(decision: dict, models: dict, positions: dict, follows: dict, 
             out[window] = None
         elif sleeve.get('action') == 'enter' and model.last is not None:
             if follow and follow.get('signal_ms') is not None:
-                out[window] = {'signal_ms': follow['signal_ms'], 'repair': bool(follow.get('repair'))}
+                out[window] = {'signal_ms': follow['signal_ms'], 'repair': bool(sleeve['repair'])}
             else:
                 out[window] = {
                     'signal_ms': model.last,
-                    'repair': bool(model.shadow_in and model.shadow_repair),
+                    'repair': bool(sleeve['repair']),
                 }
         elif not (model.enter or model.cap_enter):
             out[window] = None
@@ -543,7 +609,9 @@ def _risk_state(state, snapshot, venue):
             'symbol': 'BTCUSDT', 'direction': 'long' if btc else 'flat',
             'btc': btc, 'usdt': D(snapshot['usdt_free']) + D(snapshot['usdt_locked']),
             'last_price': snapshot.get('last_price'), 'covered_btc': min(btc, covered),
-            'unprotected_btc': unprotected, 'manual_takeover': unprotected > 0,
+            'unprotected_btc': unprotected,
+            'manual_takeover': unprotected > 0 or getattr(state, '_recovery_only', False),
+            'recovery_only': getattr(state, '_recovery_only', False),
             'fee_valuation_complete': not bool(unvalued), 'unvalued_fee_assets': unvalued,
             'observed_at_ms': int(venue.clock() * 1000), 'observation_current': True}
 

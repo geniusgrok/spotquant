@@ -35,7 +35,12 @@ class TestVenue:
         self.now_ms += int(seconds * 1000)
 
     def completed_daily(self, after):
-        return [bar for bar in self.bars if after is None or bar[0] > after]
+        # Synthetic completed bars open at their close.
+        return [(open_ms, close, high, low, close) for open_ms, high, low, close in self.bars
+                if after is None or open_ms > after]
+
+    def daily_open(self, open_ms):
+        return open_ms, getattr(self, 'open_price', self.bars[-1][3])
 
     def trades(self, since):
         return [trade for trade in self.fills if trade['time'] >= since]
@@ -91,6 +96,8 @@ class TestVenue:
             row = dict(payload, status='FILLED' if self.fraction == 1 else 'EXPIRED',
                        executedQty=str(quantity * (1 - self.fee) if buy else quantity), quote=str(quote))
         row.update(id=identity, clientOrderId=identity, orderId=len(self.orders) + 1)
+        if payload['type'] == 'STOP_LOSS':
+            row['time'] = self.now_ms
         self.orders[identity] = row
         if payload['type'] == 'MARKET':
             self._fill(row, quantity, quote)

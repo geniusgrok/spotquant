@@ -3,13 +3,14 @@ from decimal import Decimal as D
 import unittest
 
 from spotquant.model import DAY, ORIGIN, Model, SLEEVES
-from spotquant.preview import portfolio
-from spotquant.session import _view
+from spotquant.preview import decision_view, portfolio
+from spotquant.session import _follow_after, _view
 
 
 def model(prices=(98, 101, 102), window=30):
     view = Model(window)
     for index, price in enumerate([100] * 400 + list(prices)):
+        view.advance_open(ORIGIN + index * DAY, price)
         view.update(ORIGIN + index * DAY, price, price, price)
     return view
 
@@ -31,6 +32,7 @@ class PreviewTests(unittest.TestCase):
     def test_session_price_near_the_average_sells_while_the_shadow_book_stays_long(self):
         view = model()
         close_next = view.last + DAY
+        view.advance_open(close_next, view.close)
         view.update(close_next, view.close, view.close, view.close)
         self.assertTrue(view.shadow_in)
         view, _qty = _view(view, dict(entry_fill='102', peak='110', qty='1',
@@ -40,6 +42,102 @@ class PreviewTests(unittest.TestCase):
         result = portfolio({40: view}, {40: D(1)}, near, entries_enabled=True, capital_limit=None)
         self.assertEqual(result['action'], 'exit')
         self.assertTrue(result['sleeves']['40']['rearm'])
+
+    def test_crash_entry_identity_survives_follow_and_hold_before_shadow_entry(self):
+        view = model(('50', '46', '48.76'), 40)
+        self.assertTrue(view.cap_enter)
+        self.assertFalse(view.shadow_in)
+        self.assertFalse(view.bull)
+        result = portfolio({40: view}, {}, snapshot(price='48.76'),
+                           entries_enabled=True, capital_limit=None)
+        self.assertEqual(result['action'], 'enter')
+        follows = _follow_after(result, {40: view}, {40: None}, {40: None}, {})
+        self.assertTrue(follows[40]['repair'])
+        position = dict(entry_fill='48.76', peak='48.76', qty='1',
+                        repair=follows[40]['repair'], repair_peak='48.76', adverse=False)
+        held, qty = _view(view, position)
+        result = portfolio({40: held}, {40: qty}, snapshot('0', '1', price='48.76'),
+                           entries_enabled=True, capital_limit=None)
+        self.assertEqual(result['action'], 'hold')
+        self.assertEqual(result['protections'][0]['stopPrice'], '35.10')
+        crossed = snapshot('0', '1', price='48.76')
+        crossed['last_price'] = D(35)
+        result = portfolio({40: held}, {40: qty}, crossed,
+                           entries_enabled=True, capital_limit=None)
+        self.assertEqual(result['action'], 'exit')
+        self.assertFalse(result['sleeves']['40']['rearm'])
+
+        # An unfilled preview can outlive the repair's completed-bar handoff.
+        view.advance_open(view.last + DAY, D(100))
+        view.update(view.last + DAY, D(100), D(100), D(100))
+        self.assertFalse(view.shadow_repair)
+        result = portfolio({40: view}, {}, snapshot(price='100'),
+                           entries_enabled=True, capital_limit=None)
+        updated = _follow_after(result, {40: view}, {40: None}, follows, {})
+        self.assertFalse(updated[40]['repair'])
+        self.assertEqual(updated[40]['signal_ms'], follows[40]['signal_ms'])
+
+    def test_native_stop_floor_belongs_to_the_actual_position(self):
+        view = model(('98', '101', '102', '103'), 40)
+        first_ms = view.last + DAY + 60_000
+        position = dict(first_ms=first_ms)
+        old = dict(sleeves=[40], signal_ms=view.last, native_status='CANCELED',
+                   position_first_ms={'40': first_ms - DAY},
+                   native_created_ms=first_ms - 1000,
+                   order=dict(type='STOP_LOSS', stopPrice='144'))
+        current = dict(old, native_status='NEW', position_first_ms={'40': first_ms})
+        self.assertEqual(decision_view(view, position, {'old': old})._stop_floor, D(0))
+        self.assertEqual(decision_view(view, position, {'old': old, 'new': current})._stop_floor, D(144))
+        legacy = dict(current)
+        legacy.pop('position_first_ms')
+        legacy['native_created_ms'] = first_ms
+        self.assertEqual(decision_view(view, position, {'new': legacy})._stop_floor, D(144))
+        legacy['native_created_ms'] = first_ms - 1000
+        from spotquant.types import Unknown
+        with self.assertRaisesRegex(Unknown, 'no proven position identity'):
+            decision_view(view, position, {'unknown': legacy})
+
+    def test_shadow_repair_does_not_exempt_an_ordinary_position(self):
+        view = model(('50', '46', '48.76', '48.76'), 40)
+        self.assertTrue(view.shadow_repair)
+        held, qty = _view(view, dict(entry_fill='48.76', peak='48.76', qty='1',
+                                     repair=False, repair_peak=None, adverse=False))
+        result = portfolio({40: held}, {40: qty}, snapshot('0', '1', price='48.76'),
+                           entries_enabled=True, capital_limit=None)
+        self.assertEqual(result['action'], 'exit')
+        self.assertFalse(result['sleeves']['40']['rearm'])
+
+    def test_new_fill_stop_is_compared_with_current_price(self):
+        view = model(('98', '101', '102', '103'), 40)
+        held, qty = _view(view, dict(entry_fill='200', peak='200', qty='1',
+                                     repair=True, repair_peak='200', adverse=False))
+        current = snapshot('0', '1', price='200')
+        current['last_price'] = D(200)
+        result = portfolio({40: held}, {40: qty}, current,
+                           entries_enabled=True, capital_limit=None)
+        self.assertEqual(result['action'], 'hold')
+        self.assertEqual(result['protections'][0]['stopPrice'], '144.00')
+
+    def test_non_touch_exit_blocks_old_shadow_signal_but_touch_can_rejoin(self):
+        view = model(('98', '101', '102', '103'), 40)
+        self.assertTrue(view.shadow_in)
+        held, qty = _view(view, dict(entry_fill='110', peak='110', qty='1',
+                                     repair=False, repair_peak=None, adverse=True))
+        near = snapshot('0', '1', price='103')
+        near['last_price'] = view.sma
+        result = portfolio({40: held}, {40: qty}, near,
+                           entries_enabled=True, capital_limit=None)
+        self.assertFalse(result['sleeves']['40']['rearm'])
+        view.note_flat(rearm=False)
+        view.advance_open(view.last + DAY, D(104))
+        view.update(view.last + DAY, D(104), D(104), D(104))
+        blocked = portfolio({40: view}, {}, snapshot(price='104'),
+                            entries_enabled=True, capital_limit=None)
+        self.assertEqual(blocked['action'], 'flat')
+        view.note_flat(rearm=True)
+        allowed = portfolio({40: view}, {}, snapshot(price='104'),
+                            entries_enabled=True, capital_limit=None)
+        self.assertEqual(allowed['action'], 'enter')
     def test_consensus_allocation_and_capital_limit_use_current_shared_pool(self):
         views = {30: model(), 40: model(window=40), 50: model((98,), 50)}
         views[40], _ = _view(views[40], dict(entry_fill='102', peak='102', qty='1',

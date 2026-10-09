@@ -70,6 +70,7 @@ class CrowdingTests(unittest.TestCase):
         self.snap['btc'] = '1'
         position = dict(qty='1', peak='100', first_ms=self.views[40].last, repair=False)
         owner = dict(sleeves=[40], signal_ms=self.views[40].last, native_status='NEW',
+                     position_first_ms={'40': position['first_ms']},
                      order=dict(type='STOP_LOSS', stopPrice='99'))
         missing = self.decide(None, positions={40: position}, owners={'stop': owner})
         present = self.decide(Features(), positions={40: position}, owners={'stop': owner})

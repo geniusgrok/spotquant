@@ -124,6 +124,7 @@ class GroupedCloseTests(TestCase):
                                 execution_authorized=True, sent=[],
                                 clock=lambda: (trade['time'] + 1000) / 1000,
                                 completed_daily=lambda after: [], snapshot=lambda uid: snapshot,
+                                daily_open=lambda open_ms: (open_ms, D(60000)),
                                 trades=lambda since: [trade])
         with tempfile.TemporaryDirectory() as directory:
             config = Config('1', directory, 300, 5, 'demo', '1000')
