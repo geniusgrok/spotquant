@@ -2,7 +2,7 @@
 from decimal import Decimal as D
 
 from spotquant.crowding import DAY, FUNDING_LAG, BASIS_LAG
-from spotquant.types import Blocked, Unknown
+from spotquant.types import Blocked, Unknown, NotSent
 
 
 class KnownFeatures:
@@ -48,6 +48,8 @@ class TestVenue:
     def query(self, identity):
         if self.unknown_query:
             raise Unknown('order query unavailable')
+        if type(identity) is int:
+            return next((row for row in self.orders.values() if row['orderId'] == identity), None)
         return self.orders.get(identity)
 
     def snapshot(self, expected_uid):
@@ -56,10 +58,10 @@ class TestVenue:
             raise Blocked('UID mismatch')
         if self.unknown_query:
             raise Unknown('balances unavailable')
-        active = [row for row in self.orders.values() if row['status'] == 'NEW']
-        locked = sum((D(row['quantity']) for row in active), D(0))
+        active = [row for row in self.orders.values() if row['status'] in ('NEW', 'PARTIALLY_FILLED')]
+        locked = sum((D(row['quantity']) - D(row['executedQty']) for row in active), D(0))
         return dict(account_uid=self.uid, environment=self.environment, btc=self.btc,
-                    btc_free=self.btc - locked, btc_locked=locked, usdt_free=self.cash,
+                    btc_free=self.btc - locked, btc_locked=locked, quote_observed_ms=self.now_ms, usdt_free=self.cash,
                     usdt_locked=D(0), avg_price=self.price, last_price=self.price,
                     min_notional=D('5'), min_qty=None, fee_mode='base_quote', fee_rate=self.fee, can_trade=True,
                     open_orders=len(active), orders=[_order(dict(row, origQty=row.get('quantity', '0')))
@@ -72,10 +74,16 @@ class TestVenue:
                                commission=quantity * self.fee if buy else quote * self.fee,
                                commission_asset='BTC' if buy else 'USDT'))
 
-    def submit(self, identity, payload):
+    def submit(self, identity, payload, *, preflight=None):
+        if preflight is not None:
+            try:
+                preflight(self.snapshot(self.uid))
+            except (Blocked, Unknown) as exc:
+                raise NotSent(str(exc)) from exc
         if identity in self.orders:
             raise Blocked('duplicate submission')
-        locked = sum((D(row['quantity']) for row in self.orders.values() if row['status'] == 'NEW'), D(0))
+        locked = sum((D(row['quantity']) - D(row['executedQty']) for row in self.orders.values()
+                      if row['status'] in ('NEW', 'PARTIALLY_FILLED')), D(0))
         self.sent.append(identity)
         if payload['type'] == 'STOP_LOSS':
             if self.reject_stop:
@@ -94,7 +102,7 @@ class TestVenue:
             self.btc += quantity * (1 - self.fee) if buy else -quantity
             self.cash += -quote if buy else quote * (1 - self.fee)
             row = dict(payload, status='FILLED' if self.fraction == 1 else 'EXPIRED',
-                       executedQty=str(quantity * (1 - self.fee) if buy else quantity), quote=str(quote))
+                       executedQty=str(quantity), quote=str(quote))
         row.update(id=identity, clientOrderId=identity, orderId=len(self.orders) + 1)
         if payload['type'] == 'STOP_LOSS':
             row['time'] = self.now_ms
@@ -106,12 +114,16 @@ class TestVenue:
             raise Unknown('acknowledgement lost')
         return row
 
-    def cancel(self, identity):
-        row = self.query(identity)
+    def cancel(self, identity, *, order_id=None, cancel_id=None):
+        row = self.query(order_id or identity)
         if row is None:
             raise Unknown('cancel has no confirmed order')
-        if row['status'] == 'NEW':
+        if row['status'] in ('NEW', 'PARTIALLY_FILLED'):
             row['status'] = 'CANCELED'
+            self.orders.pop(row['clientOrderId'])
+            row['origClientOrderId'] = row['clientOrderId']
+            row['clientOrderId'] = cancel_id or 'auto-cancel-' + str(row['orderId'])
+            self.orders[row['clientOrderId']] = row
         return row
 
     def trigger(self, price):

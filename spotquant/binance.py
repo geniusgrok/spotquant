@@ -94,20 +94,21 @@ class Binance:
         return self._crowding_source
 
     def query(self, identity):
-        row = self._get('/api/v3/order', {'symbol': 'BTCUSDT', 'origClientOrderId': identity}, signed=True)
+        field = 'orderId' if type(identity) is int else 'origClientOrderId'
+        row = self._get('/api/v3/order', {'symbol': 'BTCUSDT', field: identity}, signed=True)
         return self._execution_order(row)
 
-    def submit(self, identity, payload):
+    def submit(self, identity, payload, *, preflight=None):
         if not self.execution_authorized:
             raise Blocked('Demo execution is not explicitly enabled')
         if not isinstance(identity, str) or not identity.startswith('sq-'):
             raise Blocked('Demo order requires a stable Spotquant identity')
         try:
             observed = self.snapshot(self.demo_execution_uid)
-        except Unknown as exc:
+        except (Unknown, Blocked) as exc:
             raise NotSent(str(exc)) from exc
         if observed['can_trade'] is not True:
-            raise Blocked('Demo account cannot trade')
+            raise NotSent('Demo account cannot trade')
         params = dict(payload, newClientOrderId=identity, newOrderRespType='FULL')
         if set(payload) - {'symbol', 'side', 'type', 'quantity', 'quoteOrderQty', 'stopPrice'}:
             raise Blocked('unsupported Demo order fields')
@@ -125,26 +126,37 @@ class Binance:
         if buying:
             from .types import floor_step
             if observed['fee_mode'] != 'base_quote' or observed['fee_rate'] is None:
-                raise Blocked('buy fee mode is not confirmed as BTC/USDT')
+                raise NotSent('buy fee mode is not confirmed as BTC/USDT')
             rate = observed['fee_rate']
             if rate >= 1:
-                raise Blocked('buy commission leaves no protectable BTC')
+                raise NotSent('buy commission leaves no protectable BTC')
             net = floor_step(number(payload[sizing]) / observed['last_price'] * (1 - rate), BASE_STEP)
             if net * observed['avg_price'] < observed['min_notional'] or not _qty_ok(net, observed):
-                raise Blocked('estimated net buy cannot meet native protection minimum')
+                raise NotSent('estimated net buy cannot meet native protection minimum')
         elif not _qty_ok(payload[sizing], observed):
-            raise Blocked('Demo sell quantity fails native lot filters')
+            raise NotSent('Demo sell quantity fails native lot filters')
         if payload['type'] == 'STOP_LOSS' and (buying or number(payload.get('stopPrice'), positive=True) <= 0):
             raise Blocked('only sell-side Demo stop protection is supported')
         if buying and getattr(self, '_risk_stop', lambda: False)():
             raise NotSent('entry deadline reached before order dispatch')
+        if preflight is not None:
+            try:
+                preflight(observed)
+            except (Unknown, Blocked) as exc:
+                raise NotSent(str(exc)) from exc
+        if buying and getattr(self, '_risk_stop', lambda: False)():
+            raise NotSent('entry deadline reached before order dispatch')
         return self._execution_order(self._get('/api/v3/order', params, signed=True, method='POST'))
 
-    def cancel(self, identity):
+    def cancel(self, identity, *, order_id, cancel_id):
         if not isinstance(identity, str) or not identity.startswith('sq-'):
             raise Blocked('Demo cancellation requires its original Spotquant identity')
+        if (type(order_id) is not int or order_id <= 0
+                or not isinstance(cancel_id, str) or not cancel_id.startswith('sq-')):
+            raise Blocked('Demo cancellation requires its native order and durable cancel identity')
         return self._execution_order(self._get('/api/v3/order',
-            {'symbol': 'BTCUSDT', 'origClientOrderId': identity}, signed=True, method='DELETE'))
+            {'symbol': 'BTCUSDT', 'orderId': order_id, 'newClientOrderId': cancel_id},
+            signed=True, method='DELETE'))
 
     @staticmethod
     def _execution_order(row):
@@ -243,6 +255,7 @@ class Binance:
             'environment': self.environment,
             'avg_price': number(average['price'], 'avgPrice', positive=True),
             'last_price': number(last['price'], 'last price', positive=True),
+            'quote_observed_ms': self._timestamp(),
             'fee_rate': fee_rate,
             'fee_mode': fee_mode,
             'fee_status': fee_status,

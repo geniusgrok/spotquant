@@ -31,6 +31,29 @@ def _position(qty, first_ms, entry='100'):
 
 
 class FollowTests(unittest.TestCase):
+    def test_actual_rounded_close_keeps_owned_dust_and_new_buy_keeps_net_quantity(self):
+        first = ORIGIN + 10 * DAY + 60_000
+        position = _position('1.000009', first)
+        models = {40: _Model()}
+        owners = {'7': {'order': {'side': 'SELL', 'type': 'MARKET', 'quantity': '1'},
+                        'sleeves': [40], 'weights': {'40': '1.000009'}, 'repair': {'40': False}}}
+        sold = _trade(1, first + 1, '1', '120', buyer=False, order_id=7, commission='.12', asset='USDT')
+        positions, follows, accounted, closed = apply_day(
+            models, {40: position}, {40: None}, set(), day_open(first), [sold], lambda: [], owners=owners)
+        self.assertEqual(closed, [40])
+        self.assertEqual(D(positions[40]['qty']), D('.000009'))
+        self.assertTrue(positions[40]['dust'])
+        positions = {40: json.loads(json.dumps(positions[40]))}
+        owners['8'] = {'order': {'side': 'BUY', 'type': 'MARKET'}, 'sleeves': [40],
+                       'weights': {'40': '1'}, 'repair': {'40': False}}
+        bought = _trade(2, first + DAY, '.1', '12', order_id=8, commission='.0001', asset='BTC')
+        positions, _, _, _ = apply_day(models, positions, follows, accounted, day_open(bought['time']),
+                                      [bought], lambda: [], owners=owners)
+        self.assertEqual(D(positions[40]['qty']), D('.099909'))
+        self.assertEqual(D(positions[40]['entry_gross_qty']), D('.100009'))
+        self.assertEqual(D(positions[40]['entry_fill']), D('12.0009') / D('.100009'))
+        self.assertFalse(positions[40].get('dust'))
+
     def test_a_pre_fill_wick_does_not_raise_the_peak(self):
         bars = [
             (ORIGIN, D('10'), D('10'), D('10'), D('10')),
@@ -38,8 +61,15 @@ class FollowTests(unittest.TestCase):
         ]
         later = replay(bars, entry_fill=D('12'), first_ms=ORIGIN + DAY + 3_600_000, repair=False)
         self.assertEqual(D(later['peak']), D('12'))
-        opened = replay(bars, entry_fill=D('12'), first_ms=ORIGIN + DAY + 1000, repair=False)
-        self.assertEqual(D(opened['peak']), D('40'))
+        for offset in (0, 1000, 30_000, 59_999, 60_000):
+            with self.subTest(offset=offset):
+                opened = replay(bars, entry_fill=D('12'), first_ms=ORIGIN + DAY + offset, repair=False)
+                self.assertEqual(D(opened['peak']), D('12'))
+        # Even a later complete day's high was not personally observed by this session.
+        caught_up = replay(bars + [(ORIGIN + 2 * DAY, D(12), D(50), D(12), D(12))],
+                           entry_fill=D(12), first_ms=ORIGIN + DAY + 1000, repair=True)
+        self.assertEqual(D(caught_up['peak']), D(12))
+        self.assertEqual(D(caught_up['repair_peak']), D(12))
 
     def test_btc_commission_is_part_of_the_balance_and_not_the_fill_price(self):
         signal = ORIGIN + 10 * DAY

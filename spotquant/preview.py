@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 from decimal import Decimal as D
 
-from .model import DAY, Model, percent
+from .model import Model, percent
 from .types import Unknown, floor_step, serial
 
 MIN_NOTIONAL = D('5')
@@ -33,7 +33,7 @@ def _decide(model: Model, snapshot: dict, *, entries_enabled: bool, owned_btc: D
         return _flat('cold start: no completed daily close after the first checkpoint')
     spend = floor_step(max(budget, D(0)), QUOTE_STEP)
     if spend < D(snapshot.get('min_notional') or MIN_NOTIONAL):
-        return _flat('the sleeve budget is below the current venue minimum notional')
+        return _flat('available cash or capital ceiling is below the current venue minimum notional')
     repair = bool(model.cap_enter if not model.shadow_in or blocked is not None else model.shadow_repair)
     last = snapshot.get('last_price')
     if (not repair and model.shadow_in and model.bull and not model.extended
@@ -68,9 +68,8 @@ def _decide(model: Model, snapshot: dict, *, entries_enabled: bool, owned_btc: D
 def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
     """A sleeve with any coins is a position, even below the minimum notional.
 
-    Dust is not a flat sleeve and is not a place to add risk. An exit is reported
-    even when this sleeve alone cannot meet the minimum; the portfolio aggregates
-    those exits before the minimum is applied.
+    Dust is not a flat sleeve and is not a place to add risk. An exit remains
+    visible even when its quantity cannot meet the current venue minimum.
     """
     breached = getattr(model, 'protection', 'resting') in ('breached', 'through_close')
     last = snapshot.get('last_price')
@@ -146,7 +145,7 @@ def _exit(model: Model, owned: D, reason: str, *, rearm: bool = False) -> dict:
         order = {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': _step(owned, BASE_STEP)}
     return {
         'action': 'exit',
-        'reason': reason if tradable else reason + '; this sleeve is below the minimum notional until it is aggregated',
+        'reason': reason if tradable else reason + '; this position is below the minimum notional',
         'loss_capped': False,
         'untradeable': not tradable,
         'order': order,
@@ -246,142 +245,52 @@ def _flat(reason: str) -> dict:
 
 def portfolio(views: dict, owned: dict, snapshot: dict, *, entries_enabled: bool,
               capital_limit: D | None) -> dict:
-    """The sleeves book. ``views`` maps a window to its model, ``owned`` to its recorded coins.
-
-    An armed sleeve would spend the free USDT plus the proceeds of this open's exits, divided
-    by the sleeves that hold nothing after those exits. The proceeds are an estimate at the
-    completed close. Nothing is submitted.
-    """
-    if not views:
-        raise Unknown('no sleeve is configured')
-    reference = next(iter(views.values()))
-    if reference.close is None:
+    """One SMA40 position; a new buy uses current free cash, never expected sale proceeds."""
+    if set(views) != {40}:
+        raise Unknown('the book requires the single SMA40 sleeve')
+    model = views[40]
+    if model.close is None:
         return dict(_flat('no completed daily close is available'), sleeves={}, orders=[], protections=[])
-    price = D(snapshot.get('last_price') or reference.close)
-    dust = {window: D(owned.get(window, 0)) for window, model in views.items()
-            if getattr(model, '_owned_dust', False) and D(owned.get(window, 0)) >= BASE_STEP}
+    price = D(snapshot.get('last_price') or model.close)
+    quantity = D(owned.get(40, 0))
+    coins = floor_step(quantity, BASE_STEP)
     minimum = D(snapshot.get('min_notional') or MIN_NOTIONAL)
-    if any(floor_step(qty, BASE_STEP) * D(snapshot['avg_price']) >= minimum for qty in dust.values()):
-        raise Unknown('retained close residual is now placeable; owner reconciliation required')
-    coins = {window: D(0) if getattr(views[window], '_owned_dust', False)
-             else floor_step(D(owned.get(window, 0)), BASE_STEP) for window in views}
-    external = D(snapshot['btc']) - sum((D(owned.get(window, 0)) for window in views), D(0))
-    if external * price >= MIN_NOTIONAL:
+    if getattr(model, '_owned_dust', False):
+        if coins >= BASE_STEP and coins * D(snapshot['avg_price']) >= minimum:
+            raise Unknown('retained close residual is now placeable; owner reconciliation required')
+        coins = D(0)
+    if (D(snapshot['btc']) - quantity) * price >= MIN_NOTIONAL:
         raise Unknown('BTC balance has no recorded spotquant fill; refusing new risk')
-    # An open order blocks a new buy. It does not hide an exit of coins we already record.
-    adding_risk = entries_enabled and not snapshot.get('open_orders')
-    first = {
-        window: _decide(model, snapshot, entries_enabled=False, owned_btc=coins[window], budget=D(0))
-        for window, model in views.items()
-    }
-    exiting = [window for window, item in first.items() if item['action'] == 'exit']
-    flat_count = sum(1 for window in views if coins[window] == 0) + len(exiting)
-    held_value = sum((coins[window] * price for window in views if window not in exiting), D(0))
-    if dust:
-        held_value += sum(dust.values(), D(0)) * price
-    pool = D(snapshot['usdt_free']) + sum((coins[window] * price for window in exiting), D(0))
+    budget = D(snapshot['usdt_free'])
     if capital_limit is not None:
-        # The limit is the whole exposure, including coins already held.
-        pool = min(pool, max(capital_limit - held_value, D(0)))
-    budget = D(0) if flat_count == 0 or not adding_risk else pool / flat_count
-    decisions = {}
-    for window, model in views.items():
-        if first[window]['action'] == 'flat' and coins[window] == 0:
-            decisions[window] = _decide(
-                model, snapshot, entries_enabled=adding_risk, owned_btc=coins[window], budget=budget)
-        else:
-            decisions[window] = first[window]
-    exits = [window for window, item in decisions.items() if item['action'] == 'exit']
-    enters = [window for window, item in decisions.items() if item['action'] == 'enter']
-    holds = [window for window, item in decisions.items() if item['action'] == 'hold']
+        budget = min(budget, max(capital_limit - D(snapshot['btc']) * price, D(0)))
+    item = _decide(model, snapshot, entries_enabled=entries_enabled, owned_btc=coins, budget=budget)
+    if snapshot.get('open_orders') and item['action'] == 'enter':
+        item = _flat('open order blocks a new buy')
     orders = []
-    if exits:
-        quantity = sum((coins[window] for window in exits), D(0))
-        sell = {
-            'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET',
-            'quantity': _step(quantity, BASE_STEP), 'sleeves': exits,
-        }
-        if quantity * D(snapshot['avg_price']) >= minimum:
-            orders.append(sell)
-    if enters:
-        quote = sum((D(decisions[window]['order']['quoteOrderQty']) for window in enters), D(0))
-        buy = {
-            'symbol': 'BTCUSDT', 'side': 'BUY', 'type': 'MARKET',
-            'quoteOrderQty': _step(quote, QUOTE_STEP), 'sleeves': enters,
-            'note': 'sized on an estimate of free USDT; a real buy waits until the sell has filled',
-        }
-        orders.append(buy)
-    protections = _merge_protections(decisions, views, snapshot)
-    parts = []
-    for label, group in (('exit', exits), ('enter', enters), ('hold', holds)):
-        if group:
-            parts.append(f'{label}: sleeves ' + ', '.join(str(window) for window in group))
-    if snapshot.get('open_orders'):
-        parts.append('open order blocks a new buy')
-    if exits and not any(order['side'] == 'SELL' for order in orders):
-        parts.append('exit quantity is below the minimum notional')
-    action = 'exit' if exits else 'enter' if enters else 'hold' if holds else 'flat'
-    out = {
-        'action': action,
-        'reason': '; '.join(parts) if parts else 'no sleeve holds coins or is armed to enter',
-        'order': orders[0] if orders else None,
-        'orders': orders,
-        'protections': protections,
-        'sleeves': {str(window): decisions[window] for window in sorted(views)},
-    }
-    if exits:
-        out['loss_capped'] = False
-        out['untradeable'] = not any(order['side'] == 'SELL' for order in orders)
-    consensus_allocation(out, views, snapshot, capital_limit)
+    if item['action'] == 'exit' and coins * D(snapshot['avg_price']) >= minimum:
+        orders.append(dict(symbol='BTCUSDT', side='SELL', type='MARKET',
+                           quantity=_step(coins, BASE_STEP), sleeves=[40]))
+    elif item['action'] == 'enter':
+        orders.append(dict(item['order'], sleeves=[40]))
+    out = {'orders': orders, 'sleeves': {'40': item}}
+    _summarize(out)
     return out
 
 
-def consensus_allocation(decision, views, snapshot, capital_limit):
-    """Increase only a real new BUY when at least two bullish sleeves participate."""
-    buys = [o for o in decision['orders'] if o['side'] == 'BUY']
-    voters = sum(bool(views[w].bull) and decision['sleeves'][str(w)]['action'] in ('enter', 'hold')
-                 for w in views)
-    if buys and voters >= 2:
-        budget = D(snapshot['usdt_free']) * D('.90')
-        if capital_limit is not None:
-            budget = min(budget, max(D(0), capital_limit - D(snapshot['btc']) * D(snapshot.get('last_price') or snapshot['avg_price'])))
-        budget = floor_step(budget, QUOTE_STEP)
-        if budget >= D(snapshot.get('min_notional') or MIN_NOTIONAL):
-            buys[0]['quoteOrderQty'] = str(max(D(buys[0]['quoteOrderQty']), budget))
-            total = D(buys[0]['quoteOrderQty'])
-            group = sorted(buys[0]['sleeves'])
-            given = D(0)
-            for index, window in enumerate(group):
-                share = total - given if index == len(group) - 1 else total / len(group)
-                given += share
-                sleeve = decision['sleeves'][str(window)]
-                sleeve['order'] = dict(sleeve['order'], quoteOrderQty=str(share),
-                                       note='Advisory share of the pooled BUY allocation')
-
-
-def _merge_protections(decisions: dict, views: dict, snapshot: dict) -> list:
-    """Same stop price and the same side can be one order. Different prices stay separate."""
-    groups: dict[str, list] = {}
-    for window in sorted(views):
-        item = decisions[window]
-        if item['action'] not in ('hold', 'enter') or not item.get('protection'):
-            continue
-        key = item['protection']['stopPrice']
-        groups.setdefault(key, []).append(window)
-    merged = []
-    for windows in groups.values():
-        sample = dict(decisions[windows[0]]['protection'])
-        quantity = sum(
-            (D(decisions[window]['protection']['quantity']) for window in windows
-             if 'quantity' in decisions[window]['protection']),
-            D(0),
-        )
-        if quantity > 0:
-            sample['quantity'] = _step(quantity, BASE_STEP)
-            _annotate_venue(sample, views[windows[0]], snapshot)
-        sample['sleeves'] = windows
-        merged.append(sample)
-    return merged
+def _summarize(out):
+    """Use the final single-sleeve result after every entry and protection filter."""
+    item = out['sleeves']['40']
+    out['action'], out['reason'] = item['action'], item['reason']
+    out['order'] = out['orders'][0] if out['orders'] else None
+    item['order'] = ({key: value for key, value in out['order'].items() if key != 'sleeves'}
+                     if out['order'] else None)
+    out['protections'] = ([dict(item['protection'], sleeves=[40])]
+                          if item['action'] in ('enter', 'hold') and item.get('protection') else [])
+    if item['action'] == 'exit':
+        out['loss_capped'] = False
+        out['untradeable'] = not any(order['side'] == 'SELL' for order in out['orders'])
+        item['untradeable'] = out['untradeable']
 
 
 def decision_view(model, position, owners):
@@ -421,7 +330,8 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
         stop = sleeve.get('protection')
         if (stop and 'quantity' in stop and D(stop['stopPrice']) >= D(snapshot.get('last_price') or snapshot['avg_price'])
                 and sleeve['action'] != 'exit'):
-            sleeve.update(action='exit', protection=None, order=None, rearm=False)
+            sleeve.update(action='exit', reason='the protection price is already crossed; the session sells',
+                          protection=None, order=None, rearm=False)
             forced = True
     if forced:
         group = [w for w in views if out['sleeves'][str(w)]['action'] == 'exit']
@@ -439,9 +349,11 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
         quote = floor_step(min(D(order['quoteOrderQty']), free, cap_remaining), QUOTE_STEP)
         if sells or quote < D(snapshot.get('min_notional') or MIN_NOTIONAL):
             out['orders'].remove(order)
+            reason = ('a sale must be reconciled before a new buy' if sells
+                      else 'available cash or capital ceiling is below the venue minimum after rounding')
             for w in order['sleeves']:
                 if out['sleeves'][str(w)]['action'] == 'enter':
-                    out['sleeves'][str(w)].update(action='flat', order=None, protection=None)
+                    out['sleeves'][str(w)].update(_flat(reason))
             continue
         order['quoteOrderQty'] = str(quote)
         for w in order['sleeves']:
@@ -457,8 +369,7 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
         factor, diagnostic = evaluate(crowding_source, price_views[next(iter(price_views))], decision_ms)
         def held(w):
             position = positions.get(w) or {}
-            closed_dust = (position.get('dust') is True and bool(position.get('sell_applied'))
-                           and getattr(views[w], '_owned_dust', False))
+            closed_dust = position.get('dust') is True and getattr(views[w], '_owned_dust', False)
             return D(owned[w]) >= BASE_STEP or (D(owned[w]) > 0 and not closed_dust)
         if any(held(w) for w in order['sleeves']):
             factor = D(0)
@@ -467,10 +378,10 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
         cause = diagnostic['blocked_reason']
         if quote < D(snapshot.get('min_notional') or MIN_NOTIONAL):
             out['orders'].remove(order)
-            for w in order['sleeves']:
-                out['sleeves'][str(w)].update(action='flat', order=None, protection=None)
-            quote = D(0)
             cause = cause or 'below_minimum_after_rounding'
+            for w in order['sleeves']:
+                out['sleeves'][str(w)].update(_flat('new buy is blocked: ' + cause))
+            quote = D(0)
         else:
             order['quoteOrderQty'] = str(quote)
             for w in order['sleeves']:
@@ -479,7 +390,6 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
                     sleeve_order['quoteOrderQty'] = str(quote / len(order['sleeves']))
         diagnostic.update(resulting_quote=quote, blocked_reason=cause)
         diagnostics.append(diagnostic)
-    out['protections'] = _merge_protections({w: out['sleeves'][str(w)] for w in views}, views, snapshot)
     out['crowding'] = serial(diagnostics)
-    out['order'] = out['orders'][0] if out['orders'] else None
+    _summarize(out)
     return out

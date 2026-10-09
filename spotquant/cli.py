@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .binance import Binance
 from .config import load
+from .crowding import RULE
 from .model import SLEEVES
 from .session import RECORDED_LIMITS, clear_stale, cycle, run
 from .state import State
@@ -37,6 +38,7 @@ def _base_report(config) -> dict:
         symbol='BTCUSDT', market='spot', leverage='0', sleeves=list(SLEEVES),
         write_attempted=False, observation_current=False,
         recorded_limits=dict(RECORDED_LIMITS),
+        runtime_identity={'rule': RULE, 'source_sha': os.environ.get('SPOTQUANT_SOURCE_SHA')},
         reason='Account observation only',
     )
 

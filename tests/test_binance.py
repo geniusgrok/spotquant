@@ -8,7 +8,7 @@ import unittest
 
 from spotquant.binance import Binance, ORIGIN, DAY
 from spotquant.preview import _qty_ok
-from spotquant.types import Blocked, Unknown
+from spotquant.types import Blocked, Unknown, NotSent
 
 
 SECRET = 'test-secret'
@@ -73,6 +73,34 @@ class Script:
 
 
 class BinanceTests(unittest.TestCase):
+    def test_cancel_has_a_durable_alias_and_queries_the_unchanged_native_id(self):
+        from urllib.parse import parse_qs, urlsplit
+        requests = []
+        def opener(method, url, headers):
+            parsed = urlsplit(url)
+            params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
+            requests.append((method, parsed.path, params))
+            if parsed.path == '/api/v3/time':
+                return 200, b'{"serverTime":1700000000000}'
+            self.assertEqual(parsed.path, '/api/v3/order')
+            if method == 'DELETE':
+                self.assertEqual(params['orderId'], '17')
+                self.assertEqual(params['newClientOrderId'], 'sq-cancel')
+                self.assertNotIn('origClientOrderId', params)
+            else:
+                self.assertEqual(params['orderId'], '17')
+            return 200, json.dumps(dict(orderId=17, origClientOrderId='sq-original',
+                                        clientOrderId='sq-cancel', status='CANCELED',
+                                        symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
+                                        origQty='.1', executedQty='.04', stopPrice='72')).encode()
+        venue = Binance(key=KEY, secret=SECRET, environment='demo', opener=opener,
+                        clock=lambda: 1_700_000_000, capital_limit=D('100'), demo_execution_uid='10001')
+        canceled = venue.cancel('sq-original', order_id=17, cancel_id='sq-cancel')
+        self.assertEqual(canceled['clientOrderId'], 'sq-cancel')
+        self.assertEqual(canceled['quantity'], '.1')
+        self.assertEqual(venue.query(17)['executedQty'], '.04')
+        self.assertEqual([method for method, path, _ in requests if path == '/api/v3/order'], ['DELETE', 'GET'])
+
     def test_official_btcusdt_market_zero_filters_allow_snapshot(self):
         fixture = json.loads((Path(__file__).parent / 'fixtures' /
                               'btcusdt_exchange_info_20261006.json').read_text())
@@ -119,7 +147,7 @@ class BinanceTests(unittest.TestCase):
         snapshot = venue.snapshot('10001')
         self.assertEqual(snapshot['fee_status'], 'unavailable')
         self.assertEqual(snapshot['fee_mode'], 'unknown')
-        with self.assertRaisesRegex(Blocked, 'fee mode'):
+        with self.assertRaisesRegex(NotSent, 'fee mode'):
             venue.submit('sq-buy', dict(symbol='BTCUSDT', side='BUY', type='MARKET', quoteOrderQty='10'))
         venue.submit('sq-stop', dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
                                      quantity='.1', stopPrice='90'))
@@ -165,7 +193,7 @@ class BinanceTests(unittest.TestCase):
         venue = Binance(key=KEY, secret=SECRET, environment='demo', opener=opener,
                         clock=lambda: 1_700_000_000, capital_limit=D('100'),
                         demo_execution_uid='10001')
-        with self.assertRaisesRegex(Blocked, 'fee mode'):
+        with self.assertRaisesRegex(NotSent, 'fee mode'):
             venue.submit('sq-test', dict(symbol='BTCUSDT', side='BUY', type='MARKET', quoteOrderQty='10'))
         self.assertEqual(writes, [])
 

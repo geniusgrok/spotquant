@@ -101,12 +101,19 @@ class State:
                 )
 
     def pending(self) -> list[dict]:
-        return [
-            dict(id=item_id, kind=kind, payload=json.loads(payload), status=status)
-            for item_id, kind, payload, status in self.db.execute(
-                "SELECT id,kind,payload,status FROM intents WHERE status IN "
-                "('unknown','partial','prepared','canceling') ORDER BY updated")
-        ]
+        pending = []
+        for item_id, kind, encoded, status, result in self.db.execute(
+                "SELECT id,kind,payload,status,result FROM intents WHERE status IN "
+                "('unknown','partial','prepared','canceling','resting') ORDER BY updated"):
+            payload = json.loads(encoded)
+            order = payload.get('order', {})
+            if status == 'resting' and order.get('type') != 'MARKET':
+                continue
+            if (status == 'prepared' and order.get('side') == 'BUY'
+                    and order.get('type') == 'MARKET' and json.loads(result).get('not_sent') is True):
+                continue
+            pending.append(dict(id=item_id, kind=kind, payload=payload, status=status))
+        return pending
 
     def trades(self, venue, since_ms: int) -> list[dict]:
         """Retain immutable fills; refresh a one-day overlap after the last read.
