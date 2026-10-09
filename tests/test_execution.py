@@ -295,7 +295,7 @@ class ExecutionTests(TestCase):
                 self.assertEqual(stop['clientOrderId'], original_id)
                 self.assertFalse(report['pending_intents'])
 
-    def test_third_observation_peak_reprices_protection_in_the_same_cycle(self):
+    def test_final_peak_keeps_prepared_protection_then_raises_it_next_poll(self):
         with tempfile.TemporaryDirectory() as directory:
             config, account = self.entered(directory)
             add_day(account, '103')
@@ -317,10 +317,138 @@ class ExecutionTests(TestCase):
             self.assertFalse(report['pending_intents'])
             active = [row for row in account.orders.values() if row['status'] == 'NEW']
             self.assertEqual(len(active), 1)
-            self.assertEqual(D(active[0]['stopPrice']), D('108'))
+            self.assertEqual(D(active[0]['stopPrice']), D('74.16'))
             self.assertFalse(report.get('closeout_attempted', False))
             with State(directory, config.scope) as state:
                 self.assertEqual(D(state.get('positions')['40']['peak']), D('150'))
+            report = run(config, adapter, execute=True, monotonic=adapter.monotonic, wait=adapter.wait)
+            self.assertEqual(report['errors'], [])
+            self.assertFalse(report['pending_intents'])
+            active = [row for row in account.orders.values() if row['status'] == 'NEW']
+            self.assertEqual(len(active), 1)
+            self.assertEqual(D(active[0]['stopPrice']), D('108'))
+
+    def test_slow_rising_quotes_confirm_protection_before_every_poll_and_shutdown(self):
+        for already_entered in (False, True):
+            with self.subTest(already_entered=already_entered), tempfile.TemporaryDirectory() as directory:
+                if already_entered:
+                    _, account = self.entered(directory)
+                    add_day(account, '103')
+                else:
+                    account = venue_before_entry()
+                    run_day(Config('1', directory, 1, 1, 'demo', '1000'), account)
+                    add_day(account, '101')
+                config = Config('1', directory, 150, 5, 'demo', '1000')
+                adapter = OrderAdapter(account, None)
+                polls = []
+                def rising_snapshot(uid):
+                    account.now_ms += 1000
+                    account.price += D('.05')
+                    return account.snapshot(uid)
+                def protected_wait(seconds):
+                    active = [row for row in account.orders.values() if row['status'] == 'NEW']
+                    polls.append(active)
+                    self.assertEqual(len(active), 1)
+                    self.assertEqual(active[0]['type'], 'STOP_LOSS')
+                    self.assertLess(account.btc - D(active[0]['quantity']), D('.00001'))
+                    account.wait(seconds)
+                adapter.snapshot, adapter.wait = rising_snapshot, protected_wait
+                report = run(config, adapter, execute=True, monotonic=adapter.monotonic, wait=adapter.wait)
+                self.assertEqual(report['errors'], [])
+                self.assertGreaterEqual(len(polls), 10)
+                self.assertFalse(report['pending_intents'])
+                active = [row for row in account.orders.values() if row['status'] == 'NEW']
+                self.assertEqual(len(active), 1)
+                self.assertLess(report['risk_state']['unprotected_btc'] * account.price, D('5'))
+                with State(directory, config.scope) as state:
+                    self.assertFalse(state.pending())
+
+    def test_final_quote_exits_under_the_latest_peak_above_the_fixed_prepared_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, account = self.entered(directory)
+            add_day(account, '103')
+            adapter = OrderAdapter(account, None)
+            stop_count = len([row for row in account.orders.values() if row['type'] == 'STOP_LOSS'])
+            count = 0
+            def rising_then_crossed(uid):
+                nonlocal count
+                count += 1
+                account.price = D('150') if count == 3 else D('151') if count == 4 else D('107') if count >= 5 else D('103')
+                return account.snapshot(uid)
+            adapter.snapshot = rising_then_crossed
+            report = run(config, adapter, execute=True, monotonic=adapter.monotonic, wait=adapter.wait)
+            self.assertEqual(report['errors'], [])
+            self.assertFalse(report['pending_intents'])
+            self.assertLess(account.btc * account.price, D('5'))
+            sales = [row for row in account.orders.values() if row['type'] == 'MARKET' and row['side'] == 'SELL']
+            self.assertEqual(len(sales), 1)
+            self.assertEqual(len([row for row in account.orders.values() if row['type'] == 'STOP_LOSS']), stop_count)
+
+    def test_risk_deadline_keeps_confirmed_protection_when_only_the_peak_rises(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, account = self.entered(directory)
+            add_day(account, '103')
+            stop = next(row for row in account.orders.values() if row['status'] == 'NEW')
+            original_id, sent = stop['clientOrderId'], len(account.sent)
+            adapter = OrderAdapter(account, None)
+            count = 0
+            def peak_at_deadline(uid):
+                nonlocal count
+                count += 1
+                if count == 2:
+                    account.now_ms += 1000
+                    account.price = D('150')
+                return account.snapshot(uid)
+            adapter.snapshot = peak_at_deadline
+            report = run(config, adapter, execute=True, monotonic=adapter.monotonic, wait=adapter.wait)
+            self.assertEqual(report['errors'], [])
+            self.assertFalse(report['pending_intents'])
+            self.assertEqual(stop['status'], 'NEW')
+            self.assertEqual(stop['clientOrderId'], original_id)
+            self.assertEqual(len(account.sent), sent)
+            with State(directory, config.scope) as state:
+                self.assertEqual(D(state.get('positions')['40']['peak']), D('150'))
+
+    def test_deadline_keeps_native_stop_over_prepared_raise_then_reuses_only_the_unsent_target(self):
+        from spotquant.execution import Lifecycle
+        with tempfile.TemporaryDirectory() as directory:
+            config, account = self.entered(directory)
+            add_day(account, '103.03')
+            run(config, account, execute=False, monotonic=account.monotonic, wait=account.wait)
+            old_stop = next(row for row in account.orders.values() if row['status'] == 'NEW')
+            original_id, sent = old_stop['clientOrderId'], len(account.sent)
+            with State(directory, config.scope) as state:
+                lifecycle = Lifecycle(state, account, config)
+                bar = state.get('models')['40']['body']['last']
+                order = dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
+                             quantity=old_stop['quantity'], stopPrice='74.18', sleeves=[40])
+                identity = lifecycle.prepare(order, bar, state.get('positions'), state.get('follows'))
+                prepared = next(row[1] for row in lifecycle.rows() if row[0] == identity)
+            adapter, count = OrderAdapter(account, None), 0
+            def deadline_snapshot(uid):
+                nonlocal count
+                count += 1
+                if count == 2:
+                    account.now_ms += 1000
+                return account.snapshot(uid)
+            adapter.snapshot = deadline_snapshot
+            report = run(config, adapter, execute=True, monotonic=adapter.monotonic, wait=adapter.wait)
+            self.assertEqual(report['errors'], [])
+            self.assertFalse(report['pending_intents'])
+            self.assertEqual(old_stop['status'], 'NEW')
+            self.assertEqual(old_stop['clientOrderId'], original_id)
+            self.assertEqual(len(account.sent), sent)
+            with State(directory, config.scope) as state:
+                payload, status, result = state.db.execute('SELECT payload,status,result FROM intents WHERE id=?', (identity,)).fetchone()
+                self.assertEqual(json.loads(payload), prepared)
+                self.assertEqual(status, 'settled')
+                self.assertTrue(json.loads(result)['not_sent'])
+            adapter.snapshot = account.snapshot
+            report = run(config, adapter, execute=True, monotonic=adapter.monotonic, wait=adapter.wait)
+            self.assertEqual(report['errors'], [])
+            self.assertFalse(report['pending_intents'])
+            self.assertEqual(account.sent.count(identity), 1)
+            self.assertEqual(account.orders[identity]['status'], 'NEW')
 
     def test_final_small_peak_keeps_the_same_stop_without_an_extra_dispatch(self):
         with tempfile.TemporaryDirectory() as directory:

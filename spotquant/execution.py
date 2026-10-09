@@ -7,7 +7,7 @@ from decimal import Decimal as D
 from time import time
 
 from .model import Model, SLEEVES
-from .preview import BASE_STEP, MIN_NOTIONAL, PRICE_STEP, _decide, _qty_ok
+from .preview import BASE_STEP, MIN_NOTIONAL, _annotate_venue, _decide, _qty_ok, decision_view
 from .state import client_id
 from .types import Blocked, Unknown, NotSent, floor_step, number, serial
 
@@ -72,6 +72,8 @@ class Lifecycle:
             if type(row.get('orderId')) is not int or row['orderId'] <= 0:
                 raise Unknown('native order identity missing')
             self.save(identity, payload, 'settled' if row['status'] in TERMINAL else 'resting', row)
+            if status == 'unknown' and payload['order']['type'] == 'STOP_LOSS' and row['status'] not in TERMINAL:
+                self._confirmed_stop = identity
 
     def owners(self):
         return allocation_owners((payload, result) for _, payload, _, result in self.rows())
@@ -147,12 +149,18 @@ class Lifecycle:
             prior = next((row for row in self.rows() if row[0] == identity), None)
         if prior is None:
             self.save(identity, payload, 'prepared', {})
+        elif (raw['type'] == 'STOP_LOSS' and prior[2] == 'settled'
+              and prior[3].get('not_sent') is True and 'orderId' not in prior[3]):
+            if any(prior[1].get(key) != payload.get(key) for key in (
+                    'order', 'sleeves', 'weights', 'signal_ms', 'repair', 'rearm', 'position_first_ms')):
+                raise Blocked('unsent protection identity belongs to a different allocation')
+            self.save(identity, prior[1], 'prepared', {})
         elif (any(prior[1].get(key) != payload.get(key) for key in
                   ('order', 'sleeves', 'weights', 'signal_ms', 'repair'))
               or prior[1].get('rearm', {str(w): False for w in group}) != payload['rearm']) and prior[2] == 'prepared':
             raise Blocked('prepared identity cannot change parameters')
-        elif (prior[2] == 'prepared' and 'position_first_ms' in prior[1]
-              and prior[1]['position_first_ms'] != payload.get('position_first_ms')):
+        elif (prior[2] == 'prepared' and raw['type'] == 'STOP_LOSS'
+              and prior[1].get('position_first_ms') != payload.get('position_first_ms')):
             raise Blocked('prepared identity cannot change position ownership')
         return identity
 
@@ -213,9 +221,6 @@ class Lifecycle:
         observed = _observe_quotes(positions, snapshot, _now_ms(self.venue))
         if observed != positions:
             self.state.set('positions', observed)
-        return any(observed[key] and positions.get(key)
-                   and (observed[key]['peak'], observed[key]['repair_peak']) !=
-                       (positions[key]['peak'], positions[key]['repair_peak']) for key in observed)
 
     def _preflight(self, payload, snapshot):
         """The adapter calls this after its final observation, before POST."""
@@ -223,15 +228,8 @@ class Lifecycle:
         if getattr(self, '_observed', None) is not None and self.account_key(snapshot) != self.account_key(self._observed):
             raise NotSent('account changed before dispatch; reconcile before any write')
         order = payload['order']
-        raised_peak = self._record_quote(snapshot)
+        self._record_quote(snapshot)
         positions = self.state.get('positions') or {}
-        if raised_peak and order['type'] == 'STOP_LOSS':
-            position = positions[str(SLEEVES[0])]
-            peak = position['repair_peak'] if position['repair'] and position['repair_peak'] is not None else position['peak']
-            model = Model.restore(self.state.get('models')[str(SLEEVES[0])])
-            if floor_step(model.stop_price(D(peak)), PRICE_STEP) > D(order['stopPrice']):
-                self._retry_observation = True
-                raise NotSent('observed position peak raised the stop price; recalculate protection before dispatch')
         if order['side'] == 'BUY':
             if self.state.get('third_asset_fees_unvalued'):
                 raise NotSent('third-asset fees are unvalued; new buy needs owner reconciliation')
@@ -248,6 +246,17 @@ class Lifecycle:
             owned = sum((D((positions.get(str(w)) or {}).get('qty', '0')) for w in payload['sleeves']), D(0))
             if D(order['quantity']) > owned or D(order['quantity']) > D(snapshot['btc_free']):
                 raise NotSent('sell exceeds the latest free and owned BTC; reconcile before dispatch')
+            if order['type'] == 'STOP_LOSS':
+                from .session import _view
+                position = positions[str(SLEEVES[0])]
+                if payload.get('position_first_ms', {}).get(str(SLEEVES[0])) != position['first_ms']:
+                    raise NotSent('prepared protection has no matching position identity')
+                view, quantity = _view(Model.restore(self.state.get('models')[str(SLEEVES[0])]), position)
+                fresh = _decide(decision_view(view, position, self.owners()), snapshot,
+                                entries_enabled=False, owned_btc=quantity, budget=D(0))
+                if fresh['action'] == 'exit':
+                    self._retry_observation = True
+                    raise NotSent('latest position decision requires an exit before protection dispatch')
             if order['type'] == 'STOP_LOSS' and D(order['stopPrice']) >= D(snapshot['last_price']):
                 self._retry_observation = True
                 raise NotSent('desired stop is crossed at the latest price; reconcile before dispatch')
@@ -320,6 +329,25 @@ class Lifecycle:
         if any(item['action'] == 'exit' for item in decision['sleeves'].values()):
             raise Blocked('remaining exit is below the venue minimum; owner takeover required')
         desired = [order for order in decision['protections'] if 'quantity' in order]
+        # Confirm one fixed target before chasing new quotes. After confirmation,
+        # observe its coverage and defer price-only replacement to the next poll.
+        risk_stopped = getattr(self.venue, '_risk_stop', lambda: False)()
+        fixed = [row for row in self.rows() if row[1]['order']['type'] == 'STOP_LOSS'
+                 and (row[2] == 'prepared' or row[2] == 'resting' and (
+                     row[0] == getattr(self, '_confirmed_stop', None) or risk_stopped))]
+        for identity, payload, status, _ in sorted(fixed, key=lambda row: row[2] != ('resting' if risk_stopped else 'prepared')):
+            position = positions.get(str(SLEEVES[0]))
+            if (not position or position.get('dust')
+                    or D(payload['order']['quantity']) != floor_step(D(position['qty']), BASE_STEP)
+                    or payload.get('position_first_ms', {}).get(str(SLEEVES[0])) != position['first_ms']):
+                continue
+            view = decision_view(views[SLEEVES[0]], position, self.owners())
+            if D(payload['order']['stopPrice']) < view._stop_floor:
+                continue
+            order = dict(payload['order'], sleeves=payload['sleeves'])
+            _annotate_venue(order, view, snapshot)
+            desired = [order]
+            break
         wanted = []
         for order in desired:
             if order.get('placeable') is False:
