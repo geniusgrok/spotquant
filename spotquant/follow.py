@@ -3,8 +3,9 @@
 External BTC, a deposit, or a balance drop that no account sell explains stays
 unknown. Sleeves that were previewed on the same signal day share one cohort:
 their buys are one fill, and each sleeve records an equal part of it. The
-recorded peak starts at the fill and rises only on later fills or verified
-session quotes. A completed daily high is not an observed post-fill quote.
+Research control: the peak uses owned fills and completed daily highs only
+when the daily bar opens strictly after the first fill. The fill day's high
+and session quotes never raise the peak.
 """
 from __future__ import annotations
 
@@ -50,8 +51,14 @@ def advance(position: dict, step: dict, model: Model) -> dict:
     peak = D(position['peak'])
     repair = position['repair']
     repair_peak = None if position['repair_peak'] is None else D(position['repair_peak'])
+    prior_stop = peak * (D(1) - model.trail)
+    breached = low is not None and low <= prior_stop
+    if open_ms > position['first_ms']:
+        peak = max(peak, step['high'])
+        if repair and repair_peak is not None:
+            repair_peak = max(repair_peak, step['high'])
     stop = peak * (D(1) - model.trail)
-    if low is not None and low <= stop:
+    if breached:
         protection = 'breached'
     elif close <= stop:
         protection = 'through_close'

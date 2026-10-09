@@ -145,7 +145,7 @@ def _cycle(venue, state: State, config, *, lifecycle=None, crowding_source=None,
 
 
 def _observe_quotes(positions, snapshot, now_ms):
-    """Raise only the actual position's target from a verified post-fill quote."""
+    """Research control: validate quotes without raising the daily/fill peak."""
     if snapshot.get('last_price') is None:
         return positions
     price = number(snapshot['last_price'], 'observed last price', positive=True)
@@ -160,9 +160,7 @@ def _observe_quotes(positions, snapshot, now_ms):
             raise Unknown('quote observation clock moved backwards')
         if stamp < position['first_ms']:
             continue
-        out[window] = dict(position, peak=format(max(D(position['peak']), price), 'f'), quote_through_ms=stamp)
-        if position['repair'] and position['repair_peak'] is not None:
-            out[window]['repair_peak'] = format(max(D(position['repair_peak']), price), 'f')
+        out[window] = dict(position, quote_through_ms=stamp)
     return out
 
 
