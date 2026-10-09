@@ -17,8 +17,11 @@ def export(config, venue):
     cash = D(snapshot['usdt_free']) + D(snapshot['usdt_locked'])
     qty = D(snapshot['btc'])
     stops = [row for row in snapshot['orders'] if row['side'] == 'SELL' and row['type'] == 'STOP_LOSS'
-             and row['status'] in ('NEW', 'PARTIALLY_FILLED') and D(row.get('stop_price', '0')) > 0]
-    protected = sum((max(D(0), D(row['orig_qty']) - D(row['executed_qty'])) for row in stops), D(0))
+             and D(row.get('stop_price', '0')) > 0]
+    protected = sum((D(row['orig_qty']) for row in stops
+                     if row['status'] == 'NEW' and D(row['executed_qty']) == 0), D(0))
+    triggered = sum((max(D(0), D(row['orig_qty']) - D(row['executed_qty'])) for row in stops
+                     if row['status'] == 'PARTIALLY_FILLED'), D(0))
     return serial({'known': True, 'symbol': 'BTCUSDT', 'market': 'spot',
                    'environment': config.environment, 'account_uid': config.account_uid,
                    'observed_at_ms': started, 'collected_until_ms': ended,
@@ -27,5 +30,6 @@ def export(config, venue):
                    'available_usdt': snapshot['usdt_free'],
                    'native_stop_quantity_btc': protected,
                    'btc_without_native_stop': max(D(0), qty - protected),
-                   'protection_observation': 'quantity only; ownership and trigger execution are not verified',
+                   'triggered_stop_remaining_btc': triggered,
+                   'protection_observation': 'dormant stop quantity only; ownership and future execution are not verified',
                    'orders': snapshot['orders'], 'write_attempted': False})

@@ -27,6 +27,36 @@ class CliTests(unittest.TestCase):
         self.assertIn('execution is unavailable', report['reason'])
         self.assertNotIn('configuration', report['reason'])
 
+    def test_live_execute_needs_a_ceiling_and_matching_uid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': '10001', 'state_dir': directory,
+                'environment': 'live', 'capital_limit_usdt': '100',
+            }))
+            wrong = Path(directory) / 'demo.json'
+            wrong.write_text(json.dumps({
+                'account_uid': '10001', 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '100',
+            }))
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = main(['run', '--execute', '--authorize-uid', '10001', '--config', str(wrong)])
+            self.assertEqual(code, 2)
+            self.assertIn('live environment', json.loads(stdout.getvalue())['reason'])
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = main(['run', '--execute', '--authorize-uid', '999', '--config', str(path)])
+            self.assertEqual(code, 2)
+            self.assertIn('matching --authorize-uid', json.loads(stdout.getvalue())['reason'])
+            with patch('spotquant.cli.connect', return_value=object()) as connect, \
+                    patch('spotquant.cli.run', return_value={'status': 'read_only', 'reason': 'gated'}):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    code = main(['run', '--execute', '--authorize-uid', '10001', '--config', str(path)])
+            self.assertEqual(code, 0)
+            self.assertTrue(connect.called)
+
     def test_status_persists_a_failed_observation(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / 'state'
@@ -49,18 +79,21 @@ class CliTests(unittest.TestCase):
             self.assertFalse(saved['observation_current'])
             self.assertEqual(saved['runtime_identity'], {'rule': RULE, 'source_sha': 'test-source-sha'})
 
-    def test_snapshot_totals_partial_native_protection_and_rejects_stale_collection(self):
+    def test_snapshot_separates_dormant_stops_from_triggered_remainders_and_rejects_staleness(self):
         snapshot = dict(usdt_free=D(20), usdt_locked=D(5), btc=D(2), other_assets=[], orders=[
             dict(side='SELL', type='STOP_LOSS', status='PARTIALLY_FILLED', stop_price='90',
-                 orig_qty='1.5', executed_qty='.5')])
+                 orig_qty='1.5', executed_qty='.5'),
+            dict(side='SELL', type='STOP_LOSS', status='NEW', stop_price='90',
+                 orig_qty='.75', executed_qty='0')])
         ticks = iter((1, 2))
         venue = SimpleNamespace(clock=lambda: next(ticks), snapshot=lambda uid: snapshot,
                                 _get=lambda *args, **kw: {'price': '100'})
         config = Config('10001', '/unused', environment='demo')
         report = export(config, venue)
         self.assertEqual(D(report['equity_usdt']), D(225))
-        self.assertEqual(D(report['native_stop_quantity_btc']), D(1))
-        self.assertEqual(D(report['btc_without_native_stop']), D(1))
+        self.assertEqual(D(report['native_stop_quantity_btc']), D('.75'))
+        self.assertEqual(D(report['btc_without_native_stop']), D('1.25'))
+        self.assertEqual(D(report['triggered_stop_remaining_btc']), D(1))
         self.assertFalse(report['write_attempted'])
         ticks = iter((1, 7))
         with self.assertRaises(Unknown):

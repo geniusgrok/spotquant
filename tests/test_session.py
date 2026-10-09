@@ -56,7 +56,7 @@ class Venue:
     def daily_open(self, open_ms):
         return open_ms, getattr(self, 'open_price', self.bars[-1][3])
 
-    def trades(self, since):
+    def trades(self, since, from_id=None):
         return [row for row in self.trade_rows if row['time'] >= since]
 
     def submit(self, *args, **kwargs):
@@ -152,8 +152,20 @@ class SessionTests(unittest.TestCase):
         }
         venue.trade_rows = [{
             'id': 1, 'time': ORIGIN + 254 * DAY + 60_000, 'qty': D('0.6'), 'quote': D('66.6'),
-            'buyer': True, 'order_id': 1, 'commission': D('0'), 'commission_asset': 'BNB',
+            'price': D('111'), 'buyer': True, 'order_id': 1, 'commission': D('0'),
+            'commission_asset': 'BNB',
         }]
+        payload = json.dumps({
+            'order': {'symbol': 'BTCUSDT', 'side': 'BUY', 'type': 'MARKET', 'quoteOrderQty': '66.6'},
+            'sleeves': [40], 'weights': {'40': '1'}, 'signal_ms': ORIGIN + 253 * DAY,
+            'repair': {'40': False},
+        })
+        with State(directory, config.scope) as state:
+            state.db.execute(
+                'INSERT INTO intents VALUES (?,?,?,?,?,?)',
+                ('sq-owned-buy', 'p4', payload, 'settled',
+                 json.dumps({'orderId': 1, 'status': 'FILLED', 'executedQty': '0.6'}), 0))
+            state.db.commit()
         held = run(config, venue, monotonic=Clock(), wait=lambda _seconds: None)
         self.assertTrue(held['followed_position'])
         return config, venue
@@ -519,12 +531,18 @@ class LegacyRecoveryTests(unittest.TestCase):
                     before_meta = list(state.db.execute('SELECT key,value FROM meta ORDER BY key'))
                     before_intents = list(state.db.execute('SELECT * FROM intents ORDER BY id'))
                     sent = list(venue.sent)
-                    with self.assertRaisesRegex(Unknown, 'never resubmitted'):
+                    with self.assertRaisesRegex(Unknown, 'cannot adopt holdings|never resubmitted'):
                         cycle(venue, state, config, execute=True)
                     self.assertEqual(queried, [stop])
                     self.assertEqual(venue.sent, sent)
                     self.assertEqual(venue.submit.call_count, 0)
                     self.assertEqual(venue.cancel.call_count, 0)
+                    self.assertEqual(
+                        state.db.execute('SELECT status FROM intents WHERE id=?', (buy,)).fetchone()[0],
+                        'prepared')
+                    self.assertEqual(
+                        state.db.execute('SELECT status FROM intents WHERE id=?', (stop,)).fetchone()[0],
+                        'unknown')
                     self.assertEqual(list(state.db.execute('SELECT key,value FROM meta ORDER BY key')), before_meta)
                     self.assertEqual(list(state.db.execute('SELECT * FROM intents ORDER BY id')), before_intents)
 

@@ -1,4 +1,4 @@
-"""Binance spot read-only entrypoint and bounded owner-operated Demo check."""
+"""Binance spot observation and explicitly capped owner-operated sessions."""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +21,7 @@ CREDENTIALS = {
 }
 
 
-def connect(config, *, demo_execute=False):
+def connect(config, *, execute_orders=False):
     """Default read-only adapter. Demo credentials go only to the Demo host."""
     names = CREDENTIALS[config.environment]
     key, secret = (os.environ.get(name, '') for name in names)
@@ -29,7 +29,7 @@ def connect(config, *, demo_execute=False):
         raise Blocked(
             f'explicit Binance {config.environment} read credentials required ({names[0]}, {names[1]})')
     return Binance(key=key, secret=secret, environment=config.environment, capital_limit=config.capital_limit,
-                   demo_execution_uid=config.account_uid if demo_execute else None)
+                   demo_execution_uid=config.account_uid if execute_orders else None)
 
 
 def _base_report(config) -> dict:
@@ -78,7 +78,7 @@ def observe(config_path) -> dict:
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog='spotquant',
-        description='BTCUSDT spot observation and owner Demo check. Live execution stays blocked.',
+        description='BTCUSDT spot observation. Live orders stay off unless a capped run is authorized.',
     )
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ('status', 'run'):
@@ -86,7 +86,8 @@ def main(argv=None):
         command.add_argument('--config', default='config.json')
         if name == 'run':
             command.add_argument('--execute', action='store_true',
-                                 help='Blocked. Live execution is unavailable.')
+                                 help='With --authorize-uid, run a capped live session. Otherwise blocked.')
+            command.add_argument('--authorize-uid', help='Repeat the live account UID for this invocation')
     exported = commands.add_parser('snapshot', help='Export a fresh read-only BTC account snapshot')
     exported.add_argument('--config', default='config.json')
     exported.add_argument('--out', type=Path, required=True)
@@ -96,7 +97,7 @@ def main(argv=None):
     demo.add_argument('--authorize-uid', help='Repeat the dedicated Demo account UID for this invocation')
     args = parser.parse_args(argv)
     try:
-        if args.command == 'run' and args.execute:
+        if args.command == 'run' and args.execute and not args.authorize_uid:
             # Before config, credentials, and network.
             raise Blocked('Live execution is unavailable')
         if args.command == 'snapshot':
@@ -112,7 +113,14 @@ def main(argv=None):
                 raise Blocked('Demo validation requires Demo UID, separate persistent state and capital ceiling')
             if args.execute and args.authorize_uid != config.account_uid:
                 raise Blocked('Demo execution requires matching --authorize-uid')
-            report = run(config, connect(config, demo_execute=args.execute), execute=args.execute)
+            report = run(config, connect(config, execute_orders=args.execute), execute=args.execute)
+        elif args.command == 'run' and args.execute:
+            config = load(args.config)
+            if config.environment != 'live' or config.capital_limit is None:
+                raise Blocked('Live execution requires live environment and a positive capital ceiling')
+            if args.authorize_uid != config.account_uid:
+                raise Blocked('Live execution requires matching --authorize-uid')
+            report = run(config, connect(config, execute_orders=True), execute=True)
         elif args.command == 'status':
             report = observe(args.config)
         else:

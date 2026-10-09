@@ -1,16 +1,13 @@
-"""Record buys that follow an entry preview and the sells that close a sleeve. No order is sent.
+"""Account for the single SMA40 position from durable fill allocations. No order is sent.
 
-External BTC, a deposit, or a balance drop that no account sell explains stays
-unknown. Sleeves that were previewed on the same signal day share one cohort:
-their buys are one fill, and each sleeve records an equal part of it. The
-recorded peak starts at the fill and rises only on later fills or verified
-session quotes. A completed daily high is not an observed post-fill quote.
+External BTC, deposits and unexplained balance changes are not adopted. Position
+peaks use actual fills and verified post-fill session quotes, not daily highs.
 """
 from __future__ import annotations
 
 from decimal import Decimal as D
 from .model import DAY, ORIGIN, SMA_WINDOW, Model
-from .preview import BASE_STEP, MIN_NOTIONAL
+from .preview import BASE_STEP, MIN_NOTIONAL, decision_view
 from .types import Blocked, Unknown, floor_step, number
 
 def _rearm(model, position: dict, owner: dict, window: int) -> bool:
@@ -18,7 +15,8 @@ def _rearm(model, position: dict, owner: dict, window: int) -> bool:
     order = owner.get('order', {})
     return bool(order.get('side') == 'SELL' and order.get('type') == 'MARKET'
                 and owner.get('rearm', {}).get(str(window)) is True
-                and getattr(model, 'shadow_in', False) and not position.get('repair'))
+                and getattr(model, 'shadow_in', False) and not getattr(model, 'need_reset', False)
+                and not position.get('repair') and not position.get('sell_stop_breached'))
 
 
 def day_open(timestamp: int) -> int:
@@ -51,7 +49,7 @@ def advance(position: dict, step: dict, model: Model) -> dict:
     repair = position['repair']
     repair_peak = None if position['repair_peak'] is None else D(position['repair_peak'])
     stop = peak * (D(1) - model.trail)
-    if low is not None and low <= stop:
+    if low is not None and low <= stop and open_ms != position['entry_open_ms']:
         protection = 'breached'
     elif close <= stop:
         protection = 'through_close'
@@ -108,15 +106,20 @@ def replay(bars, *, entry_fill: D, first_ms: int, repair: bool, window: int = SM
 def normalize_trade(row: dict) -> dict:
     if not isinstance(row, dict):
         raise Unknown('trade row is incomplete')
+    if 'symbol' in row and row['symbol'] != 'BTCUSDT':
+        raise Unknown('trade symbol differs from BTCUSDT')
     try:
         if 'commission' not in row or 'isBuyer' not in row or 'orderId' not in row:
             raise Unknown('trade row is incomplete')
         if type(row['isBuyer']) is not bool:
             raise Unknown('trade row is incomplete')
         commission = number(row['commission'], 'commission', nonnegative=True)
-        trade_id = int(row['id'])
-        order_id = int(row['orderId'])
-        trade_time = int(row['time'])
+        trade_id = row['id']
+        order_id = row['orderId']
+        trade_time = row['time']
+        if (any(type(value) is not int for value in (trade_id, order_id, trade_time))
+                or trade_id < 0 or order_id <= 0 or trade_time < 0):
+            raise Unknown('trade row has invalid native identity or time')
         qty = number(row['qty'], 'qty', positive=True)
         quote = number(row['quoteQty'], 'quote', positive=True)
         price = number(row['price'], 'price', positive=True)
@@ -175,11 +178,9 @@ def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open
               trades, history, owners=None) -> tuple[dict, dict, set, list]:
     """Apply one UTC day's fills before that day's bar updates the model.
 
-    A sell closes the matching sleeves and consumes their entry signal before any
-    later bar. The sleeve that sold does not buy again that day. Another flat
-    sleeve can. Two orders, or two sleeve
-    groups of the same size, are unknown. Trade ids already accounted are ignored,
-    including a second fill that shares the first fill's millisecond.
+    The session supplies durable owners for partial fills. Without that map,
+    this helper matches recorded previews and rejects ambiguous groups. Already
+    accounted trade IDs are ignored; same-millisecond fills remain distinct.
     """
     positions = dict(positions)
     follows = dict(follows)
@@ -245,6 +246,9 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
         owner = owners.get(str(trade['order_id']))
         if owner is None:
             raise Unknown('account trade has no durable order allocation')
+        if (type(trade.get('buyer')) is not bool
+                or owner.get('order', {}).get('side') != ('BUY' if trade['buyer'] else 'SELL')):
+            raise Unknown('trade side differs from its durable order allocation')
         group = owner['sleeves']
         weights = {int(k): D(v) for k, v in owner['weights'].items()}
         total = sum(weights.values(), D(0))
@@ -291,6 +295,11 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
             else:
                 if prior is None or qty > D(prior['qty']) + BASE_STEP:
                     raise Unknown('allocated sell exceeds its recorded sleeve')
+                stop = decision_view(models[window], prior, owners).stop_price(D(prior['peak']))
+                if trade['price'] <= stop:
+                    # A touch sale that fills through protection consumes the old
+                    # signal, including when a later partial fill recovers in price.
+                    prior = dict(prior, sell_stop_breached=True)
                 remaining = max(D(0), D(prior['qty']) - qty)
                 if remaining < BASE_STEP:
                     # A floored native sell does not remove fractional coins.

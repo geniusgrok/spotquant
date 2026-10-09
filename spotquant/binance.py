@@ -1,8 +1,8 @@
-"""Default read-only Binance spot BTCUSDT adapter; explicit Demo lifecycle.
+"""Default read-only Binance spot BTCUSDT adapter; explicitly capped execution.
 
 Live host ``api.binance.com``. Demo host ``demo-api.binance.com``. The API key
-is sent only to that configured host. Redirects are refused. Live writes stay
-blocked; Demo writes require a dedicated UID and capital ceiling.
+is sent only to that configured host. Redirects are refused. Writes in either
+environment require its verified UID and a positive capital ceiling.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import urllib.request
 from decimal import Decimal as D
 
 from .follow import normalize_trade
-from .types import Blocked, Unknown, NotSent, number
+from .types import Blocked, Unknown, NotFound, NotSent, number
 
 HOSTS = {
     'live': 'https://api.binance.com',
@@ -60,11 +60,11 @@ class Binance:
         self.environment = environment
         self.capital_limit = capital_limit
         self.write_attempted = False
-        if demo_execution_uid is not None and (environment != 'demo' or capital_limit is None
+        if demo_execution_uid is not None and (environment not in ('demo', 'live') or capital_limit is None
                 or number(capital_limit, positive=True) <= 0
                 or not isinstance(demo_execution_uid, str) or not demo_execution_uid.isascii()
                 or not demo_execution_uid.isdigit() or int(demo_execution_uid) <= 0):
-            raise Blocked('Demo execution needs explicit UID and capital ceiling')
+            raise Blocked('execution needs explicit UID and capital ceiling')
         self.demo_execution_uid = demo_execution_uid
         self.execution_authorized = demo_execution_uid is not None
         self.base = HOSTS[environment]
@@ -74,6 +74,7 @@ class Binance:
         self._offset_ms = None
         self._clock_retried = False
         self._stop = None
+        self._retry_after_at = 0
         self.min_price = None
         self.max_price = None
         self.min_qty = None
@@ -86,11 +87,18 @@ class Binance:
 
     def crowding_features(self):
         from .crowding import PublicFeatures
+        self._check_deadline()
         if not hasattr(self, '_crowding_source'):
-            self._crowding_source = PublicFeatures()
-        self._crowding_source.refresh(int(self.clock() * 1000),
+            self._crowding_source = PublicFeatures(clock=self._timestamp)
+        self._crowding_source.refresh(self._timestamp(),
                                       getattr(self, '_risk_stop', self._stop),
                                       lambda: self._remaining(5, risk=True))
+        # Public spot data and signed spot requests share the same IP limit.
+        retry_ms = self._crowding_source.retry_after.get(urllib.parse.urlsplit(self.base).netloc, 0)
+        delay = max(0, (retry_ms - self._timestamp()) / 1000)
+        if delay:
+            self._retry_after_at = max(self._retry_after_at,
+                                      getattr(self, '_monotonic', time.monotonic)() + delay)
         return self._crowding_source
 
     def query(self, identity):
@@ -100,28 +108,28 @@ class Binance:
 
     def submit(self, identity, payload, *, preflight=None):
         if not self.execution_authorized:
-            raise Blocked('Demo execution is not explicitly enabled')
+            raise Blocked('execution is not explicitly enabled')
         if not isinstance(identity, str) or not identity.startswith('sq-'):
-            raise Blocked('Demo order requires a stable Spotquant identity')
+            raise Blocked('order requires a stable Spotquant identity')
         try:
             observed = self.snapshot(self.demo_execution_uid)
         except (Unknown, Blocked) as exc:
             raise NotSent(str(exc)) from exc
         if observed['can_trade'] is not True:
-            raise NotSent('Demo account cannot trade')
+            raise NotSent('account cannot trade')
         params = dict(payload, newClientOrderId=identity, newOrderRespType='FULL')
         if set(payload) - {'symbol', 'side', 'type', 'quantity', 'quoteOrderQty', 'stopPrice'}:
-            raise Blocked('unsupported Demo order fields')
+            raise Blocked('unsupported spot order fields')
         if payload.get('symbol') != 'BTCUSDT' or payload.get('type') not in ('MARKET', 'STOP_LOSS'):
-            raise Blocked('unsupported Demo market or order type')
+            raise Blocked('unsupported spot market or order type')
         if payload.get('side') not in ('BUY', 'SELL'):
-            raise Blocked('invalid Demo order side')
+            raise Blocked('invalid spot order side')
         buying = payload['side'] == 'BUY'
         sizing = 'quoteOrderQty' if buying else 'quantity'
         if number(payload.get(sizing), positive=True) <= 0 or ('quantity' if buying else 'quoteOrderQty') in payload:
-            raise Blocked('invalid Demo order sizing')
+            raise Blocked('invalid spot order sizing')
         if buying and (payload['type'] != 'MARKET' or number(payload[sizing]) > self.capital_limit):
-            raise Blocked('Demo buy exceeds its configured cash ceiling')
+            raise Blocked('buy exceeds its configured cash ceiling')
         from .preview import BASE_STEP, _qty_ok
         if buying:
             from .types import floor_step
@@ -134,9 +142,9 @@ class Binance:
             if net * observed['avg_price'] < observed['min_notional'] or not _qty_ok(net, observed):
                 raise NotSent('estimated net buy cannot meet native protection minimum')
         elif not _qty_ok(payload[sizing], observed):
-            raise NotSent('Demo sell quantity fails native lot filters')
+            raise NotSent('sell quantity fails native lot filters')
         if payload['type'] == 'STOP_LOSS' and (buying or number(payload.get('stopPrice'), positive=True) <= 0):
-            raise Blocked('only sell-side Demo stop protection is supported')
+            raise Blocked('only sell-side spot stop protection is supported')
         if buying and getattr(self, '_risk_stop', lambda: False)():
             raise NotSent('entry deadline reached before order dispatch')
         if preflight is not None:
@@ -150,10 +158,10 @@ class Binance:
 
     def cancel(self, identity, *, order_id, cancel_id):
         if not isinstance(identity, str) or not identity.startswith('sq-'):
-            raise Blocked('Demo cancellation requires its original Spotquant identity')
+            raise Blocked('cancellation requires its original Spotquant identity')
         if (type(order_id) is not int or order_id <= 0
                 or not isinstance(cancel_id, str) or not cancel_id.startswith('sq-')):
-            raise Blocked('Demo cancellation requires its native order and durable cancel identity')
+            raise Blocked('cancellation requires its native order and durable cancel identity')
         return self._execution_order(self._get('/api/v3/order',
             {'symbol': 'BTCUSDT', 'orderId': order_id, 'newClientOrderId': cancel_id},
             signed=True, method='DELETE'))
@@ -186,6 +194,9 @@ class Binance:
         if not isinstance(raw_orders, list):
             raise Unknown('open orders response is not a list')
         orders = [_order(row) for row in raw_orders]
+        if (len({row['order_id'] for row in orders}) != len(orders)
+                or len({row['client_id'] for row in orders}) != len(orders)):
+            raise Unknown('open orders contain repeated native identities')
         after = self._get('/api/v3/account', signed=True)
         if (not isinstance(after, dict) or str(after.get('uid')) != uid
                 or after.get('balances') != account['balances']
@@ -270,13 +281,20 @@ class Binance:
             'max_notional': self.max_notional,
         }
 
-    def trades(self, since_ms: int) -> list[dict]:
-        """BTCUSDT fills at or after ``since_ms``. A page that does not advance is unknown."""
+    def trades(self, since_ms: int, from_id: int | None = None) -> list[dict]:
+        """BTCUSDT fills at or after ``since_ms``. A page that does not advance is unknown.
+
+        ``from_id`` pages with the trade id alone. Binance rejects combining it
+        with ``startTime``.
+        """
         if type(since_ms) is not int:
             raise Blocked('trade cursor must be an integer millisecond timestamp')
-        params = {'symbol': 'BTCUSDT', 'startTime': str(since_ms), 'limit': '1000'}
+        if from_id is not None and (type(from_id) is not int or from_id <= 0):
+            raise Blocked('trade id cursor must be a positive integer')
+        params = ({'symbol': 'BTCUSDT', 'fromId': str(from_id), 'limit': '1000'} if from_id is not None
+                  else {'symbol': 'BTCUSDT', 'startTime': str(since_ms), 'limit': '1000'})
         found = []
-        seen = set()
+        seen = {}
         while True:
             payload = self._get('/api/v3/myTrades', params, signed=True)
             if not isinstance(payload, list):
@@ -286,9 +304,13 @@ class Binance:
             ids = []
             for row in payload:
                 trade = normalize_trade(row)
+                if params.get('fromId') is not None and trade['id'] < int(params['fromId']):
+                    raise Unknown('trade page precedes the requested id')
                 ids.append(trade['id'])
-                if trade['time'] >= since_ms and trade['id'] not in seen:
-                    seen.add(trade['id'])
+                if trade['id'] in seen and trade != seen[trade['id']]:
+                    raise Unknown('duplicate trade id has conflicting contents')
+                if (from_id is not None or trade['time'] >= since_ms) and trade['id'] not in seen:
+                    seen[trade['id']] = trade
                     found.append(trade)
             if len(payload) < 1000:
                 break
@@ -398,14 +420,12 @@ class Binance:
         self.max_qty = number(lot['maxQty'], 'maxQty', positive=True) if 'maxQty' in lot else None
         self.min_price = number(price['minPrice'], 'minPrice', positive=True) if price.get('minPrice') not in (None, '0', '0.00000000') else None
         self.max_price = number(price['maxPrice'], 'maxPrice', positive=True) if price.get('maxPrice') not in (None, '0', '0.00000000') else None
-        if market:
-            step = number(market.get('stepSize', '0'), 'market step', nonnegative=True)
-            minimum = number(market.get('minQty', '0'), 'market minQty', nonnegative=True)
-            self.market_step = step or None
-            self.market_min_qty = minimum or None
-            self.market_max_qty = number(market['maxQty'], 'market maxQty', nonnegative=True) if 'maxQty' in market else None
-        if notional.get('maxNotional') not in (None, ''):
-            self.max_notional = number(notional['maxNotional'], 'maxNotional', positive=True)
+        self.market_step = number(market.get('stepSize', '0'), 'market step', nonnegative=True) or None
+        self.market_min_qty = number(market.get('minQty', '0'), 'market minQty', nonnegative=True) or None
+        self.market_max_qty = (number(market['maxQty'], 'market maxQty', nonnegative=True)
+                               if 'maxQty' in market else None)
+        self.max_notional = (number(notional['maxNotional'], 'maxNotional', positive=True)
+                             if notional.get('maxNotional') not in (None, '') else None)
         types = symbol.get('orderTypes') or []
         if 'STOP_LOSS' not in types or 'MARKET' not in types:
             raise Blocked('BTCUSDT must support market orders and fixed stop protection')
@@ -418,11 +438,17 @@ class Binance:
         return int(self.clock() * 1000) + self._offset_ms
 
     def _get(self, path: str, params: dict | None = None, *, signed: bool, method='GET'):
-        if method != 'GET' and (not self.execution_authorized or self.environment != 'demo'
+        if method != 'GET' and (not self.execution_authorized
                 or path != '/api/v3/order' or method not in ('POST', 'DELETE') or not signed):
-            raise Blocked('only explicitly enabled Demo order writes are supported')
+            raise Blocked('only explicitly enabled spot order writes are supported')
         if not path.startswith('/'):
             raise Blocked('refusing a request outside the configured Binance host')
+        try:
+            self._check_deadline()
+        except Unknown as exc:
+            if method != 'GET':
+                raise NotSent(str(exc)) from exc
+            raise
         pairs = [(key, str(value)) for key, value in (params or {}).items()]
         headers = {'User-Agent': 'spotquant/0.1.0'}
         if signed:
@@ -455,15 +481,22 @@ class Binance:
             raise Unknown('Binance response is incomplete')
         status, body = opened[0], opened[1]
         response_headers = opened[2] if len(opened) == 3 else {}
+        if status in (418, 429):
+            retry = _header(response_headers, 'Retry-After')
+            try:
+                delay = max(1, float(number(retry, 'Retry-After', positive=True)))
+            except (Blocked, OverflowError):
+                delay = 60
+            self._retry_after_at = getattr(self, '_monotonic', time.monotonic)() + delay
+            raise Unknown(f'Binance rate limit HTTP {status}; retry after {delay:g} seconds')
         try:
             payload = json.loads(body.decode())
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise Unknown(f'Binance {path} returned status {status} without JSON') from exc
-        if status in (418, 429):
-            retry = _header(response_headers, 'Retry-After')
-            raise Unknown(f'Binance rate limit HTTP {status}; retry after {retry or "unknown"}')
         if status != 200:
             code = payload.get('code') if isinstance(payload, dict) else None
+            if method == 'GET' and path == '/api/v3/order' and status == 400 and code == -2013:
+                raise NotFound(f'Binance {path} has no order HTTP {status} code {code}')
             if method == 'GET' and signed and code == -1021 and not self._clock_retried:
                 self._clock_retried = True
                 self._offset_ms = None
@@ -471,12 +504,21 @@ class Binance:
                     return self._get(path, params, signed=signed)
                 finally:
                     self._clock_retried = False
-            if method != 'GET' and 400 <= status < 500 and status not in (403, 409) and code not in (-1006, -1007):
+            rejected = type(code) is int and (
+                code in (-1002, -1013, -1014, -1015, -1016, -1020, -1021, -1022,
+                         -2010, -2011, -2014, -2015)
+                or -1225 <= code <= -1100)
+            if code == -2010 and 'duplicate' in str(payload.get('msg', '')).lower():
+                # This attempt was refused, but the original identity may be live.
+                rejected = False
+            if method != 'GET' and 400 <= status < 500 and status not in (403, 409) and rejected:
                 raise Blocked(f'Binance {path} rejected HTTP {status} code {code}')
             raise Unknown(f'Binance {path} failed with HTTP {status} code {code}')
         return payload
 
     def _check_deadline(self) -> None:
+        if getattr(self, '_monotonic', time.monotonic)() < self._retry_after_at:
+            raise Unknown('Binance rate limit backoff is still active; no request sent')
         if self._stop is not None and self._stop():
             raise Unknown('session deadline reached; not starting another request')
 
@@ -498,8 +540,12 @@ def _header(headers, name: str):
 def _order(row: dict) -> dict:
     if not isinstance(row, dict):
         raise Unknown('open order row is incomplete')
+    if row.get('symbol', 'BTCUSDT') != 'BTCUSDT':
+        raise Unknown('open order symbol differs from BTCUSDT')
     try:
-        order_id = int(row['orderId'])
+        order_id = row['orderId']
+        if type(order_id) is not int or order_id <= 0:
+            raise Unknown('open order native identity is invalid')
         side = row['side']
         order_type = row['type']
         status = row['status']
@@ -507,7 +553,9 @@ def _order(row: dict) -> dict:
         executed = number(row['executedQty'], 'executedQty', nonnegative=True)
     except (KeyError, TypeError, ValueError, Blocked) as exc:
         raise Unknown('open order row is incomplete') from exc
-    if side not in ('BUY', 'SELL') or not order_type or not status:
+    if (side not in ('BUY', 'SELL') or not order_type or not status
+            or not isinstance(row.get('clientOrderId'), str) or not row['clientOrderId']
+            or executed > original):
         raise Unknown('open order row is incomplete')
     parsed = {
         'order_id': order_id,

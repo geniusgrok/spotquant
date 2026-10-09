@@ -1,4 +1,4 @@
-"""Durable sleeve order allocation for the bounded Demo session."""
+"""Durable order allocation for explicitly authorized, bounded spot sessions."""
 from __future__ import annotations
 
 import hashlib
@@ -6,30 +6,40 @@ import json
 from decimal import Decimal as D
 from time import time
 
-from .model import Model, SLEEVES
-from .preview import BASE_STEP, MIN_NOTIONAL, _annotate_venue, _decide, _qty_ok, decision_view
+from .model import DAY, Model, SLEEVES
+from .preview import BASE_STEP, MIN_NOTIONAL, _annotate_venue, _decide, _protection, _qty_ok, decision_view
 from .state import client_id
-from .types import Blocked, Unknown, NotSent, floor_step, number, serial
+from .types import Blocked, Unknown, NotFound, NotSent, floor_step, number, serial
 
 TERMINAL = {'FILLED', 'EXPIRED', 'CANCELED', 'REJECTED', 'EXPIRED_IN_MATCH'}
 FIELDS = ('symbol', 'side', 'type', 'quantity', 'quoteOrderQty', 'stopPrice')
+
+
+def _no_fill_failure(row):
+    """A native refusal or terminal zero-fill order is safe to repair separately."""
+    _, _, status, result = row
+    return (status == 'rejected' or status == 'settled'
+            and result.get('status') in TERMINAL - {'FILLED'}
+            and result.get('executedQty') is not None and number(result['executedQty']) == 0)
 
 
 def allocation_owners(rows):
     """Attach only durable native readback to an immutable sleeve allocation."""
     return {str(result['orderId']): dict(payload, native_status=result.get('status'),
                                        native_executed_qty=result.get('executedQty'),
+                                       native_quote_qty=result.get('cummulativeQuoteQty'),
                                        native_created_ms=result.get('time') or result.get('transactTime'))
             for payload, result in rows if 'orderId' in result}
 
 
 class Lifecycle:
     def __init__(self, state, venue, config):
-        if not getattr(venue, 'execution_authorized', False) or config.environment != 'demo':
-            raise Blocked('execution requires an explicitly authorized Demo venue')
+        if not getattr(venue, 'execution_authorized', False) or config.environment not in ('demo', 'live'):
+            raise Blocked('execution requires an explicitly authorized venue and capital ceiling')
         if state.identity != config.scope or config.capital_limit is None:
             raise Blocked('execution requires scoped state and a positive capital ceiling')
         self.state, self.venue, self.config = state, venue, config
+        self._entry_inputs = {}
 
     def rows(self):
         if getattr(self, '_rows', None) is None:
@@ -52,7 +62,10 @@ class Lifecycle:
         for identity, payload, status, prior in self.rows():
             if status in ('prepared', 'rejected', 'settled'):
                 continue
-            row = self.venue.query(prior.get('orderId') or identity)
+            try:
+                row = self.venue.query(prior.get('orderId') or identity)
+            except NotFound:
+                row = None
             if row is None:
                 raise Unknown('sent order is not confirmed; stable identity is never resubmitted')
             allowed = {identity} | ({payload['cancel_id']} if payload.get('cancel_id') else set())
@@ -78,6 +91,34 @@ class Lifecycle:
     def owners(self):
         return allocation_owners((payload, result) for _, payload, _, result in self.rows())
 
+    def _protect_unsold(self, bar, positions, follows, snapshot):
+        """Keep a stop on a position whose market sell cannot be sent."""
+        from .session import _view
+        window = SLEEVES[0]
+        position = positions.get(str(window))
+        if not position or position.get('dust'):
+            return False
+        view, quantity = _view(Model.restore(self.state.get('models')[str(window)]), position)
+        order = _protection(decision_view(view, position, self.owners()), quantity, snapshot)
+        if order.get('placeable') is False or 'quantity' not in order:
+            return False
+        if D(order['stopPrice']) >= D(snapshot['last_price']):
+            return False
+        order = dict(order, sleeves=[window])
+        identity = self.prepare(order, bar, positions, follows)
+        row = next(item for item in self.rows() if item[0] == identity)
+        if row[2] in ('rejected', 'settled'):
+            return False
+        for stop_id, payload, status, _ in self.rows():
+            if status == 'resting' and payload['order']['type'] == 'STOP_LOSS' and stop_id != identity:
+                self.cancel(stop_id)
+                return True
+        self._allow_exit_protection = True
+        try:
+            return self.send(identity)
+        finally:
+            self._allow_exit_protection = False
+
     def verify(self, snapshot):
         known = {result.get('orderId'): {identity} | ({payload['cancel_id']} if payload.get('cancel_id') else set())
                  for identity, payload, _, result in self.rows() if result.get('orderId') is not None}
@@ -98,9 +139,16 @@ class Lifecycle:
         cash, btc = D(anchor['cash']), D(anchor['btc'])
         owners = self.owners()
         unvalued = set(self.state.get('third_asset_fees_unvalued') or [])
+        totals = {}
         for trade in self.state.trades(self.venue, anchor['at_ms']):
-            if str(trade['order_id']) not in owners:
+            order_id = str(trade['order_id'])
+            owner = owners.get(order_id)
+            if owner is None:
                 raise Unknown('external trade blocks execution')
+            if trade['buyer'] is not (owner['order']['side'] == 'BUY'):
+                raise Unknown('fill side differs from its durable order')
+            gross, quote = totals.get(order_id, (D(0), D(0)))
+            totals[order_id] = gross + trade['qty'], quote + trade['quote']
             commission, asset = trade['commission'], trade['commission_asset']
             if commission and not asset:
                 raise Unknown('commission asset is missing')
@@ -109,13 +157,25 @@ class Lifecycle:
             sign = 1 if trade['buyer'] else -1
             btc += sign * trade['qty'] - (commission if asset == 'BTC' else D(0))
             cash -= sign * trade['quote'] + (commission if asset == 'USDT' else D(0))
+        for order_id, owner in owners.items():
+            gross, quote = totals.get(order_id, (D(0), D(0)))
+            executed = number(owner['native_executed_qty'], 'native executed quantity', nonnegative=True)
+            if abs(gross - executed) > D('0.00000001'):
+                raise Unknown('durable fill quantity differs from native executed quantity')
+            native_quote = owner.get('native_quote_qty')
+            # Binance may report a negative cumulative quote for unavailable
+            # historical data; native executed quantity still must reconcile.
+            if native_quote is not None:
+                native_quote = number(native_quote, 'native cumulative quote')
+                if native_quote >= 0 and abs(quote - native_quote) > D('0.00000001'):
+                    raise Unknown('durable fill quote differs from native cumulative quote')
         if abs(btc - D(snapshot['btc'])) > D('0.00000001') or abs(
                 cash - D(snapshot['usdt_free']) - D(snapshot['usdt_locked'])) > D('0.00000001'):
             raise Unknown('account balances differ from durable fills; transfers are not inferred')
         if unvalued != set(self.state.get('third_asset_fees_unvalued') or []):
             self.state.set('third_asset_fees_unvalued', sorted(unvalued))
 
-    def prepare(self, order, bar, positions, follows, *, rearm=None):
+    def prepare(self, order, bar, positions, follows, *, rearm=None, retry_rejected=False):
         group = sorted(order['sleeves'])
         if not group or any(window not in SLEEVES for window in group):
             raise Blocked('invalid sleeve allocation')
@@ -139,12 +199,26 @@ class Lifecycle:
             operation += '-' + hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()[:16]
         identity = client_id(self.state.identity, bar, operation)
         prior = next((row for row in self.rows() if row[0] == identity), None)
+        while (raw['type'] == 'STOP_LOSS' and prior is not None and prior[2] == 'settled'
+               and (prior[3].get('status') == 'CANCELED' or _no_fill_failure(prior))):
+            payload['replaced_stop'] = identity
+            operation += '-again-' + str(prior[3].get('orderId'))
+            identity = client_id(self.state.identity, bar, operation)
+            prior = next((row for row in self.rows() if row[0] == identity), None)
         if (raw['side'] == 'SELL' and raw['type'] == 'MARKET' and prior is not None
                 and prior[2] in ('settled', 'rejected')
                 and number(raw['quantity']) < number(prior[1]['order']['quantity'])):
             payload['reduction_after'] = identity
             operation += '-remainder-' + hashlib.sha256(
                 (identity + '|' + format(number(raw['quantity']), 'f')).encode()).hexdigest()[:16]
+            identity = client_id(self.state.identity, bar, operation)
+            prior = next((row for row in self.rows() if row[0] == identity), None)
+        if (retry_rejected and raw['side'] == 'SELL' and raw['type'] == 'MARKET' and prior is not None
+                and _no_fill_failure(prior)
+                and number(raw['quantity']) == number(prior[1]['order']['quantity'])
+                and not prior[1].get('retry_after_reject')):
+            payload['retry_after_reject'] = identity
+            operation += '-after-reject'
             identity = client_id(self.state.identity, bar, operation)
             prior = next((row for row in self.rows() if row[0] == identity), None)
         if prior is None:
@@ -165,7 +239,7 @@ class Lifecycle:
         return identity
 
     def send(self, identity):
-        _, payload, status, result = next(row for row in self.rows() if row[0] == identity)
+        _, payload, status, _ = next(row for row in self.rows() if row[0] == identity)
         if status == 'rejected':
             raise Blocked('durable order was rejected; owner review is required')
         if status != 'prepared':
@@ -173,11 +247,13 @@ class Lifecycle:
             if payload['order']['type'] == 'STOP_LOSS' and status == 'settled':
                 raise Unknown('desired protection is already terminal; no active coverage inferred')
             return False
-        self.save(identity, payload, 'unknown', result)
+        # Only the adapter's NotSent proof permits another dispatch. A later
+        # -2013/open-order absence cannot undo a request sent to an async venue.
+        self.save(identity, payload, 'unknown', {})
         self._retry_observation = False
         try:
-            self.venue.submit(identity, payload['order'],
-                              preflight=lambda snapshot: self._preflight(payload, snapshot))
+            accepted = self.venue.submit(identity, payload['order'],
+                                         preflight=lambda snapshot: self._preflight(payload, snapshot))
         except NotSent:
             self.save(identity, payload, 'prepared', {'not_sent': True})
             if self._retry_observation:
@@ -189,6 +265,14 @@ class Lifecycle:
             # Mutable preflight failures are NotSent; an explicit refusal requires review.
             self.save(identity, payload, 'rejected', {})
             raise
+        else:
+            if (not isinstance(accepted, dict) or type(accepted.get('orderId')) is not int
+                    or accepted['orderId'] <= 0 or accepted.get('clientOrderId') != identity
+                    or accepted.get('symbol') != payload['order']['symbol']):
+                raise Unknown('order acknowledgement has no matching native identity')
+            # Preserve the matching-engine identity before any further network
+            # request. Readback still verifies the immutable order parameters.
+            self.save(identity, payload, 'unknown', accepted)
         self.recover()
         return True
 
@@ -231,6 +315,18 @@ class Lifecycle:
         self._record_quote(snapshot)
         positions = self.state.get('positions') or {}
         if order['side'] == 'BUY':
+            from .session import _now_ms
+            from .crowding import value_at
+            now = _now_ms(self.venue)
+            models = self.state.get('models')
+            if any(Model.restore(models[str(window)]).last + 2 * DAY <= now
+                   for window in payload['sleeves']):
+                self._retry_observation = True
+                raise NotSent('UTC day changed before entry; refresh completed daily inputs')
+            if any(value_at(name, self._entry_inputs.get(name, {}), now)[0] is None
+                   for name in ('funding', 'basis')):
+                self._retry_observation = True
+                raise NotSent('crowding inputs expired before entry; refresh public inputs')
             if self.state.get('third_asset_fees_unvalued'):
                 raise NotSent('third-asset fees are unvalued; new buy needs owner reconciliation')
             if D(snapshot['btc']) * D(snapshot['last_price']) + D(order['quoteOrderQty']) > self.config.capital_limit:
@@ -254,7 +350,7 @@ class Lifecycle:
                 view, quantity = _view(Model.restore(self.state.get('models')[str(SLEEVES[0])]), position)
                 fresh = _decide(decision_view(view, position, self.owners()), snapshot,
                                 entries_enabled=False, owned_btc=quantity, budget=D(0))
-                if fresh['action'] == 'exit':
+                if fresh['action'] == 'exit' and not getattr(self, '_allow_exit_protection', False):
                     self._retry_observation = True
                     raise NotSent('latest position decision requires an exit before protection dispatch')
             if order['type'] == 'STOP_LOSS' and D(order['stopPrice']) >= D(snapshot['last_price']):
@@ -263,6 +359,8 @@ class Lifecycle:
 
     def act(self, decision, bar, observed):
         """One action, then the session re-observes fills before sizing any buy."""
+        self._entry_inputs = {item['name']: item for diagnostic in decision.get('crowding', [])
+                              for item in diagnostic.get('inputs', [])}
         snapshot = self.venue.snapshot(self.config.account_uid)
         self._observed = snapshot
         from .session import _now_ms
@@ -284,6 +382,25 @@ class Lifecycle:
             decision = decide(views, owned, snapshot, entries_enabled=False, capital_limit=self.config.capital_limit,
                               positions={w: positions.get(str(w)) for w in SLEEVES}, owners=self.owners())
         resting = [row for row in self.rows() if row[2] == 'resting']
+        crossed = any(item.get('action') == 'exit' and 'already crossed' in (item.get('reason') or '')
+                      for item in decision['sleeves'].values())
+
+        def dispatch_sell(identity, order):
+            try:
+                return self.send(identity)
+            except Blocked:
+                saved = next(item for item in self.rows() if item[0] == identity)
+                if not _no_fill_failure(saved):
+                    raise
+                if not crossed:
+                    return self._protect_unsold(bar, positions, follows, snapshot)
+                successor = self.prepare(
+                    order, bar, positions, follows,
+                    rearm={str(w): decision['sleeves'].get(str(w), {}).get('rearm', False)
+                           for w in order['sleeves']},
+                    retry_rejected=True)
+                return self.send(successor)
+
         for identity, payload, status, _ in self.rows():
             if status != 'prepared' or payload['order']['type'] != 'MARKET':
                 continue
@@ -300,34 +417,35 @@ class Lifecycle:
                           'reason': 'owned protection fills reduced the prepared sale'})
                 continue
             if not _qty_ok(payload['order']['quantity'], snapshot):
-                raise Blocked('prepared reduction fails native lot filters')
+                return self._protect_unsold(bar, positions, follows, snapshot)
             for stop_id, stop, _, _ in resting:
                 if set(stop['sleeves']) & set(payload['sleeves']):
                     self.cancel(stop_id)
                     return True
-            return self.send(identity)
+            return dispatch_sell(identity, dict(payload['order'], sleeves=payload['sleeves']))
         sells = [order for order in decision['orders'] if order['side'] == 'SELL']
         for order in sells:
             if not _qty_ok(order['quantity'], snapshot):
-                raise Blocked('desired reduction fails native lot filters')
+                return self._protect_unsold(bar, positions, follows, snapshot)
             identity = self.prepare(order, bar, positions, follows,
                                     rearm={str(w): decision['sleeves'].get(str(w), {}).get('rearm', False)
-                                           for w in order['sleeves']})
+                                           for w in order['sleeves']},
+                                    retry_rejected=crossed)
             row = next(row for row in self.rows() if row[0] == identity)
-            if row[2] == 'rejected':
-                raise Blocked('durable reduction was rejected; owner review is required')
+            if _no_fill_failure(row):
+                if not crossed:
+                    continue
+                raise Blocked('durable reduction made no fill progress; owner review is required')
             if row[2] == 'settled':
-                if row[3].get('executedQty') is not None and number(row[3]['executedQty']) == 0:
-                    raise Blocked('terminal reduction made no fill progress; owner review is required')
                 continue
             # Persist the sale before releasing any coins; restart resumes this exact intent.
             for stop_id, payload, _, _ in resting:
                 if set(payload['sleeves']) & set(order['sleeves']):
                     self.cancel(stop_id)
                     return True
-            return self.send(identity)
+            return dispatch_sell(identity, order)
         if any(item['action'] == 'exit' for item in decision['sleeves'].values()):
-            raise Blocked('remaining exit is below the venue minimum; owner takeover required')
+            return self._protect_unsold(bar, positions, follows, snapshot)
         desired = [order for order in decision['protections'] if 'quantity' in order]
         # Confirm one fixed target before chasing new quotes. After confirmation,
         # observe its coverage and defer price-only replacement to the next poll.

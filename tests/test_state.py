@@ -50,13 +50,17 @@ class Venue:
         self.now = 100000000
         self.fills = [fill(1, self.now)]
         self.starts = []
+        self.from_ids = []
 
     def clock(self):
         return self.now / 1000
 
-    def trades(self, start):
+    def trades(self, start, from_id=None):
         self.starts.append(start)
-        return [x for x in self.fills if x['time'] >= start]
+        self.from_ids.append(from_id)
+        if from_id is None:
+            return [x for x in self.fills if x['time'] >= start]
+        return [x for x in self.fills if x['id'] >= from_id]
 
 class DurableFillTests(unittest.TestCase):
     def test_overlap_keeps_late_same_time_id_and_avoids_epoch_query(self):
@@ -88,7 +92,17 @@ class DurableFillTests(unittest.TestCase):
             with self.assertRaises(Unknown):
                 state.trades(venue, 0)
             venue.now += 81 * 86400000
-            with self.assertRaises(Unknown):
+            kept = state.trades(venue, 0)
+            self.assertEqual([row['id'] for row in kept], [1])
+            self.assertEqual(venue.from_ids[-1], 1)
+            venue.fills.append(fill(2, venue.now))
+            self.assertEqual([row['id'] for row in state.trades(venue, 0)], [1, 2])
+        with tempfile.TemporaryDirectory() as directory, State(directory, 'test') as state:
+            venue = Venue()
+            state.set('fill_watermark', {'from_ms': venue.now, 'through_ms': venue.now})
+            state.db.execute('DELETE FROM fills')
+            venue.now += 81 * 86400000
+            with self.assertRaisesRegex(Unknown, 'fill observation gap'):
                 state.trades(venue, 0)
 
 

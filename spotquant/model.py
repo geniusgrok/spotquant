@@ -3,9 +3,9 @@
 A shadow book trades the next daily open: two closes, the 252-day filter, a
 fresh cross, and the crash-reversal repair. The account follows that book
 only at a session. One close back above the average can buy early. A trend
-whose session price is within 0.5% of the SMA sells and can rejoin while the
-shadow book is still long. Protection is a 28% trail under the high since
-the fill. Completed bars and fill-owned peaks only.
+whose session price is within 0.5% of the SMA sells. A retained touch permission
+can rejoin after a newer completed bar while the shadow book remains long.
+Protection uses verified post-fill peaks; a protection exit consumes that signal.
 """
 from __future__ import annotations
 

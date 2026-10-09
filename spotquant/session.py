@@ -1,4 +1,4 @@
-"""One bounded session: read-only by default, explicit owner Demo execution."""
+"""One bounded session: read-only by default, explicit owner-authorized execution."""
 from __future__ import annotations
 
 import time
@@ -10,15 +10,16 @@ from decimal import Decimal as D
 
 from .follow import advance, apply_day, day_open, unexplained
 from .model import DAY, ORIGIN, SLEEVES, Model
-from .preview import MIN_NOTIONAL, decision
+from .preview import MIN_NOTIONAL, BASE_STEP, decision
 from .state import State, client_id
-from .types import Blocked, Unknown, number
+from .types import Blocked, Unknown, floor_step, number
 
 from .crowding import RULE
 
 # Matching single-SMA40 v7 policies retain their owned account and order state.
 KNOWN_OLD_RULE = '2026-10-03-atr-stop-crowding-interaction-v1'
 COMPATIBLE_RULES = (KNOWN_OLD_RULE, '2026-10-09-sma40-touch-entry-guard-v1')
+SAFETY_PREDECESSOR = '2026-10-09-verified-realtime-peak-v1'
 
 # Dropped when a cycle fails so the previous success cannot be read as current.
 STALE_REPORT_FIELDS = (
@@ -29,7 +30,7 @@ STALE_REPORT_FIELDS = (
 RECORDED_LIMITS = {
     'adverse_exit': 'next_session',
     'adverse_loss_capped': False,
-    'execution': 'explicit Demo only; live blocked',
+    'execution': 'Demo and live writes require explicit UID authorization and a positive capital ceiling',
     'public_features': 'funding lag/expiry8h; paired UTC closes lag60s; missing blocks new BUY',
 }
 
@@ -59,7 +60,7 @@ def cycle(venue, state: State, config, *, execute=False) -> dict:
         current = _cycle(venue, state, config, lifecycle=lifecycle)
         if not lifecycle or not lifecycle.act(current['model_preview'], current['market_through'], current['actual']):
             return dict(current, write_attempted=_writes(venue),
-                        status='demo_execution' if execute else 'read_only')
+                        status=f'{config.environment}_execution' if execute else 'read_only')
     raise Unknown('bounded execution cycle exhausted; reconcile on the next cycle')
 
 
@@ -85,7 +86,8 @@ def _cycle(venue, state: State, config, *, lifecycle=None, crowding_source=None,
     A failed observation never commits its partial model or positions. The
     verified observation before a public entry read remains available for recovery.
     """
-    compatible = state.get('rule') in COMPATIBLE_RULES
+    prior_rule = state.get('rule')
+    compatible = prior_rule in COMPATIBLE_RULES or prior_rule == SAFETY_PREDECESSOR
     state._recovery_only = compatible
     models, enabled, fresh = _load_models(state, venue)
     snapshot = venue.snapshot(config.account_uid)
@@ -99,7 +101,8 @@ def _cycle(venue, state: State, config, *, lifecycle=None, crowding_source=None,
         if lifecycle is None:
             state._recovery_only = True
             raise Blocked('matching legacy checkpoint needs owned account reconciliation before strategy takeover')
-        positions = _legacy_peaks(state, positions)
+        if prior_rule in COMPATIBLE_RULES:
+            positions = _legacy_peaks(state, positions)
     positions = _observe_quotes(positions, snapshot, _now_ms(venue))
     if fresh:
         for model in models.values():
@@ -193,7 +196,7 @@ def _legacy_peaks(state, positions):
 
 
 def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sleep, stopping=lambda: False):
-    """Run until the deadline or Ctrl-C; execution needs the explicit Demo gate."""
+    """Run until the deadline or Ctrl-C with explicitly scoped execution permission."""
     venue.write_attempted = False
     venue._session_sent_start = len(getattr(venue, 'sent', ()))
     started = monotonic()
@@ -219,12 +222,21 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
     venue._monotonic = monotonic
     venue._risk_deadline_at = deadline
     venue._deadline_at = deadline + (30 if execute else 0)
-    venue._risk_stop = lambda: monotonic() >= deadline or stopping()
+    stop_at = None
+    def requested():
+        nonlocal stop_at
+        if stop_at is None and stopping():
+            stop_at = monotonic()
+            venue._risk_deadline_at = min(deadline, stop_at)
+            venue._deadline_at = min(venue._deadline_at, stop_at + (30 if execute else 0))
+        return stop_at is not None
+    venue._risk_stop = lambda: monotonic() >= deadline or requested()
     if hasattr(venue, '_stop'):
         venue._stop = lambda: monotonic() >= venue._deadline_at
     with State(config.state_dir, config.scope) as state:
+        closeout = False
         try:
-            while monotonic() < deadline and not stopping():
+            while monotonic() < deadline and not requested():
                 report['cycles'] += 1
                 report['observation_current'] = False
                 report.pop('risk_state', None)
@@ -264,32 +276,34 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
                     _mark_unknown_exposure(report, state)
                 state.report(report)
                 remaining = deadline - monotonic()
-                if remaining > 0 and not stopping():
+                if remaining > 0 and not requested():
                     wait(min(config.poll_seconds, remaining))
-            if (execute and not stopping() and state.pending()
-                    and deadline <= monotonic() < venue._deadline_at):
-                # One bounded recovery of the original identities. BUY stays disabled.
-                report['closeout_attempted'] = True
-                report['cycles'] += 1
-                report.pop('risk_state', None)
-                report.pop('execution_evidence', None)
-                try:
-                    report.update(cycle(venue, state, config, execute=True))
-                except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
-                    report.update(status='unknown', reason=str(exc), observation_current=False)
-                    report['errors'] = (report['errors'] + [
-                        {'cycle': report['cycles'], 'reason': str(exc)}])[-10:]
-                    clear_stale(report)
-                    try:
-                        report['risk_state'] = _risk_state(state, venue.snapshot(config.account_uid), venue)
-                    except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError):
-                        report['risk_state'] = {'direction': 'unknown', 'unprotected_btc': None,
-                                                'manual_takeover': True, 'observation_current': False}
-            if stopping():
+            if requested():
                 report['stop_reason'] = 'requested'
+                closeout = True
+            elif deadline <= monotonic() < venue._deadline_at and (state.pending()
+                    or execute and (not report.get('observation_current')
+                                    or report.get('risk_state', {}).get('manual_takeover'))):
+                # A settled BUY can outlive its failed observation without a
+                # pending intent. Natural expiry needs the same protection recovery.
+                closeout = True
         except KeyboardInterrupt:
             report['stop_reason'] = 'interrupted'
+            stop_at = monotonic() if stop_at is None else stop_at
+            closeout = True
         finally:
+            if execute and closeout:
+                venue._risk_stop = lambda: True
+                venue._risk_deadline_at = min(deadline, stop_at if stop_at is not None else deadline)
+                venue._deadline_at = min(deadline + 30, (stop_at if stop_at is not None else deadline) + 30)
+                try:
+                    _closeout(config, venue, state, report, monotonic, wait)
+                except KeyboardInterrupt:
+                    report.update(status='unknown', reason='protective closeout interrupted; reconcile before resuming',
+                                  observation_current=False, closeout_interrupted=True,
+                                  risk_state={'direction': 'unknown', 'unprotected_btc': None,
+                                              'manual_takeover': True, 'observation_current': False})
+                    clear_stale(report)
             report['elapsed_seconds'] = max(0, monotonic() - started)
             report['pending_intents'] = len(state.pending())
             if report['pending_intents']:
@@ -305,13 +319,46 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
             report.setdefault('risk_state', {'direction': 'unknown', 'unprotected_btc': None,
                                               'manual_takeover': execute, 'observation_current': False})
             report['risk_state']['observation_current'] = False
-            unprotected = report['risk_state'].get('unprotected_btc')
-            if execute and (unprotected is None or unprotected > 0 or getattr(state, '_recovery_only', False)):
-                report['manual_takeover'] = True
+            if execute:
+                report['manual_takeover'] = bool(report['risk_state'].get('manual_takeover'))
             if getattr(state, '_recovery_only', False):
                 report['recovery_only'] = True
             state.report(report)
     return report
+
+
+def _closeout(config, venue, state, report, monotonic, wait):
+    """Reconcile and protect after a graceful stop; the venue has new BUY disabled."""
+    report['closeout_attempted'] = True
+    # A settled BUY may not yet be folded into positions. Do not rely only on
+    # pending intents to decide whether protective recovery is necessary.
+    for _ in range(12):
+        if monotonic() >= venue._deadline_at:
+            break
+        report['cycles'] += 1
+        report.pop('risk_state', None)
+        report.pop('execution_evidence', None)
+        try:
+            report.update(cycle(venue, state, config, execute=True))
+            report.pop('reason', None)
+            if not report['risk_state']['manual_takeover']:
+                break
+        except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
+            report.update(status='unknown', reason=str(exc), observation_current=False)
+            # Repeated closeout failures must not erase the original refusal.
+            if not report['errors'] or report['errors'][-1]['reason'] != str(exc):
+                report['errors'] = (report['errors'] + [{'cycle': report['cycles'], 'reason': str(exc)}])[-10:]
+            clear_stale(report)
+            try:
+                report['risk_state'] = _risk_state(state, venue.snapshot(config.account_uid), venue)
+            except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError, ArithmeticError):
+                report['risk_state'] = {'direction': 'unknown', 'unprotected_btc': None,
+                                        'manual_takeover': True, 'observation_current': False}
+            if isinstance(exc, Blocked) or 'rate limit' in str(exc) or 'session deadline' in str(exc):
+                break
+        remaining = venue._deadline_at - monotonic()
+        if remaining > 0:
+            wait(min(config.poll_seconds, remaining))
 
 
 def _mark_unknown_exposure(report, state):
@@ -329,7 +376,8 @@ def _guard_state(state):
             'lifecycle_identity', 'alpha_identity', 'edge_identity', 'adoption_risk')):
         raise Blocked('state belongs to an incompatible strategy')
     saved, rule = state.get('models'), state.get('rule')
-    compatible = rule in COMPATIBLE_RULES
+    legacy = rule in COMPATIBLE_RULES
+    compatible = legacy or rule == SAFETY_PREDECESSOR
     allowed_rule = rule == RULE or compatible
     if rule is not None and not allowed_rule:
         raise Blocked('state was written for another rule; a new directory is not a flat account')
@@ -363,6 +411,9 @@ def _guard_state(state):
                 if (any(not value.is_finite() or value <= 0 for value in values)
                         or position['entry_open_ms'] != day_open(position['first_ms'])
                         or any(type(position[k]) is not bool for k in ('repair', 'adverse'))
+                        or ('dust' in position and (type(position['dust']) is not bool
+                            or position['dust'] and D(position['qty']) >= BASE_STEP))
+                        or ('sell_stop_breached' in position and type(position['sell_stop_breached']) is not bool)
                         or ('quote_through_ms' in position and (type(position['quote_through_ms']) is not int
                             or position['quote_through_ms'] < position['first_ms']))
                         or (position['through'] is not None and (type(position['through']) is not int
@@ -375,7 +426,7 @@ def _guard_state(state):
     except (KeyError, TypeError, ValueError, ArithmeticError, Unknown) as exc:
         raise Blocked('incomplete or malformed position checkpoint') from exc
     # Pending dispatch/recovery must never run on malformed or foreign allocations.
-    from .execution import FIELDS
+    from .execution import FIELDS, _no_fill_failure
     try:
         for identity, kind, encoded, status in state.db.execute(
                 "SELECT id,kind,payload,status FROM intents WHERE status NOT IN ('settled','rejected') OR ?",
@@ -434,9 +485,28 @@ def _guard_state(state):
                     raise ValueError('reduction amount')
                 operation += '-remainder-' + hashlib.sha256(
                     (base + '|' + format(D(order['quantity']), 'f')).encode()).hexdigest()[:16]
-                if identity != client_id(state.identity, payload['signal_ms'], operation):
-                    raise ValueError('reduction identity')
-            if compatible:
+            retry = payload.get('retry_after_reject')
+            if retry is not None:
+                parent = client_id(state.identity, payload['signal_ms'], operation)
+                prior = state.db.execute('SELECT kind,payload,status,result FROM intents WHERE id=?',
+                                         (parent,)).fetchone()
+                if (order['side'] != 'SELL' or order['type'] != 'MARKET' or retry != parent
+                        or prior is None or prior[0] != 'p4'):
+                    raise ValueError('retry parent')
+                original, result = json.loads(prior[1]), json.loads(prior[3])
+                if (not _no_fill_failure((parent, original, prior[2], result))
+                        or number(result.get('executedQty') or 0) != 0
+                        or original.get('retry_after_reject')
+                        or original['sleeves'] != group or original['signal_ms'] != payload['signal_ms']
+                        or original['order']['symbol'] != 'BTCUSDT'
+                        or original['order']['side'] != 'SELL' or original['order']['type'] != 'MARKET'
+                        or D(original['order']['quantity']) != D(order['quantity'])):
+                    raise ValueError('retry requires a confirmed zero-fill failure')
+                operation += '-after-reject'
+            if (reduction is not None or retry is not None) and identity != client_id(
+                    state.identity, payload['signal_ms'], operation):
+                raise ValueError('reduction or retry identity')
+            if legacy:
                 fields = {'symbol', 'side', 'type', 'quoteOrderQty' if order['side'] == 'BUY' else 'quantity'}
                 if order['type'] == 'STOP_LOSS':
                     fields.add('stopPrice')
@@ -494,10 +564,9 @@ def _consume_bar(state, venue, models, open_ms, open_price, high, low, close):
         model.advance_open(open_ms, open_price)
     positions, follows, accounted, exit_through, cursor = _stored(state)
     trades = _trades_for(state, venue, positions, follows, cursor)
-    positions, follows, accounted, closed = apply_day(
-        models, positions, follows, accounted, open_ms, trades,
+    positions, follows, accounted, closed = _apply_book(
+        state, models, positions, follows, accounted, open_ms, trades,
         lambda: (bar for bar in venue.completed_daily(None) if bar[0] < open_ms),
-        owners=getattr(state, '_execution_owners', None),
     )
     for window in closed:
         exit_through[str(window)] = models[window].last
@@ -519,6 +588,22 @@ def _consume_bar(state, venue, models, open_ms, open_price, high, low, close):
     state._staged = (positions, follows, accounted, exit_through, cursor)
 
 
+def _book_owners(state):
+    owners = getattr(state, '_execution_owners', None)
+    return {} if owners is None else owners
+
+
+def _apply_book(state, models, positions, follows, accounted, open_ms, trades, history):
+    """Fills without a durable allocation stay external and drop any armed follow."""
+    try:
+        return apply_day(models, positions, follows, accounted, open_ms, trades, history,
+                         owners=_book_owners(state))
+    except Unknown as exc:
+        if 'no durable order allocation' in str(exc):
+            state.set('follows', {str(window): None for window in SLEEVES})
+        raise
+
+
 def _fold(state, venue, models, snapshot):
     """Fills after the last completed bar, then the balance check.
 
@@ -534,9 +619,9 @@ def _fold(state, venue, models, snapshot):
         if trade['id'] not in accounted and (last is None or day_open(trade['time']) > last)
     })
     for open_ms in later:
-        positions, follows, accounted, closed = apply_day(
-            models, positions, follows, accounted, open_ms, trades, lambda: venue.completed_daily(None),
-            owners=getattr(state, '_execution_owners', None),
+        positions, follows, accounted, closed = _apply_book(
+            state, models, positions, follows, accounted, open_ms, trades,
+            lambda: venue.completed_daily(None),
         )
         for window in closed:
             exit_through[str(window)] = models[window].last
@@ -692,31 +777,65 @@ def _risk_state(state, snapshot, venue):
     btc = D(snapshot['btc'])
     open_orders = {row['order_id']: row for row in snapshot.get('orders') or []}
     covered = D(0)
-    for payload, result in state.db.execute(
-            "SELECT payload,result FROM intents WHERE kind='p4' AND status='resting'"):
-        order = json.loads(payload)['order']
+    confirmed = set()
+    for identity, encoded, result in state.db.execute(
+            "SELECT id,payload,result FROM intents WHERE kind='p4' AND status='resting'"):
+        payload = json.loads(encoded)
+        order = payload['order']
         native = json.loads(result)
         row = open_orders.get(native.get('orderId'))
-        if (order['type'] == 'STOP_LOSS' and row and row['type'] == 'STOP_LOSS'
-                and row['status'] in ('NEW', 'PARTIALLY_FILLED')):
-            covered += max(D(0), D(row['orig_qty']) - D(row['executed_qty']))
+        names = {identity} | ({payload['cancel_id']} if payload.get('cancel_id') else set())
+        if (order.get('symbol') != 'BTCUSDT' or order.get('side') != 'SELL'
+                or order.get('type') != 'STOP_LOSS' or row is None
+                or row.get('client_id') not in names or row.get('side') != 'SELL'
+                or row.get('type') != 'STOP_LOSS'
+                or row.get('status') != 'NEW'):
+            continue
+        try:
+            quantity = number(order.get('quantity'), 'owned stop quantity', positive=True)
+            stop = number(order.get('stopPrice'), 'owned stop price', positive=True)
+            original = number(row.get('orig_qty'), 'observed stop quantity', positive=True)
+            executed = number(row.get('executed_qty'), 'observed stop execution', nonnegative=True)
+            if (original != quantity or executed != 0
+                    or number(row.get('stop_price'), 'observed stop price', positive=True) != stop):
+                continue
+        except Blocked:
+            continue
+        covered += original - executed
+        confirmed.add(row['order_id'])
     unprotected = max(D(0), btc - covered)
+    price = snapshot.get('last_price')
+    sellable = floor_step(btc, BASE_STEP)
+    gap = max(D(0), sellable - min(covered, sellable))
+    minimum = D(snapshot.get('min_notional') or MIN_NOTIONAL)
+    # A small missing slice can be restored by replacing the whole stop. Only
+    # an entire lot below the venue minimum is an untradeable residual.
+    reference = snapshot.get('avg_price') or price
+    below_minimum = ((reference is not None and sellable * D(reference) < minimum)
+                     or (snapshot.get('min_qty') is not None and sellable < D(snapshot['min_qty'])))
+    tradable_gap = gap > 0 and not below_minimum
+    unconfirmed = sorted(set(open_orders) - confirmed)
     unvalued = state.get('third_asset_fees_unvalued') or []
     risk = {'account_uid': snapshot['account_uid'], 'environment': snapshot['environment'],
             'symbol': 'BTCUSDT', 'direction': 'long' if btc else 'flat',
             'btc': btc, 'usdt': D(snapshot['usdt_free']) + D(snapshot['usdt_locked']),
             'last_price': snapshot.get('last_price'), 'covered_btc': min(btc, covered),
             'unprotected_btc': unprotected,
-            'manual_takeover': unprotected > 0 or getattr(state, '_recovery_only', False),
+            'residual_btc': D(0) if tradable_gap else unprotected,
+            'manual_takeover': tradable_gap or getattr(state, '_recovery_only', False),
+            'unconfirmed_order_ids': unconfirmed,
             'recovery_only': getattr(state, '_recovery_only', False),
             'fee_valuation_complete': not bool(unvalued), 'unvalued_fee_assets': unvalued,
             'observed_at_ms': _now_ms(venue), 'observation_current': True}
+    if unconfirmed:
+        risk.update(last_observed_direction=risk['direction'], direction='unknown',
+                    unprotected_btc=None, manual_takeover=True, observation_current=False)
     _mark_unknown_exposure({'risk_state': risk}, state)
     return risk
 
 
 def _execution_evidence(state, snapshot):
-    """Small local readback for later Demo fill, fee, and slippage review."""
+    """Small local readback for later fill, fee, and slippage review."""
     owners = {}
     for payload, result in state.db.execute("SELECT payload,result FROM intents WHERE kind='p4'"):
         native = json.loads(result)
