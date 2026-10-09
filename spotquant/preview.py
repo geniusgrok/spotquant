@@ -35,6 +35,11 @@ def _decide(model: Model, snapshot: dict, *, entries_enabled: bool, owned_btc: D
     if spend < D(snapshot.get('min_notional') or MIN_NOTIONAL):
         return _flat('the sleeve budget is below the current venue minimum notional')
     repair = bool(model.cap_enter if not model.shadow_in or blocked is not None else model.shadow_repair)
+    last = snapshot.get('last_price')
+    if (not repair and model.shadow_in and model.bull and not model.extended
+            and last is not None and model.sma is not None
+            and D(last) <= model.sma * (D(1) + model.touch)):
+        return _flat('session price is already in the SMA touch exit region')
     return {
         'action': 'enter',
         'repair': repair,
