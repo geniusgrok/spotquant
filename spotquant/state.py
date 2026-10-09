@@ -1,4 +1,4 @@
-"""Local single-writer lock and the latest read-only report.
+"""Local single-writer lock, durable intents and the latest session report.
 
 The database is a recovery aid, never an authority for balances. One persistent
 directory belongs to one spot account on one machine. This module does not

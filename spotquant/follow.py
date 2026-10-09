@@ -1,10 +1,7 @@
-"""Record buys that follow an entry preview and the sells that close a sleeve. No order is sent.
+"""Account for the single SMA40 position from durable fill allocations. No order is sent.
 
-External BTC, a deposit, or a balance drop that no account sell explains stays
-unknown. Sleeves that were previewed on the same signal day share one cohort:
-their buys are one fill, and each sleeve records an equal part of it. The
-recorded peak starts at the fill and rises only on later fills or verified
-session quotes. A completed daily high is not an observed post-fill quote.
+External BTC, deposits and unexplained balance changes are not adopted. Position
+peaks use actual fills and verified post-fill session quotes, not daily highs.
 """
 from __future__ import annotations
 
@@ -181,11 +178,9 @@ def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open
               trades, history, owners=None) -> tuple[dict, dict, set, list]:
     """Apply one UTC day's fills before that day's bar updates the model.
 
-    A sell closes the matching sleeves and consumes their entry signal before any
-    later bar. The sleeve that sold does not buy again that day. Another flat
-    sleeve can. Two orders, or two sleeve
-    groups of the same size, are unknown. Trade ids already accounted are ignored,
-    including a second fill that shares the first fill's millisecond.
+    The session supplies durable owners for partial fills. Without that map,
+    this helper matches recorded previews and rejects ambiguous groups. Already
+    accounted trade IDs are ignored; same-millisecond fills remain distinct.
     """
     positions = dict(positions)
     follows = dict(follows)
