@@ -1077,13 +1077,19 @@ class SafetyRepairTests(TestCase):
             for _ in range(2):
                 report = run_day(config, venue)
                 self.assertEqual(report['status'], 'unknown')
-                self.assertTrue(report['pending_intents'])
-            self.assertEqual(len(attempted), 1)
+                self.assertTrue(report['manual_takeover'])
+            self.assertEqual(attempted, list(dict.fromkeys(attempted)))
+            self.assertEqual(len(attempted), 2)
+            self.assertFalse(any(row['status'] == 'NEW' for row in venue.orders.values()))
             with State(directory, config.scope) as state:
+                original = json.loads(state.db.execute(
+                    'SELECT result FROM intents WHERE id=?', (attempted[0],)).fetchone()[0])
                 status, result = state.db.execute(
-                    'SELECT status,result FROM intents WHERE id=?', (attempted[0],)).fetchone()
+                    'SELECT status,result FROM intents WHERE id=?', (attempted[1],)).fetchone()
+                self.assertTrue(original.get('absent'))
                 self.assertEqual(status, 'unknown')
-                self.assertNotIn('not_sent', json.loads(result))
+                self.assertEqual(json.loads(result).get('orderId'), None)
+                self.assertTrue(any('owner review' in error['reason'] for error in report['errors']))
 
     def test_successful_ack_native_identity_survives_missing_readback(self):
         with tempfile.TemporaryDirectory() as directory:

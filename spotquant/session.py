@@ -20,6 +20,9 @@ from .crowding import RULE
 KNOWN_OLD_RULE = '2026-10-03-atr-stop-crowding-interaction-v1'
 COMPATIBLE_RULES = (KNOWN_OLD_RULE, '2026-10-09-sma40-touch-entry-guard-v1')
 SAFETY_PREDECESSOR = '2026-10-09-verified-realtime-peak-v1'
+PREVIOUS_RULE = '2026-10-09-spot-safety-recovery-v2'
+# These already stored verified peaks. Older compatible rules still rebuild them.
+KEPT_PEAK_RULES = (SAFETY_PREDECESSOR, PREVIOUS_RULE)
 
 # Dropped when a cycle fails so the previous success cannot be read as current.
 STALE_REPORT_FIELDS = (
@@ -87,7 +90,7 @@ def _cycle(venue, state: State, config, *, lifecycle=None, crowding_source=None,
     verified observation before a public entry read remains available for recovery.
     """
     prior_rule = state.get('rule')
-    compatible = prior_rule in COMPATIBLE_RULES or prior_rule == SAFETY_PREDECESSOR
+    compatible = prior_rule in COMPATIBLE_RULES or prior_rule in KEPT_PEAK_RULES
     state._recovery_only = compatible
     models, enabled, fresh = _load_models(state, venue)
     snapshot = venue.snapshot(config.account_uid)
@@ -260,8 +263,17 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
                         except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError):
                             report['risk_state'] = {'direction': 'unknown', 'unprotected_btc': None,
                                                     'manual_takeover': True, 'observation_current': False}
-                    if 'rate limit' in str(exc) or 'session deadline' in str(exc):
-                        report['stop_reason'] = 'rate_limit' if 'rate limit' in str(exc) else 'deadline'
+                    if 'session deadline' in str(exc):
+                        report['stop_reason'] = 'deadline'
+                        break
+                    if 'rate limit' in str(exc):
+                        target = getattr(venue, '_retry_after_at', 0) or 0
+                        if (target > monotonic() and not requested()
+                                and _wait_for_backoff(venue, monotonic, wait, deadline)
+                                and monotonic() < deadline and not requested()):
+                            continue
+                        report['stop_reason'] = 'rate_limit'
+                        closeout = True
                         break
                 except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
                     report.update(status='unknown', reason='Invalid observation or state', observation_current=False)
@@ -307,7 +319,10 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
             report['elapsed_seconds'] = max(0, monotonic() - started)
             report['pending_intents'] = len(state.pending())
             if report['pending_intents']:
-                report.update(status='unknown', reason='Durable execution requires recovery', observation_current=False)
+                specific = report.get('reason')
+                report.update(status='unknown', observation_current=False)
+                if not (isinstance(specific, str) and 'backoff exceeds' in specific):
+                    report['reason'] = 'Durable execution requires recovery'
                 clear_stale(report)
                 _mark_unknown_exposure(report, state)
             report.update(account_uid=config.account_uid,
@@ -335,6 +350,15 @@ def _closeout(config, venue, state, report, monotonic, wait):
     for _ in range(12):
         if monotonic() >= venue._deadline_at:
             break
+        if not _wait_for_backoff(venue, monotonic, wait, venue._deadline_at):
+            report.update(status='unknown', reason='rate limit backoff exceeds the protective closeout',
+                          observation_current=False)
+            risk = report.setdefault('risk_state', {})
+            risk.update(direction='unknown', unprotected_btc=None, manual_takeover=True,
+                        observation_current=False)
+            report['manual_takeover'] = True
+            clear_stale(report)
+            break
         report['cycles'] += 1
         report.pop('risk_state', None)
         report.pop('execution_evidence', None)
@@ -354,11 +378,35 @@ def _closeout(config, venue, state, report, monotonic, wait):
             except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError, ArithmeticError):
                 report['risk_state'] = {'direction': 'unknown', 'unprotected_btc': None,
                                         'manual_takeover': True, 'observation_current': False}
-            if isinstance(exc, Blocked) or 'rate limit' in str(exc) or 'session deadline' in str(exc):
+            if isinstance(exc, Blocked) or 'session deadline' in str(exc):
+                break
+            if 'rate limit' in str(exc):
+                target = getattr(venue, '_retry_after_at', 0) or 0
+                if monotonic() < target <= venue._deadline_at:
+                    continue
+                if target > venue._deadline_at:
+                    report.update(status='unknown', reason='rate limit backoff exceeds the protective closeout',
+                                  observation_current=False)
+                    risk = report.setdefault('risk_state', {})
+                    risk.update(direction='unknown', unprotected_btc=None, manual_takeover=True,
+                                observation_current=False)
+                    report['manual_takeover'] = True
                 break
         remaining = venue._deadline_at - monotonic()
         if remaining > 0:
             wait(min(config.poll_seconds, remaining))
+
+
+def _wait_for_backoff(venue, monotonic, wait, deadline):
+    """Pause until a venue Retry-After elapses, when that moment is still inside deadline."""
+    target = getattr(venue, '_retry_after_at', 0) or 0
+    now = monotonic()
+    if now >= target:
+        return True
+    if target > deadline:
+        return False
+    wait(target - now)
+    return monotonic() <= deadline
 
 
 def _mark_unknown_exposure(report, state):
@@ -377,7 +425,7 @@ def _guard_state(state):
         raise Blocked('state belongs to an incompatible strategy')
     saved, rule = state.get('models'), state.get('rule')
     legacy = rule in COMPATIBLE_RULES
-    compatible = legacy or rule == SAFETY_PREDECESSOR
+    compatible = legacy or rule in KEPT_PEAK_RULES
     allowed_rule = rule == RULE or compatible
     if rule is not None and not allowed_rule:
         raise Blocked('state was written for another rule; a new directory is not a flat account')

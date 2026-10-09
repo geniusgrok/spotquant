@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 DAY = 86400000
 FUNDING_LAG = 28800000
 BASIS_LAG = 60000
-RULE = '2026-10-09-spot-safety-recovery-v2'
+RULE = '2026-10-09-absent-order-closeout-v3'
 PUBLIC_URLS = {
     'funding': 'https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=10',
     'spot_bars': 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=2',

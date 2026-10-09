@@ -13,6 +13,7 @@ from .types import Blocked, Unknown, NotFound, NotSent, floor_step, number, seri
 
 TERMINAL = {'FILLED', 'EXPIRED', 'CANCELED', 'REJECTED', 'EXPIRED_IN_MATCH'}
 FIELDS = ('symbol', 'side', 'type', 'quantity', 'quoteOrderQty', 'stopPrice')
+ABSENCE_GAP_MS = 1000
 
 
 def _no_fill_failure(row):
@@ -59,6 +60,11 @@ class Lifecycle:
                                   (identity, 'p4', *encoded, time()))
 
     def recover(self):
+        snapshot = None
+        if any(status == 'settled' and result.get('absent') is True for _, _, status, result in self.rows()):
+            snapshot = self.venue.snapshot(self.config.account_uid)
+            if self._recall_reappeared(snapshot):
+                snapshot = self.venue.snapshot(self.config.account_uid)
         for identity, payload, status, prior in self.rows():
             if status in ('prepared', 'rejected', 'settled'):
                 continue
@@ -67,7 +73,10 @@ class Lifecycle:
             except NotFound:
                 row = None
             if row is None:
-                raise Unknown('sent order is not confirmed; stable identity is never resubmitted')
+                if snapshot is None:
+                    snapshot = self.venue.snapshot(self.config.account_uid)
+                self._observe_absence(identity, payload, status, prior, snapshot)
+                continue
             allowed = {identity} | ({payload['cancel_id']} if payload.get('cancel_id') else set())
             if row.get('clientOrderId') not in allowed:
                 raise Unknown('native order identity differs from its durable intent')
@@ -87,6 +96,88 @@ class Lifecycle:
             self.save(identity, payload, 'settled' if row['status'] in TERMINAL else 'resting', row)
             if status == 'unknown' and payload['order']['type'] == 'STOP_LOSS' and row['status'] not in TERMINAL:
                 self._confirmed_stop = identity
+
+    def _matching_open_order(self, snapshot, identity, payload, prior):
+        names = {identity}
+        if payload.get('cancel_id'):
+            names.add(payload['cancel_id'])
+        for row in snapshot.get('orders') or []:
+            if row.get('client_id') in names:
+                return row
+        return None
+
+    def _observe_absence(self, identity, payload, status, prior, snapshot):
+        """Record a missing sell or stop. A later confirming read may arm one successor.
+
+        The original client id is never sent again. A buy, a timeout, a visible
+        open order, or a durable fill stays unresolved.
+        """
+        if self._matching_open_order(snapshot, identity, payload, prior) is not None:
+            raise Unknown('native order is visible but its query is missing')
+        if payload['order'].get('side') != 'SELL':
+            raise Unknown('sent order is not confirmed; stable identity is never resubmitted')
+        order_id = prior.get('orderId')
+        executed = prior.get('executedQty')
+        if executed is not None and number(executed) > 0:
+            raise Unknown('unconfirmed order already has a durable fill')
+        if type(order_id) is int and self.state.db.execute(
+                'SELECT 1 FROM fills WHERE order_id=? LIMIT 1', (order_id,)).fetchone():
+            raise Unknown('unconfirmed order already has a durable fill')
+        self.verify(snapshot)
+        from .session import _now_ms
+        now = _now_ms(self.venue)
+        seen = prior.get('absence_observed_ms')
+        due = type(seen) is int and now >= seen + ABSENCE_GAP_MS
+        if due and payload.get('absence_generation', 0) >= 1:
+            raise Unknown('replacement protection is also unconfirmed; owner review is required')
+        if not due:
+            stamped = dict(prior, absent_query='not_found',
+                           absence_observed_ms=seen if type(seen) is int else now)
+            self.save(identity, payload, 'unknown', stamped)
+            raise Unknown('sent order is not confirmed; stable identity is never resubmitted')
+        self.save(identity, payload, 'settled', dict(
+            prior, absent=True, status='EXPIRED', executedQty='0', cummulativeQuoteQty='0',
+            absence_observed_ms=seen))
+
+    def _recall_reappeared(self, snapshot):
+        """A settled absence that is open again replaces the successor it caused."""
+        changed = False
+        for identity, payload, status, result in list(self.rows()):
+            if status != 'settled' or result.get('absent') is not True:
+                continue
+            if self._matching_open_order(snapshot, identity, payload, result) is None:
+                continue
+            visible = self._matching_open_order(snapshot, identity, payload, result)
+            restored = dict(result, orderId=visible['order_id'], clientOrderId=visible['client_id'],
+                            status=visible['status'], executedQty=visible['executed_qty'], reappeared=True)
+            restored.pop('absent', None)
+            self.save(identity, payload, 'unknown', restored)
+            changed = True
+            for stop_id, stop_payload, stop_status, _ in list(self.rows()):
+                if stop_payload.get('replaced_stop') != identity or stop_id == identity:
+                    continue
+                self._drop_successor(stop_id)
+        return changed
+
+    def _drop_successor(self, identity):
+        _, payload, status, result = next(row for row in self.rows() if row[0] == identity)
+        if status == 'prepared':
+            self.save(identity, payload, 'settled', {
+                'not_sent': True, 'reason': 'original protection reappeared'})
+            return
+        if status != 'resting' or type(result.get('orderId')) is not int or result['orderId'] <= 0:
+            raise Unknown('reappeared protection conflicts with an unconfirmed replacement')
+        payload = dict(payload, cancel_id=payload.get('cancel_id') or
+                       'sq-' + hashlib.sha256((identity + '|cancel').encode()).hexdigest()[:30])
+        self.save(identity, payload, 'canceling', result)
+        try:
+            self.venue.cancel(identity, order_id=result['orderId'], cancel_id=payload['cancel_id'])
+        except (Unknown, Blocked) as exc:
+            raise Unknown('successor cancellation is not confirmed') from exc
+        confirmed = self.venue.query(result['orderId'])
+        if confirmed is None or confirmed.get('status') not in TERMINAL:
+            raise Unknown('successor cancellation is not confirmed')
+        self.save(identity, payload, 'settled', confirmed)
 
     def owners(self):
         return allocation_owners((payload, result) for _, payload, _, result in self.rows())
@@ -201,8 +292,12 @@ class Lifecycle:
         prior = next((row for row in self.rows() if row[0] == identity), None)
         while (raw['type'] == 'STOP_LOSS' and prior is not None and prior[2] == 'settled'
                and (prior[3].get('status') == 'CANCELED' or _no_fill_failure(prior))):
+            if prior[3].get('absent') and prior[1].get('absence_generation', 0) >= 1:
+                raise Unknown('replacement protection is also unconfirmed; owner review is required')
             payload['replaced_stop'] = identity
-            operation += '-again-' + str(prior[3].get('orderId'))
+            if prior[3].get('absent'):
+                payload['absence_generation'] = prior[1].get('absence_generation', 0) + 1
+            operation += '-again-' + str(prior[3].get('orderId') or 'absent')
             identity = client_id(self.state.identity, bar, operation)
             prior = next((row for row in self.rows() if row[0] == identity), None)
         if (raw['side'] == 'SELL' and raw['type'] == 'MARKET' and prior is not None

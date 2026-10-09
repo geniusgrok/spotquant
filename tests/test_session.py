@@ -543,8 +543,12 @@ class LegacyRecoveryTests(unittest.TestCase):
                     self.assertEqual(
                         state.db.execute('SELECT status FROM intents WHERE id=?', (stop,)).fetchone()[0],
                         'unknown')
-                    self.assertEqual(list(state.db.execute('SELECT key,value FROM meta ORDER BY key')), before_meta)
-                    self.assertEqual(list(state.db.execute('SELECT * FROM intents ORDER BY id')), before_intents)
+                    ids = [row[0] for row in state.db.execute('SELECT id FROM intents ORDER BY id')]
+                    self.assertEqual(ids, [row[0] for row in before_intents])
+                    self.assertEqual(
+                        [row[0] for row in state.db.execute(
+                            "SELECT id FROM intents WHERE status='prepared'")],
+                        [buy])
 
 
 if __name__ == '__main__':
