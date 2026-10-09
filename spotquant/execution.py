@@ -6,8 +6,8 @@ import json
 from decimal import Decimal as D
 from time import time
 
-from .model import SLEEVES
-from .preview import BASE_STEP, MIN_NOTIONAL, _decide, _qty_ok
+from .model import Model, SLEEVES
+from .preview import BASE_STEP, MIN_NOTIONAL, PRICE_STEP, _decide, _qty_ok
 from .state import client_id
 from .types import Blocked, Unknown, NotSent, floor_step, number, serial
 
@@ -223,16 +223,19 @@ class Lifecycle:
             raise NotSent('account changed before dispatch; reconcile before any write')
         order = payload['order']
         raised_peak = self._record_quote(snapshot)
-        if raised_peak and order['type'] == 'STOP_LOSS':
-            self._retry_observation = True
-            raise NotSent('observed position peak changed; recalculate protection before dispatch')
         positions = self.state.get('positions') or {}
+        if raised_peak and order['type'] == 'STOP_LOSS':
+            position = positions[str(SLEEVES[0])]
+            peak = position['repair_peak'] if position['repair'] and position['repair_peak'] is not None else position['peak']
+            model = Model.restore(self.state.get('models')[str(SLEEVES[0])])
+            if floor_step(model.stop_price(D(peak)), PRICE_STEP) > D(order['stopPrice']):
+                self._retry_observation = True
+                raise NotSent('observed position peak raised the stop price; recalculate protection before dispatch')
         if order['side'] == 'BUY':
             if self.state.get('third_asset_fees_unvalued'):
                 raise NotSent('third-asset fees are unvalued; new buy needs owner reconciliation')
             if D(snapshot['btc']) * D(snapshot['last_price']) + D(order['quoteOrderQty']) > self.config.capital_limit:
                 raise NotSent('buy exceeds whole-account capital ceiling at the latest price')
-            from .model import Model
             for window in payload['sleeves']:
                 position = positions.get(str(window))
                 owned = D(0) if position is None or position.get('dust') else D(position['qty'])
@@ -263,7 +266,6 @@ class Lifecycle:
         follows = self.state.get('follows') or {}
         if any(position and not position.get('dust') for position in positions.values()):
             from .session import _view
-            from .model import Model
             from .preview import decision as decide
             views, owned = {}, {}
             for window in SLEEVES:

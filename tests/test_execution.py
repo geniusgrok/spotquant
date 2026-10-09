@@ -267,6 +267,28 @@ class ExecutionTests(TestCase):
             with State(directory, config.scope) as state:
                 self.assertEqual(D(state.get('positions')['40']['peak']), D('150'))
 
+    def test_final_small_peak_keeps_the_same_stop_without_an_extra_dispatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, account = self.entered(directory)
+            add_day(account, '103.03')
+            adapter = OrderAdapter(account, None)
+            adapter.before_post_snapshot = lambda: setattr(account, 'price', D('103.04'))
+            attempted, submit = [], adapter.submit
+            def counted(identity, payload, **kwargs):
+                attempted.append(dict(payload))
+                return submit(identity, payload, **kwargs)
+            adapter.submit = counted
+            report = run(config, adapter, execute=True, monotonic=adapter.monotonic, wait=adapter.wait)
+            self.assertEqual(report['errors'], [])
+            self.assertFalse(report['pending_intents'])
+            self.assertEqual(len(attempted), 1)
+            self.assertEqual(D(attempted[0]['stopPrice']), D('74.18'))
+            active = [row for row in account.orders.values() if row['status'] == 'NEW']
+            self.assertEqual(len(active), 1)
+            self.assertEqual(D(active[0]['stopPrice']), D('74.18'))
+            with State(directory, config.scope) as state:
+                self.assertEqual(D(state.get('positions')['40']['peak']), D('103.04'))
+
     def test_final_h2_veto_can_retry_the_same_unsent_buy_after_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Config('1', directory, 1, 1, 'demo', '1000')
