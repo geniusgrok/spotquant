@@ -107,6 +107,61 @@ class OrderAdapter(Binance):
 
 
 class ExecutionTests(TestCase):
+    def test_recovery_rejects_missing_client_id_without_cancel_alias(self):
+        from spotquant.execution import Lifecycle
+        for cancel_id in (None, ''):
+            for missing in ('absent', None, ''):
+                with self.subTest(cancel_id=cancel_id, client_id=missing), tempfile.TemporaryDirectory() as directory:
+                    config, venue = self.entered(directory)
+                    stop = next(row for row in venue.orders.values() if row['status'] == 'NEW')
+                    query = venue.query
+                    def malformed(reference):
+                        row = dict(query(reference))
+                        if missing == 'absent':
+                            row.pop('clientOrderId')
+                        else:
+                            row['clientOrderId'] = missing
+                        return row
+                    venue.query = malformed
+                    sent = list(venue.sent)
+                    with State(directory, config.scope) as state:
+                        lifecycle = Lifecycle(state, venue, config)
+                        identity, payload, status, result = next(row for row in lifecycle.rows()
+                                                                 if row[0] == stop['clientOrderId'])
+                        if cancel_id is not None:
+                            payload = dict(payload, cancel_id=cancel_id)
+                            lifecycle.save(identity, payload, status, result)
+                        before = lifecycle.rows()
+                        with self.assertRaisesRegex(Unknown, 'native order identity differs'):
+                            lifecycle.recover()
+                        self.assertEqual(lifecycle.rows(), before)
+                    self.assertEqual(venue.sent, sent)
+                    self.assertEqual(stop['status'], 'NEW')
+
+    def test_verification_rejects_missing_open_client_id_without_cancel_alias(self):
+        from spotquant.execution import Lifecycle
+        for cancel_id in (None, ''):
+            for missing in ('absent', None, ''):
+                with self.subTest(cancel_id=cancel_id, client_id=missing), tempfile.TemporaryDirectory() as directory:
+                    config, venue = self.entered(directory)
+                    snapshot = venue.snapshot(config.account_uid)
+                    if missing == 'absent':
+                        snapshot['orders'][0].pop('client_id')
+                    else:
+                        snapshot['orders'][0]['client_id'] = missing
+                    sent = list(venue.sent)
+                    with State(directory, config.scope) as state:
+                        lifecycle = Lifecycle(state, venue, config)
+                        identity, payload, status, result = next(row for row in lifecycle.rows()
+                                                                 if row[3]['status'] == 'NEW')
+                        if cancel_id is not None:
+                            lifecycle.save(identity, dict(payload, cancel_id=cancel_id), status, result)
+                        before = lifecycle.rows()
+                        with self.assertRaisesRegex(Unknown, 'external open order blocks'):
+                            lifecycle.verify(snapshot)
+                        self.assertEqual(lifecycle.rows(), before)
+                    self.assertEqual(venue.sent, sent)
+
     def test_cancel_changes_client_id_and_restart_recovers_by_native_id(self):
         with tempfile.TemporaryDirectory() as directory:
             config, venue = self.entered(directory)

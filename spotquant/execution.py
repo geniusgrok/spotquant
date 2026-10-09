@@ -55,7 +55,8 @@ class Lifecycle:
             row = self.venue.query(prior.get('orderId') or identity)
             if row is None:
                 raise Unknown('sent order is not confirmed; stable identity is never resubmitted')
-            if row.get('clientOrderId') not in {identity, payload.get('cancel_id')}:
+            allowed = {identity} | ({payload['cancel_id']} if payload.get('cancel_id') else set())
+            if row.get('clientOrderId') not in allowed:
                 raise Unknown('native order identity differs from its durable intent')
             if prior.get('orderId') is not None and row.get('orderId') != prior['orderId']:
                 raise Unknown('native order ID changed after confirmation')
@@ -76,7 +77,7 @@ class Lifecycle:
         return allocation_owners((payload, result) for _, payload, _, result in self.rows())
 
     def verify(self, snapshot):
-        known = {result.get('orderId'): {identity, payload.get('cancel_id')}
+        known = {result.get('orderId'): {identity} | ({payload['cancel_id']} if payload.get('cancel_id') else set())
                  for identity, payload, _, result in self.rows() if result.get('orderId') is not None}
         if any(row.get('client_id') not in known.get(row.get('order_id'), set())
                for row in snapshot['orders']):
