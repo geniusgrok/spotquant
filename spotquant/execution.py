@@ -18,7 +18,8 @@ FIELDS = ('symbol', 'side', 'type', 'quantity', 'quoteOrderQty', 'stopPrice')
 def allocation_owners(rows):
     """Attach only durable native readback to an immutable sleeve allocation."""
     return {str(result['orderId']): dict(payload, native_status=result.get('status'),
-                                       native_executed_qty=result.get('executedQty'))
+                                       native_executed_qty=result.get('executedQty'),
+                                       native_created_ms=result.get('time') or result.get('transactTime'))
             for payload, result in rows if 'orderId' in result}
 
 
@@ -106,7 +107,7 @@ class Lifecycle:
         if unvalued != set(self.state.get('third_asset_fees_unvalued') or []):
             self.state.set('third_asset_fees_unvalued', sorted(unvalued))
 
-    def prepare(self, order, bar, positions, follows):
+    def prepare(self, order, bar, positions, follows, *, rearm=None):
         group = sorted(order['sleeves'])
         if not group or any(window not in SLEEVES for window in group):
             raise Blocked('invalid sleeve allocation')
@@ -118,6 +119,10 @@ class Lifecycle:
         payload = serial({'order': raw, 'sleeves': group, 'weights': weights,
                           'signal_ms': bar,
                           'repair': {str(w): bool((follows.get(str(w)) or {}).get('repair')) for w in group}})
+        payload['rearm'] = {str(w): bool(raw.get('side') == 'SELL' and raw.get('type') == 'MARKET'
+                                        and (rearm or {}).get(str(w)) is True) for w in group}
+        if raw['type'] == 'STOP_LOSS':
+            payload['position_first_ms'] = {str(w): positions[str(w)]['first_ms'] for w in group}
         if getattr(self, '_quote', None) is not None:
             payload['quote_reference'] = self._quote
         # One market intent per signal and allocation; stop revisions include their parameters.
@@ -128,9 +133,13 @@ class Lifecycle:
         prior = next((row for row in self.rows() if row[0] == identity), None)
         if prior is None:
             self.save(identity, payload, 'prepared', {})
-        elif any(prior[1].get(key) != payload.get(key) for key in
-                 ('order', 'sleeves', 'weights', 'signal_ms', 'repair')) and prior[2] == 'prepared':
+        elif (any(prior[1].get(key) != payload.get(key) for key in
+                  ('order', 'sleeves', 'weights', 'signal_ms', 'repair'))
+              or prior[1].get('rearm', {str(w): False for w in group}) != payload['rearm']) and prior[2] == 'prepared':
             raise Blocked('prepared identity cannot change parameters')
+        elif (prior[2] == 'prepared' and 'position_first_ms' in prior[1]
+              and prior[1]['position_first_ms'] != payload.get('position_first_ms')):
+            raise Blocked('prepared identity cannot change position ownership')
         return identity
 
     def send(self, identity):
@@ -207,7 +216,9 @@ class Lifecycle:
         for order in sells:
             if not _qty_ok(order['quantity'], snapshot):
                 raise Blocked('desired reduction fails native lot filters')
-            identity = self.prepare(order, bar, positions, follows)
+            identity = self.prepare(order, bar, positions, follows,
+                                    rearm={str(w): decision['sleeves'].get(str(w), {}).get('rearm', False)
+                                           for w in order['sleeves']})
             row = next(row for row in self.rows() if row[0] == identity)
             if row[2] in ('settled', 'rejected'):
                 continue

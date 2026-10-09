@@ -18,7 +18,11 @@ def _decide(model: Model, snapshot: dict, *, entries_enabled: bool, owned_btc: D
     owned = floor_step(owned_btc, BASE_STEP)
     if owned > 0:
         return _position_decision(model, snapshot, owned)
-    armed = model.enter or model.cap_enter
+    blocked = model.shadow_blocked
+    if blocked is not None and model.last <= blocked:
+        return _flat('the completed bar already consumed its entry signal')
+    early = model.streak >= 1 and model.crash_ok and not model.need_reset and not model.shadow_in
+    armed = (model.shadow_in and blocked is None) or model.enter or model.cap_enter or early
     if not armed:
         if model.sma is None:
             return _flat('SMA warmup is incomplete')
@@ -30,15 +34,21 @@ def _decide(model: Model, snapshot: dict, *, entries_enabled: bool, owned_btc: D
     spend = floor_step(max(budget, D(0)), QUOTE_STEP)
     if spend < D(snapshot.get('min_notional') or MIN_NOTIONAL):
         return _flat('the sleeve budget is below the current venue minimum notional')
+    repair = bool(model.cap_enter if not model.shadow_in or blocked is not None else model.shadow_repair)
     return {
         'action': 'enter',
+        'repair': repair,
         'reason': (
             (
                 f'crash reversal: {percent(model.cap_drop)} down, then {percent(model.cap_bounce)} up, '
                 f'still at least {percent(model.cap_depth)} under the {model.cap_window}-day high'
             )
-            if model.cap_enter
-            else 'two confirmed closes cleared the fresh-cross and crash filters'
+            if repair
+            else (
+                'one completed close is back above its SMA and passed the crash filter'
+                if not model.shadow_in
+                else 'the daily book is long and this session is flat'
+            )
         ),
         'order': {
             'symbol': 'BTCUSDT',
@@ -58,11 +68,13 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
     those exits before the minimum is applied.
     """
     breached = getattr(model, 'protection', 'resting') in ('breached', 'through_close')
-    stop_through = model.position_peak is not None and model.stop_price(model.position_peak) >= model.close
-    if breached or stop_through:
+    last = snapshot.get('last_price')
+    crossed = (model.position_peak is not None
+               and model.stop_price(model.position_peak) >= D(last if last is not None else model.close))
+    if breached or crossed:
         return _exit(
             model, owned,
-            'the resting stop is already through the completed close; the sell is the next open',
+            'the protection price is already crossed; the session sells',
         )
     if model.repair:
         return {
@@ -79,9 +91,18 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
             model, owned,
             (
                 f'completed daily close is at least {percent(model.adverse_stop)} under the entry fill; '
-                f'the sell is the next open, so the loss is not capped at {percent(model.adverse_stop)}'
+                f'the session sells, so the loss is not capped at {percent(model.adverse_stop)}'
             ),
         )
+    if not model.shadow_in:
+        if model.bull and not model.extended:
+            return {
+                'action': 'hold',
+                'reason': 'early entry is waiting for the daily book to join or for the close to lose the SMA',
+                'order': None,
+                'protection': _protection(model, owned, snapshot),
+            }
+        return _exit(model, owned, 'the daily book is flat; the session sells')
     if model.extended:
         return _exit(
             model, owned,
@@ -89,6 +110,12 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
         )
     if not model.bull:
         return _exit(model, owned, 'completed daily close is not above its SMA')
+    if last is not None and model.sma is not None and D(last) <= model.sma * (D(1) + model.touch):
+        return _exit(
+            model, owned,
+            f'session price is within {percent(model.touch)} of the SMA while the daily book stays long',
+            rearm=True,
+        )
     if model.position_peak is not None:
         reason = (
             f'still above the SMA; protection is a stop {percent(model.trail)} '
@@ -107,7 +134,7 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
     }
 
 
-def _exit(model: Model, owned: D, reason: str) -> dict:
+def _exit(model: Model, owned: D, reason: str, *, rearm: bool = False) -> dict:
     tradable = owned * model.close >= MIN_NOTIONAL
     order = None
     if tradable:
@@ -119,6 +146,7 @@ def _exit(model: Model, owned: D, reason: str) -> dict:
         'untradeable': not tradable,
         'order': order,
         'protection': None,
+        'rearm': rearm,
     }
 
 
@@ -352,17 +380,24 @@ def _merge_protections(decisions: dict, views: dict, snapshot: dict) -> list:
 
 
 def decision_view(model, position, owners):
-    """Adaptive protection on a copy; catch-up and checkpoints keep the static trail."""
+    """Static 28% trail on a copy, floored by any confirmed native stop."""
     view = copy.copy(model)
-    atr = model.atr14
-    if atr is None:
-        return view
     from .execution import TERMINAL
-    view.trail = min(D('.30'), max(D('.10'), 4 * atr / view.close))
+    def same_position(owner):
+        first_ms = int(position['first_ms'])
+        recorded = owner.get('position_first_ms')
+        if recorded is not None:
+            return recorded.get(str(view.sma_window)) == first_ms
+        created = owner.get('native_created_ms')
+        if type(created) is int and created >= first_ms:
+            return True
+        if owner.get('native_status') in ('NEW', 'PARTIALLY_FILLED'):
+            raise Unknown('active native protection has no proven position identity')
+        return False
     proven = [D(o['order']['stopPrice']) for o in owners.values()
               if position and view.sma_window in o['sleeves'] and o['order']['type'] == 'STOP_LOSS'
               and o.get('native_status') in (TERMINAL - {'REJECTED'}) | {'NEW', 'PARTIALLY_FILLED'}
-              and o['signal_ms'] >= int(position['first_ms']) // DAY * DAY - DAY]
+              and same_position(o)]
     view._stop_floor = max(proven, default=D(0))
     view.protection = 'resting'
     return view
@@ -370,7 +405,7 @@ def decision_view(model, position, owners):
 
 def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capital_limit,
              crowding_source=None, decision_ms=None):
-    """ATR protection, exits first, bounded consensus allocation, then crowding once."""
+    """28% trail protection, exits first, then one crowding scale on a new buy."""
     from .crowding import evaluate
     price_views = views
     views = {w: decision_view(v, positions.get(w), owners) for w, v in views.items()}
@@ -381,7 +416,7 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
         stop = sleeve.get('protection')
         if (stop and 'quantity' in stop and D(stop['stopPrice']) >= D(snapshot.get('last_price') or snapshot['avg_price'])
                 and sleeve['action'] != 'exit'):
-            sleeve.update(action='exit', protection=None, order=None)
+            sleeve.update(action='exit', protection=None, order=None, rearm=False)
             forced = True
     if forced:
         group = [w for w in views if out['sleeves'][str(w)]['action'] == 'exit']
@@ -414,7 +449,7 @@ def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capi
     for order in list(out['orders']):
         if order['side'] != 'BUY':
             continue
-        factor, diagnostic = evaluate(crowding_source, price_views[30], decision_ms)
+        factor, diagnostic = evaluate(crowding_source, price_views[next(iter(price_views))], decision_ms)
         def held(w):
             position = positions.get(w) or {}
             closed_dust = (position.get('dust') is True and bool(position.get('sell_applied'))

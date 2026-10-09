@@ -19,6 +19,14 @@ from .types import Blocked, Unknown, floor_step, number
 OPEN_FILL_MS = 60_000
 
 
+def _rearm(model, position: dict, owner: dict, window: int) -> bool:
+    """Only this durable touch sale permits rejoining the still-long book."""
+    order = owner.get('order', {})
+    return bool(order.get('side') == 'SELL' and order.get('type') == 'MARKET'
+                and owner.get('rearm', {}).get(str(window)) is True
+                and getattr(model, 'shadow_in', False) and not position.get('repair'))
+
+
 def day_open(timestamp: int) -> int:
     if type(timestamp) is not int or timestamp < ORIGIN:
         raise Unknown('fill time is before the model origin')
@@ -103,7 +111,8 @@ def replay(bars, *, entry_fill: D, first_ms: int, repair: bool, window: int = SM
         'through': None,
         'protection': 'resting',
     }
-    for open_ms, high, _low, close in bars:
+    for open_ms, _open, high, _low, close in bars:
+        model.advance_open(open_ms, _open)
         model.update(open_ms, high, _low, close)
         position = advance(position, {
             'open_ms': open_ms,
@@ -217,7 +226,8 @@ def apply_day(models: dict, positions: dict, follows: dict, accounted: set, open
             raise Unknown('a sell on the account does not match one recorded sleeve group; refusing new risk')
         closed = _closed(held, sells, sold, tolerance)
         for window in closed:
-            models[window].note_flat()
+            # A read-only account sale has no durable touch-exit permission.
+            models[window].note_flat(rearm=False)
             positions[window] = None
             follows[window] = None
             held.pop(window)
@@ -307,28 +317,42 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
         applied = None if trade['buyer'] else _sell_applied(positions, owner, order_id, trade['qty'])
         delta = abs(_base_delta(trade))
         given = D(0)
+        gross_given = D(0)
         for index, window in enumerate(group):
             qty = delta - given if index == len(group) - 1 else delta * weights[window] / total
             given += qty
             prior = positions.get(window)
             if trade['buyer']:
+                gross_qty = (trade['qty'] - gross_given if index == len(group) - 1
+                             else trade['qty'] * weights[window] / total)
+                gross_given += gross_qty
                 if prior is None or prior.get('dust'):
                     built = replay(history(), entry_fill=trade['price'], first_ms=trade['time'],
                                    repair=bool(owner.get('repair', {}).get(str(window))), window=window)
                     old_qty = D(prior['qty']) if prior else D(0)
                     if old_qty:
-                        built['entry_fill'] = format((D(prior['entry_fill']) * old_qty + trade['price'] * qty)
-                                                    / (old_qty + qty), 'f')
+                        built['entry_fill'] = format((D(prior['entry_fill']) * old_qty + trade['price'] * gross_qty)
+                                                    / (old_qty + gross_qty), 'f')
+                    # A new entry keeps only the retained dust's cost basis,
+                    # never the original closed buy's full gross allocation.
+                    built['entry_gross_qty'] = format(old_qty + gross_qty, 'f')
                     built['qty'] = format(old_qty + qty, 'f')
                     if prior and 'sell_applied' in prior:
                         built['sell_applied'] = dict(prior['sell_applied'])
                     positions[window] = built
                 else:
                     old_qty = D(prior['qty'])
+                    if prior.get('entry_gross_qty') is None:
+                        raise Unknown('partial buy has no durable gross fill amount')
+                    old_gross = number(prior['entry_gross_qty'], 'entry gross quantity', positive=True)
                     built = dict(prior)
-                    built['entry_fill'] = format((D(prior['entry_fill']) * old_qty + trade['price'] * qty)
-                                                / (old_qty + qty), 'f')
+                    built['entry_fill'] = format((D(prior['entry_fill']) * old_gross + trade['price'] * gross_qty)
+                                                / (old_gross + gross_qty), 'f')
+                    built['entry_gross_qty'] = format(old_gross + gross_qty, 'f')
                     built['qty'] = format(old_qty + qty, 'f')
+                    built['peak'] = format(max(D(prior['peak']), trade['price']), 'f')
+                    if prior['repair'] and prior['repair_peak'] is not None:
+                        built['repair_peak'] = format(max(D(prior['repair_peak']), trade['price']), 'f')
                     positions[window] = built
                 follows[window] = None
             else:
@@ -345,7 +369,7 @@ def _owned_fills(models, positions, follows, accounted, trades, owners, history)
                     positions[window] = (dict(prior, qty=format(remaining, 'f'), dust=True,
                                               protection='unplaceable_dust') if remaining else None)
                     follows[window] = None
-                    models[window].note_flat()
+                    models[window].note_flat(rearm=_rearm(models[window], prior, owner, window))
                     closed.append(window)
                 else:
                     positions[window] = dict(prior, qty=format(remaining, 'f'))

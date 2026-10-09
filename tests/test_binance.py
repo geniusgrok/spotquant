@@ -240,11 +240,55 @@ class BinanceTests(unittest.TestCase):
                             clock=lambda: script.now / 1000)
             if valid:
                 self.assertEqual(venue.completed_daily(None),
-                                 [(ORIGIN + i * DAY, D(110), D(90), D(105)) for i in range(2)])
+                                 [(ORIGIN + i * DAY, D(100), D(110), D(90), D(105)) for i in range(2)])
                 self.assertEqual(venue.completed_daily(ORIGIN + DAY), [])
             else:
                 with self.assertRaises(Unknown):
                     venue.completed_daily(None)
+
+    def test_daily_open_reads_the_arrived_open_without_unfinished_hlc(self):
+        script = Script()
+        script.now = ORIGIN + 2 * DAY + 1000
+        calls = []
+        def opener(method, url, headers):
+            if '/api/v3/klines' in url:
+                calls.append(url)
+                return 200, json.dumps([[ORIGIN + 2 * DAY, '123', 'unfinished high', None, 'unfinished close']]).encode()
+            return script(method, url, headers)
+        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener,
+                        clock=lambda: script.now / 1000)
+        self.assertEqual(venue.daily_open(ORIGIN + 2 * DAY), (ORIGIN + 2 * DAY, D(123)))
+        self.assertIn('limit=1', calls[0])
+        self.assertNotIn('signature=', calls[0])
+        with self.assertRaises(Unknown):
+            venue.daily_open(ORIGIN + 3 * DAY)
+        self.assertEqual(len(calls), 1)
+
+    def test_daily_open_missing_wrong_day_and_invalid_price_are_blocking(self):
+        for payload in ([], [[ORIGIN, '100']], [[ORIGIN + 2 * DAY]],
+                        [[ORIGIN + 2 * DAY, '0']], [[ORIGIN + 2 * DAY, 'NaN']]):
+            script = Script()
+            script.now = ORIGIN + 2 * DAY + 1000
+            def opener(method, url, headers):
+                if '/api/v3/klines' in url:
+                    return 200, json.dumps(payload).encode()
+                return script(method, url, headers)
+            venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener,
+                            clock=lambda: script.now / 1000)
+            with self.subTest(payload=payload), self.assertRaises((Unknown, Blocked)):
+                venue.daily_open(ORIGIN + 2 * DAY)
+
+    def test_completed_history_rejects_an_open_outside_the_daily_range(self):
+        script = Script()
+        script.now = ORIGIN + DAY + 1000
+        def opener(method, url, headers):
+            if '/api/v3/klines' in url:
+                return 200, json.dumps([[ORIGIN, '150', '110', '90', '105']]).encode()
+            return script(method, url, headers)
+        venue = Binance(key=KEY, secret=SECRET, environment='live', opener=opener,
+                        clock=lambda: script.now / 1000)
+        with self.assertRaisesRegex(Unknown, 'OHLC'):
+            venue.completed_daily(None)
 
 
 if __name__ == '__main__':

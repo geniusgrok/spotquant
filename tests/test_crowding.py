@@ -38,7 +38,7 @@ class CrowdingTests(unittest.TestCase):
                 model.update(ORIGIN + index * DAY, price, price, price)
             model.closes[-6] = model.close
             self.views[window] = model
-        self.now = self.views[30].last + DAY + 120000
+        self.now = self.views[SLEEVES[0]].last + DAY + 120000
         self.owned = {w: D(0) for w in SLEEVES}
         self.snap = dict(usdt_free='1000', btc='0', avg_price='100', open_orders=0)
         self.kw = dict(positions={}, owners={}, entries_enabled=True, capital_limit=D(10000))
@@ -57,25 +57,26 @@ class CrowdingTests(unittest.TestCase):
         for funding, basis in [('.0003', '.02'), ('.0004', '.01'), ('-.0001', '.02')]:
             with self.subTest(funding=funding, basis=basis):
                 self.assertEqual(self.decide(Features(funding, basis))['orders'], full['orders'])
-        self.views[30].closes[-6] -= 1
+        self.views[40].closes[-6] -= 1
         self.assertEqual(self.decide(Features())['orders'], full['orders'])
 
     def test_missing_blocks_new_buy_but_keeps_safety_exit_and_native_stop_floor(self):
         self.assertEqual(self.decide()['orders'], [])
         self.assertEqual(self.decide(Features(funding=None))['orders'], [])
-        self.owned[30] = D(1)
-        self.views[30], _ = _view(self.views[30], dict(entry_fill='100', peak='100', qty='1',
+        self.owned[40] = D(1)
+        self.views[40], _ = _view(self.views[40], dict(entry_fill='100', peak='100', qty='1',
                                                     repair=False, repair_peak=None, adverse=False))
-        self.views[30].bull = False
+        self.views[40].bull = False
         self.snap['btc'] = '1'
-        position = dict(qty='1', peak='100', first_ms=self.views[30].last, repair=False)
-        owner = dict(sleeves=[30], signal_ms=self.views[30].last, native_status='NEW',
+        position = dict(qty='1', peak='100', first_ms=self.views[40].last, repair=False)
+        owner = dict(sleeves=[40], signal_ms=self.views[40].last, native_status='NEW',
+                     position_first_ms={'40': position['first_ms']},
                      order=dict(type='STOP_LOSS', stopPrice='99'))
-        missing = self.decide(None, positions={30: position}, owners={'stop': owner})
-        present = self.decide(Features(), positions={30: position}, owners={'stop': owner})
+        missing = self.decide(None, positions={40: position}, owners={'stop': owner})
+        present = self.decide(Features(), positions={40: position}, owners={'stop': owner})
         self.assertTrue(any(o['side'] == 'SELL' for o in missing['orders']))
         self.assertEqual(missing['orders'], present['orders'])
-        self.assertEqual(preview.decision_view(self.views[30], position, {'stop': owner})._stop_floor, D(99))
+        self.assertEqual(preview.decision_view(self.views[40], position, {'stop': owner})._stop_floor, D(99))
 
     def test_expiry_availability_and_forming_day_block_new_risk(self):
         stamp = self.now - c.FUNDING_LAG + 17
@@ -87,7 +88,7 @@ class CrowdingTests(unittest.TestCase):
         record = dict(observation_ms=day, available_ms=day + 60000, value='.02')
         self.assertEqual(c.value_at('basis', record, day + 59999)[1], 'not_yet_available')
         self.assertEqual(c.value_at('basis', record, day + DAY)[1], 'basis_availability_date_mismatch')
-        self.views[30].last = self.now
+        self.views[40].last = self.now
         self.assertEqual(self.decide(Features())['orders'], [])
 
     def observations(self):

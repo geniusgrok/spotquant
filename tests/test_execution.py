@@ -76,6 +76,9 @@ class OrderAdapter(Binance):
     def completed_daily(self, after):
         return self.account.completed_daily(after)
 
+    def daily_open(self, open_ms):
+        return self.account.daily_open(open_ms)
+
     def trades(self, since):
         return self.account.trades(since)
 
@@ -90,14 +93,43 @@ class OrderAdapter(Binance):
 
 
 class ExecutionTests(TestCase):
+    def test_stop_ownership_is_durable_and_uses_native_creation_time_only(self):
+        from spotquant.execution import Lifecycle, allocation_owners
+        from spotquant.types import Blocked
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            first = venue.now_ms
+            positions = {'40': {'qty': '1', 'first_ms': first}}
+            stop = dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
+                        quantity='1', stopPrice='72', sleeves=[40])
+            with State(directory, config.scope) as state:
+                lifecycle = Lifecycle(state, venue, config)
+                identity = lifecycle.prepare(stop, venue.bars[-1][0], positions, {'40': None})
+                payload = lifecycle.rows()[0][1]
+                self.assertEqual(payload['position_first_ms'], {'40': first})
+                with self.assertRaisesRegex(Blocked, 'position ownership'):
+                    lifecycle.prepare(stop, venue.bars[-1][0],
+                                      {'40': {'qty': '1', 'first_ms': first + 1}}, {'40': None})
+                lifecycle.save(identity, payload, 'resting',
+                               dict(orderId=7, status='NEW', executedQty='0', time=first + 10,
+                                    updateTime=first + 20))
+            with State(directory, config.scope) as state:
+                owner = Lifecycle(state, venue, config).owners()['7']
+                self.assertEqual(owner['position_first_ms'], {'40': first})
+                self.assertEqual(owner['native_created_ms'], first + 10)
+            owners = allocation_owners((({}, dict(orderId=8, transactTime=first + 30)),
+                                         ({}, dict(orderId=9, updateTime=first + 40, workingTime=first + 50))))
+            self.assertEqual(owners['8']['native_created_ms'], first + 30)
+            self.assertIsNone(owners['9']['native_created_ms'])
+            self.assertEqual(venue.sent, [])
+
     def test_adapter_buy_readback_crosses_deadline_and_closeout_protects(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Config('1', directory, 1, 1, 'demo', '1000')
             account = venue_before_entry()
             run_day(config, account)
             add_day(account, '101')
-            run_day(config, account)
-            add_day(account, '102')
             adapter = OrderAdapter(account, 'POST')
             report = run(config, adapter, execute=True, monotonic=adapter.monotonic, wait=adapter.wait)
             self.assertTrue(report['closeout_attempted'])
@@ -117,7 +149,7 @@ class ExecutionTests(TestCase):
             self.assertTrue(report['closeout_attempted'])
             self.assertFalse(report['pending_intents'])
             self.assertTrue(any(row['type'] == 'STOP_LOSS' and row['status'] == 'NEW'
-                                and D(row['stopPrice']) > D('91.80') for row in account.orders.values()))
+                                and D(row['stopPrice']) > D('73.44') for row in account.orders.values()))
 
     def test_bnb_fee_on_partial_sell_keeps_remainder_protectable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -152,7 +184,7 @@ class ExecutionTests(TestCase):
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
             self.assertTrue(any(row['type'] == 'STOP_LOSS' and row['status'] == 'NEW'
-                                and D(row['stopPrice']) > D('91.80') for row in venue.orders.values()))
+                                and D(row['stopPrice']) > D('73.44') for row in venue.orders.values()))
 
     def test_stop_fill_between_decision_and_write_requires_reconciliation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -199,8 +231,6 @@ class ExecutionTests(TestCase):
             venue = venue_before_entry()
             run_day(config, venue)
             add_day(venue, '101')
-            run_day(config, venue)
-            add_day(venue, '102')
             venue.reject_stop = True
             for _ in range(2):
                 self.assertEqual(run_day(config, venue)['status'], 'unknown')
@@ -212,8 +242,6 @@ class ExecutionTests(TestCase):
             venue = venue_before_entry()
             run_day(config, venue)
             add_day(venue, '101')
-            run_day(config, venue)
-            add_day(venue, '102')
             venue.reject_stop_known = True
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
@@ -229,7 +257,7 @@ class ExecutionTests(TestCase):
             with State(directory, config.scope) as state:
                 lifecycle = Lifecycle(state, venue, config)
                 decision = {'orders': [dict(symbol='BTCUSDT', side='BUY', type='MARKET',
-                                            quoteOrderQty='5.00', sleeves=[30])],
+                                            quoteOrderQty='5.00', sleeves=[40])],
                             'protections': [], 'sleeves': {}}
                 from spotquant.types import Blocked
                 with self.assertRaisesRegex(Blocked, 'net buy'):
@@ -244,14 +272,14 @@ class ExecutionTests(TestCase):
             def divergent(uid):
                 row = snapshot(uid)
                 row['avg_price'] = D('105')
-                row['last_price'] = D('85')
+                row['last_price'] = D('70')
                 return row
             venue.snapshot = divergent
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
             self.assertTrue(any(row['side'] == 'SELL' and row['type'] == 'MARKET'
                                 for row in venue.orders.values()))
-            self.assertFalse(any(row['status'] == 'NEW' and D(row['stopPrice']) > D('85')
+            self.assertFalse(any(row['status'] == 'NEW' and D(row['stopPrice']) > D('70')
                                  for row in venue.orders.values() if row['type'] == 'STOP_LOSS'))
 
     def test_price_crossing_during_replacement_reports_unprotected_btc(self):
@@ -263,7 +291,7 @@ class ExecutionTests(TestCase):
             original = venue.cancel
             def cancel(identity):
                 original(identity)
-                venue.price = D('85')
+                venue.price = D('70')
             venue.cancel = cancel
             observed = venue.snapshot
             def divergent(uid):
@@ -305,46 +333,21 @@ class ExecutionTests(TestCase):
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
             stops = [row for row in venue.orders.values() if row['status'] == 'NEW']
-            self.assertEqual(len(stops), 3)
-            # Remainder uses the canonical 10% decision distance and native floor.
-            self.assertTrue(all(D(row['stopPrice']) == D('91.80') for row in stops))
+            self.assertEqual(len(stops), 1)
+            # Remainder keeps the 28% trail under the 101 fill. 101 * 0.72 = 72.72.
+            self.assertTrue(all(D(row['stopPrice']) == D('72.72') for row in stops))
             self.assertLess(abs(sum(D(row['quantity']) for row in stops) - venue.btc), D('.00004'))
             before = len(venue.sent)
             run_day(config, venue)
             self.assertEqual(len(venue.sent), before)
 
-    def test_equal_size_groups_have_distinct_order_identity_and_sell_attribution(self):
-        from spotquant.execution import Lifecycle
+    def test_the_single_sleeve_stop_covers_the_position(self):
         with tempfile.TemporaryDirectory() as directory:
-            config, venue = self.entered(directory)
-            with State(directory, config.scope) as state:
-                lifecycle = Lifecycle(state, venue, config)
-                for identity, _, status, _ in lifecycle.rows():
-                    if status == 'resting':
-                        lifecycle.cancel(identity)
-                positions, follows = state.get('positions'), state.get('follows')
-                ids = []
-                for window, price in ((30, '70'), (40, '72'), (50, '74')):
-                    order = {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
-                             'quantity': str(D(positions[str(window)]['qty']).quantize(D('.00001'))),
-                             'stopPrice': price, 'sleeves': [window]}
-                    identity = lifecycle.prepare(order, venue.bars[-1][0], positions, follows)
-                    lifecycle.send(identity)
-                    ids.append(identity)
-                self.assertEqual(len(set(ids)), 3)
-                venue.now_ms += 2000
-                venue.trigger('73')  # Only the sleeve-50 stop triggers.
-                lifecycle.recover()
-                from spotquant.follow import apply_day, day_open
-                from spotquant.model import Model, SLEEVES
-                models = {w: Model.restore(state.get('models')[str(w)]) for w in SLEEVES}
-                old_ids = {trade['id'] for trade in venue.fills if trade['buyer']}
-                result, _, _, _ = apply_day(models, {w: positions[str(w)] for w in SLEEVES},
-                    {w: None for w in SLEEVES}, old_ids, day_open(venue.now_ms), venue.fills,
-                    lambda: venue.completed_daily(None), owners=lifecycle.owners())
-                self.assertEqual(result[30]['qty'], positions['30']['qty'])
-                self.assertEqual(result[40]['qty'], positions['40']['qty'])
-                self.assertLess(D(result[50]['qty']) if result[50] else D(0), D('.00001'))
+            _, venue = self.entered(directory)
+            stops = [row for row in venue.orders.values()
+                     if row['type'] == 'STOP_LOSS' and row['status'] == 'NEW']
+            self.assertEqual(len(stops), 1)
+            self.assertLess(abs(D(stops[0]['quantity']) - venue.btc), D('.00004'))
 
     def test_partial_entry_restart_stop_amend_and_trigger(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -352,8 +355,6 @@ class ExecutionTests(TestCase):
             venue = venue_before_entry()
             self.assertEqual(run_day(config, venue)['errors'], [])
             add_day(venue, '101')
-            run_day(config, venue)
-            add_day(venue, '102')
             venue.fraction, venue.lose_ack = D('.5'), True
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
@@ -361,20 +362,20 @@ class ExecutionTests(TestCase):
             sent = len(venue.sent)
             run_day(config, venue)
             self.assertEqual(len(venue.sent), sent)
+            add_day(venue, '102', '110')
+            report = run_day(config, venue)
+            self.assertEqual(report['errors'], [])
+            active = [row for row in venue.orders.values() if row['status'] == 'NEW']
+            self.assertEqual(len(active), 1)
+            # The fill is one minute into the next daily bar, so that high is
+            # not yet the post-fill peak. 101 * 0.72 = 72.72.
+            self.assertEqual(D(active[0]['stopPrice']), D('72.72'))
             add_day(venue, '103', '110')
             report = run_day(config, venue)
             self.assertEqual(report['errors'], [])
             active = [row for row in venue.orders.values() if row['status'] == 'NEW']
             self.assertEqual(len(active), 1)
-            # Basis availability puts the fill outside the first-minute window:
-            # the completed entry-day high cannot be treated as post-fill.
-            self.assertEqual(D(active[0]['stopPrice']), D('91.80'))
-            add_day(venue, '104', '110')
-            report = run_day(config, venue)
-            self.assertEqual(report['errors'], [])
-            active = [row for row in venue.orders.values() if row['status'] == 'NEW']
-            self.assertEqual(len(active), 1)
-            self.assertEqual(D(active[0]['stopPrice']), D('99.00'))
+            self.assertEqual(D(active[0]['stopPrice']), D('79.20'))
             venue.now_ms += 2000
             venue.trigger('70')
             report = run_day(config, venue)
@@ -383,14 +384,181 @@ class ExecutionTests(TestCase):
             with State(directory, config.scope) as state:
                 self.assertFalse(state.pending())
 
+    def test_touch_exit_permission_survives_restart_and_waits_for_a_new_bar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self.entered(directory)
+            venue.price = D('100.4')
+            cancel = venue.cancel
+            def crash_after_cancel(identity):
+                cancel(identity)
+                raise KeyboardInterrupt
+            venue.cancel = crash_after_cancel
+            self.assertEqual(run_day(config, venue)['stop_reason'], 'interrupted')
+            with State(directory, config.scope) as state:
+                payload = json.loads(state.db.execute(
+                    "SELECT payload FROM intents WHERE status='prepared'"
+                ).fetchone()[0])
+                self.assertEqual(payload['rearm'], {'40': True})
+            venue.cancel = cancel
+            venue.price = D('102')
+            report = run_day(config, venue)
+            self.assertEqual(report['errors'], [])
+            sales = [row for row in venue.orders.values()
+                     if row['type'] == 'MARKET' and row['side'] == 'SELL']
+            self.assertEqual(len(sales), 1)
+            with State(directory, config.scope) as state:
+                payload = json.loads(state.db.execute('SELECT payload FROM intents WHERE id=?',
+                                                       (sales[0]['clientOrderId'],)).fetchone()[0])
+                self.assertEqual(payload['rearm'], {'40': True})
+                self.assertEqual(state.get('exit_through')['40'], venue.bars[-1][0])
+            venue.price = D('102')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row['side'] == 'BUY']), 1)
+            add_day(venue, '103')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row['side'] == 'BUY']), 2)
+            sent = len(venue.sent)
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len(venue.sent), sent)
+
+    def test_native_stop_cannot_rejoin_the_old_long_shadow_on_a_later_bar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self.entered(directory)
+            venue.now_ms += 2000
+            venue.trigger('70')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            for close in ('103', '104'):
+                add_day(venue, close)
+                self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row['side'] == 'BUY']), 1)
+            with State(directory, config.scope) as state:
+                self.assertTrue(state.get('models')['40']['body']['shadow_in'])
+                self.assertIsNotNone(state.get('models')['40']['body']['shadow_blocked'])
+                self.assertIsNone(state.get('follows')['40'])
+
+    def test_higher_second_fill_of_one_buy_raises_native_stop_and_survives_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '101')
+            original = venue.submit
+            def two_fills(identity, payload):
+                if payload['side'] != 'BUY':
+                    return original(identity, payload)
+                venue.fraction = D('.5')
+                row = original(identity, payload)
+                venue.fraction = D(1)
+                venue.now_ms += 1
+                venue.price = D('120')
+                quote = D(payload['quoteOrderQty']) - D(row['quote'])
+                quantity = quote / venue.price
+                venue.cash -= quote
+                venue.btc += quantity * (1 - venue.fee)
+                venue._fill(row, quantity, quote)
+                row.update(status='FILLED', executedQty=str(venue.btc), quote=payload['quoteOrderQty'])
+                return row
+            venue.submit = two_fills
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            active = [row for row in venue.orders.values() if row['status'] == 'NEW']
+            self.assertEqual(len(active), 1)
+            self.assertEqual(D(active[0]['stopPrice']), D('86.40'))
+            with State(directory, config.scope) as state:
+                position = state.get('positions')['40']
+                self.assertEqual(D(position['peak']), D('120'))
+                self.assertEqual(D(position['qty']), venue.btc)
+                self.assertEqual(D(position['entry_fill']),
+                                 D('1000') / sum(trade['qty'] for trade in venue.fills if trade['buyer']))
+            sent = len(venue.sent)
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len(venue.sent), sent)
+            with State(directory, config.scope) as state:
+                self.assertEqual(state.get('positions')['40'], position)
+
+    def test_crash_reversal_buy_keeps_actual_repair_allocation_across_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prices = [D(100)] * 400 + [D(50), D(46)]
+            from venue_fixture import KnownFeatures
+            venue = TestVenue([(ORIGIN + i * DAY, p, p, p) for i, p in enumerate(prices)])
+            venue.now_ms += 60_000
+            venue.crowding_features = KnownFeatures
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '48.76')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            buys = [row for row in venue.orders.values() if row['side'] == 'BUY']
+            self.assertEqual(len(buys), 1)
+            self.assertFalse(any(row['type'] == 'MARKET' and row['side'] == 'SELL'
+                                 for row in venue.orders.values()))
+            with State(directory, config.scope) as state:
+                self.assertTrue(state.get('positions')['40']['repair'])
+                payload = json.loads(state.db.execute('SELECT payload FROM intents WHERE id=?',
+                                                       (buys[0]['clientOrderId'],)).fetchone()[0])
+                self.assertEqual(payload['repair'], {'40': True})
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '47')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            with State(directory, config.scope) as state:
+                self.assertTrue(state.get('positions')['40']['repair'])
+            self.assertFalse(any(row['type'] == 'MARKET' and row['side'] == 'SELL'
+                                 for row in venue.orders.values()))
+
+    def test_catchup_partial_buy_replays_repair_handoff_in_fill_order(self):
+        from spotquant.execution import Lifecycle
+        from spotquant.model import Model
+        from spotquant.session import RULE, cycle
+        from venue_fixture import KnownFeatures
+        with tempfile.TemporaryDirectory() as directory:
+            prices = [D(100)] * 400 + [D(50), D(46), D('48.76'), D(47), D(50), D(100)]
+            venue = TestVenue([(ORIGIN + i * DAY, p, p, p) for i, p in enumerate(prices)])
+            venue.now_ms += 60_000
+            venue.crowding_features = KnownFeatures
+            signal = ORIGIN + 402 * DAY
+            first = signal + DAY + 60_000
+            model = Model()
+            for open_ms, open_price, high, low, close in venue.completed_daily(None):
+                if open_ms > signal:
+                    break
+                model.advance_open(open_ms, open_price)
+                model.update(open_ms, high, low, close)
+            model.advance_open(signal + DAY, D(47))
+            venue.fills = [dict(id=index, order_id=7, time=first + offset * DAY,
+                                qty=D(1), quote=price, price=price, buyer=True,
+                                commission=D(0), commission_asset='BTC')
+                           for index, offset, price in ((1, 0, D('48.76')), (2, 1, D(200)))]
+            venue.btc, venue.cash = D(2), D('751.24')
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            with State(directory, config.scope) as state:
+                state.set_many({'rule': RULE, 'models': {'40': model.checkpoint()},
+                                'positions': {'40': None},
+                                'follows': {'40': {'signal_ms': signal, 'repair': True}},
+                                'entries_after': signal, 'accounted_ids': [], 'exit_through': {}})
+                payload = {'order': {'symbol': 'BTCUSDT', 'side': 'BUY', 'type': 'MARKET',
+                                     'quoteOrderQty': '248.76'}, 'sleeves': [40],
+                           'weights': {'40': '1'}, 'signal_ms': signal, 'repair': {'40': True}}
+                Lifecycle(state, venue, config).save('recorded-buy', payload, 'settled',
+                                                     {'orderId': 7, 'status': 'FILLED', 'executedQty': '2'})
+                report = cycle(venue, state, config, execute=False)
+                self.assertEqual(report['status'], 'read_only')
+                position = state.get('positions')['40']
+                self.assertEqual(D(position['entry_fill']), D('124.38'))
+                self.assertEqual(D(position['qty']), D(2))
+                self.assertEqual(D(position['peak']), D(200))
+                self.assertFalse(position['repair'])
+                self.assertIsNone(position['repair_peak'])
+                self.assertTrue(position['adverse'])
+                self.assertEqual(position['through'], ORIGIN + 405 * DAY)
+            with State(directory, config.scope) as state:
+                self.assertEqual(cycle(venue, state, config, execute=False)['status'], 'read_only')
+                self.assertEqual(state.get('positions')['40'], position)
+            self.assertEqual(venue.sent, [])
+
     def test_query_outage_after_send_recovers_with_original_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Config('1', directory, 1, 1, 'demo', '1000')
             venue = venue_before_entry()
             run_day(config, venue)
             add_day(venue, '101')
-            run_day(config, venue)
-            add_day(venue, '102')
             original = venue.submit
             def submit(identity, payload):
                 row = original(identity, payload)
