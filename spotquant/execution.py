@@ -335,11 +335,15 @@ class Lifecycle:
         fixed = [row for row in self.rows() if row[1]['order']['type'] == 'STOP_LOSS'
                  and (row[2] == 'prepared' or row[2] == 'resting' and (
                      row[0] == getattr(self, '_confirmed_stop', None) or risk_stopped))]
-        for identity, payload, status, _ in sorted(fixed, key=lambda row: row[2] != ('resting' if risk_stopped else 'prepared')):
+        for identity, payload, status, result in sorted(fixed, key=lambda row: row[2] != ('resting' if risk_stopped else 'prepared')):
             position = positions.get(str(SLEEVES[0]))
+            created = result.get('time') or result.get('transactTime')
+            same_position = position and (payload.get('position_first_ms', {}).get(str(SLEEVES[0])) == position['first_ms']
+                or status == 'resting' and 'position_first_ms' not in payload
+                and type(created) is int and created >= position['first_ms'])
             if (not position or position.get('dust')
                     or D(payload['order']['quantity']) != floor_step(D(position['qty']), BASE_STEP)
-                    or payload.get('position_first_ms', {}).get(str(SLEEVES[0])) != position['first_ms']):
+                    or not same_position):
                 continue
             view = decision_view(views[SLEEVES[0]], position, self.owners())
             if D(payload['order']['stopPrice']) < view._stop_floor:
