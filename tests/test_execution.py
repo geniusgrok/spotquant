@@ -636,7 +636,9 @@ class ExecutionTests(TestCase):
             venue.snapshot = changed
             sent = len(venue.sent)
             report = run_day(config, venue)
-            self.assertEqual(report['status'], 'unknown')
+            self.assertEqual(report['status'], 'demo_execution')
+            self.assertTrue(report['closeout_attempted'])
+            self.assertFalse(report['manual_takeover'])
             self.assertIn('fill quantity differs from native executed quantity', report['errors'][0]['reason'])
             self.assertEqual(len(venue.sent), sent)
             venue.snapshot = snapshot

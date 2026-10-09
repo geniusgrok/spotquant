@@ -281,7 +281,11 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
             if requested():
                 report['stop_reason'] = 'requested'
                 closeout = True
-            elif state.pending() and deadline <= monotonic() < venue._deadline_at:
+            elif deadline <= monotonic() < venue._deadline_at and (state.pending()
+                    or execute and (not report.get('observation_current')
+                                    or report.get('risk_state', {}).get('manual_takeover'))):
+                # A settled BUY can outlive its failed observation without a
+                # pending intent. Natural expiry needs the same protection recovery.
                 closeout = True
         except KeyboardInterrupt:
             report['stop_reason'] = 'interrupted'
@@ -341,7 +345,9 @@ def _closeout(config, venue, state, report, monotonic, wait):
                 break
         except (Blocked, Unknown, OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
             report.update(status='unknown', reason=str(exc), observation_current=False)
-            report['errors'] = (report['errors'] + [{'cycle': report['cycles'], 'reason': str(exc)}])[-10:]
+            # Repeated closeout failures must not erase the original refusal.
+            if not report['errors'] or report['errors'][-1]['reason'] != str(exc):
+                report['errors'] = (report['errors'] + [{'cycle': report['cycles'], 'reason': str(exc)}])[-10:]
             clear_stale(report)
             try:
                 report['risk_state'] = _risk_state(state, venue.snapshot(config.account_uid), venue)

@@ -200,7 +200,7 @@ class Lifecycle:
         identity = client_id(self.state.identity, bar, operation)
         prior = next((row for row in self.rows() if row[0] == identity), None)
         while (raw['type'] == 'STOP_LOSS' and prior is not None and prior[2] == 'settled'
-               and prior[3].get('status') == 'CANCELED'):
+               and (prior[3].get('status') == 'CANCELED' or _no_fill_failure(prior))):
             payload['replaced_stop'] = identity
             operation += '-again-' + str(prior[3].get('orderId'))
             identity = client_id(self.state.identity, bar, operation)

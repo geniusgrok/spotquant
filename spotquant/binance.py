@@ -87,11 +87,18 @@ class Binance:
 
     def crowding_features(self):
         from .crowding import PublicFeatures
+        self._check_deadline()
         if not hasattr(self, '_crowding_source'):
             self._crowding_source = PublicFeatures(clock=self._timestamp)
         self._crowding_source.refresh(self._timestamp(),
                                       getattr(self, '_risk_stop', self._stop),
                                       lambda: self._remaining(5, risk=True))
+        # Public spot data and signed spot requests share the same IP limit.
+        retry_ms = self._crowding_source.retry_after.get(urllib.parse.urlsplit(self.base).netloc, 0)
+        delay = max(0, (retry_ms - self._timestamp()) / 1000)
+        if delay:
+            self._retry_after_at = max(self._retry_after_at,
+                                      getattr(self, '_monotonic', time.monotonic)() + delay)
         return self._crowding_source
 
     def query(self, identity):
@@ -413,14 +420,12 @@ class Binance:
         self.max_qty = number(lot['maxQty'], 'maxQty', positive=True) if 'maxQty' in lot else None
         self.min_price = number(price['minPrice'], 'minPrice', positive=True) if price.get('minPrice') not in (None, '0', '0.00000000') else None
         self.max_price = number(price['maxPrice'], 'maxPrice', positive=True) if price.get('maxPrice') not in (None, '0', '0.00000000') else None
-        if market:
-            step = number(market.get('stepSize', '0'), 'market step', nonnegative=True)
-            minimum = number(market.get('minQty', '0'), 'market minQty', nonnegative=True)
-            self.market_step = step or None
-            self.market_min_qty = minimum or None
-            self.market_max_qty = number(market['maxQty'], 'market maxQty', nonnegative=True) if 'maxQty' in market else None
-        if notional.get('maxNotional') not in (None, ''):
-            self.max_notional = number(notional['maxNotional'], 'maxNotional', positive=True)
+        self.market_step = number(market.get('stepSize', '0'), 'market step', nonnegative=True) or None
+        self.market_min_qty = number(market.get('minQty', '0'), 'market minQty', nonnegative=True) or None
+        self.market_max_qty = (number(market['maxQty'], 'market maxQty', nonnegative=True)
+                               if 'maxQty' in market else None)
+        self.max_notional = (number(notional['maxNotional'], 'maxNotional', positive=True)
+                             if notional.get('maxNotional') not in (None, '') else None)
         types = symbol.get('orderTypes') or []
         if 'STOP_LOSS' not in types or 'MARKET' not in types:
             raise Blocked('BTCUSDT must support market orders and fixed stop protection')

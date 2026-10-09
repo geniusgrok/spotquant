@@ -4,6 +4,8 @@ import hashlib
 import json
 import time
 from urllib.request import urlopen
+from urllib.error import HTTPError
+from urllib.parse import urlsplit
 
 DAY = 86400000
 FUNDING_LAG = 28800000
@@ -98,6 +100,7 @@ class PublicFeatures:
         self.clock = clock or (lambda: time.time_ns() // 1000000)
         self.last_lookup = None
         self.fetched = None
+        self.retry_after = {}
 
     def value(self, name, now):
         record = dict(name=name, value=None, cause='missing_public_' + name)
@@ -157,14 +160,26 @@ class PublicFeatures:
             for category, url in PUBLIC_URLS.items():
                 request = self.clock()
                 record = dict(category=category, url=url, request_ms=request)
+                host = urlsplit(url).netloc
                 try:
                     if stopping is not None and stopping(): raise ValueError('session deadline')
+                    if request < self.retry_after.get(host, 0): raise ValueError('rate limit backoff')
                     with urlopen(url, timeout=remaining() if remaining else 5) as response:
                         if response.geturl() != url: raise ValueError('redirect')
                         raw = response.read(1000001)
                     if len(raw) > 1000000: raise ValueError('oversized response')
                     record.update(public_body(raw), sha256=hashlib.sha256(raw).hexdigest())
                 except (OSError, ValueError) as exc:
+                    if isinstance(exc, HTTPError):
+                        if exc.code in (418, 429):
+                            try:
+                                delay = _decimal((exc.headers or {}).get('Retry-After', '60'))
+                                if delay <= 0: raise ValueError('invalid Retry-After')
+                                delay_ms = int(max(D(1), delay) * 1000)
+                            except (ValueError, ArithmeticError):
+                                delay_ms = 60000
+                            self.retry_after[host] = self.clock() + delay_ms
+                        exc.close()
                     raw = str(type(exc).__name__).encode()
                     record.update(body=None, error=type(exc).__name__, sha256=hashlib.sha256(raw).hexdigest())
                 record['receipt_ms'] = self.clock()
