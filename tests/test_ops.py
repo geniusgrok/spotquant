@@ -223,6 +223,7 @@ class KillSwitchTests(unittest.TestCase):
                 with self.assertRaisesRegex(Blocked, '--confirm'):
                     kill_switch(state, venue, config, confirm=False)
             self.assertEqual(len(venue.sent), sent)
+            self.assertFalse((Path(directory) / 'HALT').is_file())
         with tempfile.TemporaryDirectory() as directory:
             config = Config('10001', directory, environment='demo', capital_limit_usdt='100')
 
@@ -238,6 +239,7 @@ class KillSwitchTests(unittest.TestCase):
             with State(directory, config.scope) as state:
                 with self.assertRaisesRegex(Blocked, 'will not adopt'):
                     kill_switch(state, Venue(), config, confirm=True, env={})
+            self.assertTrue((Path(directory) / 'HALT').is_file())
 
     def test_full_fill_is_confirmed_and_the_next_session_continues(self):
         from test_execution import run_day
@@ -888,6 +890,7 @@ class KillSwitchReviewTests(unittest.TestCase):
                 code = main(['kill-switch', '--config', str(path), '--authorize-uid', '10001', '--confirm'])
             self.assertEqual(code, 2)
             self.assertEqual(notes, ['persisted rate limit state is invalid'])
+            self.assertTrue((Path(directory) / 'HALT').is_file())
         with tempfile.TemporaryDirectory() as directory:
             config, venue = self._open(directory)
             path = Path(directory) / 'config.json'
@@ -949,6 +952,7 @@ class KillSwitchReviewTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(requests, [])
             self.assertEqual(notes, ['unknown'])
+            self.assertTrue((Path(directory) / 'HALT').is_file())
             with State(directory, config.scope) as state:
                 self.assertEqual(state.get('rate_limits'), {'demo-api.binance.com': 1_100_000})
         with tempfile.TemporaryDirectory() as directory:
@@ -976,5 +980,141 @@ class KillSwitchReviewTests(unittest.TestCase):
                 code = main(['kill-switch', '--config', str(path), '--authorize-uid', '10001', '--confirm'])
             self.assertEqual(code, 2)
             self.assertEqual(len(requests), 1)
+            self.assertTrue((Path(directory) / 'HALT').is_file())
             with State(directory, config.scope) as state:
                 self.assertEqual(state.get('rate_limits'), {'demo-api.binance.com': 1_120_000})
+
+    def test_halt_is_written_when_the_first_recover_fails(self):
+        from spotquant.types import Unknown as OrderUnknown
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            sent = list(venue.sent)
+
+            def query(identity):
+                raise OrderUnknown('order query unavailable')
+
+            venue.query = query
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+            self.assertEqual(result['status'], 'unknown', result)
+            self.assertTrue(result['halt'])
+            self.assertEqual(venue.sent, sent)
+            self.assertTrue(any(row.get('status') == 'NEW' and row.get('type') == 'STOP_LOSS'
+                                for row in venue.orders.values()))
+            self.assertFalse(any(row.get('side') == 'SELL' and row.get('type') == 'MARKET'
+                                 for row in venue.orders.values()))
+
+    def test_halt_is_written_on_a_dust_or_flat_account(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            with State(directory, config.scope) as state:
+                first = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertEqual(first['status'], 'pass', first)
+            self.assertTrue(first['dust'])
+            (Path(directory) / 'HALT').unlink()
+            sent = list(venue.sent)
+            with State(directory, config.scope) as state:
+                second = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertEqual(second['status'], 'pass', second)
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+            self.assertEqual(venue.sent, sent)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('10001', directory, environment='demo', capital_limit_usdt='100')
+
+            class Flat:
+                execution_authorized = True
+
+                def clock(self):
+                    return 1_700_000_000
+
+                def snapshot(self, uid):
+                    return {
+                        'btc': D(0), 'btc_free': D(0), 'last_price': D('100'),
+                        'avg_price': D('100'), 'min_notional': D('5'), 'orders': [],
+                        'usdt_free': D('100'), 'usdt_locked': D(0),
+                    }
+
+                def trades(self, since, from_id=None):
+                    return []
+
+                def query(self, identity):
+                    raise AssertionError('flat kill queried an order')
+
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, Flat(), config, confirm=True, env={})
+            self.assertEqual(result['status'], 'pass', result)
+            self.assertTrue(result['halt'])
+            self.assertEqual(result['cancelled'], [])
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+
+    def test_halt_write_failure_aborts_without_orders_and_alerts(self):
+        from spotquant.cli import main
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': config.account_uid, 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '1000',
+                'session_seconds': 1, 'poll_seconds': 1,
+            }), encoding='utf-8')
+            sent = list(venue.sent)
+            snapshots = []
+            original = venue.snapshot
+
+            def snapshot(uid):
+                snapshots.append(uid)
+                return original(uid)
+
+            venue.snapshot = snapshot
+            notes = []
+
+            def connect(loaded, execute_orders=False):
+                return venue
+
+            def dispatch(directory, report, **kwargs):
+                notes.append(report)
+                return {'sent': [], 'skipped': 0, 'errors': []}
+
+            with patch('spotquant.cli.connect', connect), \
+                    patch('spotquant.ops._arm_halt', side_effect=OSError('halt directory is read only')), \
+                    patch('spotquant.ops.dispatch_notifications', dispatch):
+                code = main(['kill-switch', '--config', str(path), '--authorize-uid', config.account_uid,
+                             '--confirm'])
+            self.assertEqual(code, 2)
+            self.assertEqual(len(notes), 1)
+            self.assertEqual(notes[0]['status'], 'unknown')
+            self.assertIn('read only', notes[0]['reason'])
+            self.assertTrue(notes[0]['manual_takeover'])
+            self.assertEqual(venue.sent, sent)
+            self.assertEqual(snapshots, [])
+            self.assertFalse((Path(directory) / 'HALT').is_file())
+            self.assertFalse(any(row.get('side') == 'SELL' and row.get('type') == 'MARKET'
+                                 for row in venue.orders.values()))
+
+    def test_docs_say_kill_switch_always_writes_halt_first(self):
+        import contextlib
+        from io import StringIO
+        from spotquant.cli import main
+        root = Path(__file__).resolve().parents[1]
+        for name in ('README.md', 'deploy/README.md', 'AGENTS.md',
+                     'spotquant/ops.py', 'spotquant/cli.py', 'spotquant/follow.py'):
+            text = (root / name).read_text(encoding='utf-8')
+            self.assertIn('kill-switch always writes HALT first', text, name)
+        combined = '\n'.join((root / name).read_text(encoding='utf-8')
+                              for name in ('README.md', 'deploy/README.md', 'AGENTS.md'))
+        self.assertNotIn('查询失败或已经只剩尘埃时不写', combined)
+        self.assertNotIn('还没进入撤单或卖出就因查询失败', combined)
+        self.assertNotIn('查询还没到这一步就失败', combined)
+        buf = StringIO()
+        with contextlib.redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as caught:
+                main(['kill-switch', '--help'])
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn('kill-switch always writes HALT first', buf.getvalue())
+        top = StringIO()
+        with contextlib.redirect_stdout(top):
+            with self.assertRaises(SystemExit) as caught:
+                main(['--help'])
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn('kill-switch always writes HALT first', top.getvalue())

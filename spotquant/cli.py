@@ -88,7 +88,7 @@ def main(argv=None):
             'BTCUSDT spot observation. A write session needs --execute and a matching '
             '--authorize-uid. 28% is the trail target; stop_price_percent_band can place '
             'the STOP_LOSS at the percent-band floor. ops-run is the 00:45 UTC timer entry. '
-            'kill-switch writes HALT before it cancels or sells.'
+            'kill-switch always writes HALT first, before any query, snapshot, cancel, or sell.'
         ),
     )
     commands = parser.add_subparsers(dest='command', required=True)
@@ -138,7 +138,8 @@ def main(argv=None):
     backup.add_argument('--dest', type=Path)
     switch = commands.add_parser(
         'kill-switch',
-        help='Sell the recorded position after writing HALT. sold is confirmed fills only. Delete HALT to resume.')
+        help='kill-switch always writes HALT first. sold is confirmed fills only. Delete HALT to resume.',
+        description='kill-switch always writes HALT first, before any query, snapshot, cancel, or sell.')
     switch.add_argument('--config', required=True)
     switch.add_argument('--authorize-uid', required=True)
     switch.add_argument('--confirm', action='store_true')
@@ -223,13 +224,17 @@ def main(argv=None):
             path = backup_database(Path(config.state_dir).expanduser() / 'intents.sqlite', dest)
             report = {'status': 'pass', 'backup': str(path), 'environment': config.environment}
         elif args.command == 'kill-switch':
-            from .ops import dispatch_notifications, kill_switch
+            from .ops import _arm_halt, dispatch_notifications, kill_switch
             config = load(args.config)
             if args.authorize_uid != config.account_uid:
                 raise Blocked('kill-switch requires matching --authorize-uid')
             venue = connect(config, execute_orders=True)
             with State(config.state_dir, config.scope) as state:
                 try:
+                    if not args.confirm:
+                        raise Blocked('kill-switch requires --confirm')
+                    # After the UID check and the state lock. Before backoff restore and any query.
+                    _arm_halt(state)
                     if hasattr(venue, 'bind_state'):
                         venue.bind_state(state)
                     report = kill_switch(state, venue, config, confirm=args.confirm)

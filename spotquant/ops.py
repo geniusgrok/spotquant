@@ -1,9 +1,10 @@
 """Unattended session helpers: drawdown halt, kill switch, backup, heartbeats.
 
 Strategy parameters are not changed here. A halt file stops new buys only.
-kill-switch writes that file before its first cancel or sell. Deleting it
-resumes entries; the next buy still needs a fresh cross. ``sold`` counts only
-this exit's read-back fills. The exit loop is at most twelve actions.
+kill-switch always writes HALT first, before recover, snapshot, cancel, or
+sell, including a failed query and dust that is already untradable. Deleting
+it resumes entries; the next buy still needs a fresh cross. ``sold`` counts
+only this exit's read-back fills. The exit loop is at most twelve actions.
 """
 from __future__ import annotations
 
@@ -373,12 +374,15 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
                 urlopen=None, now: float | None = None) -> dict:
     """Cancel this state's orders and sell its recorded position through the normal exit lifecycle.
 
-    When an exit is attempted, ``HALT`` is written atomically before the first
-    cancel or sell. The sell intent, its client id, and any cancel id are saved
-    before those requests are sent. ``sold`` counts only this exit's read-back
-    fills. A touch re-entry prepared before this command is not kept. BTC this
-    state does not record is not sold. ``confirm`` must be true or nothing is sent.
-    At most twelve actions run; a remainder sets manual takeover and alerts.
+    kill-switch always writes HALT first. After ``--confirm``, the environment,
+    and the capital ceiling pass, ``HALT`` is written atomically before recover,
+    snapshot, cancel, or sell. A failed query and an already flat or dust
+    position still leave that file. If the write fails, nothing is queried or
+    sent and the caller alerts. The sell intent, its client id, and any cancel
+    id are saved before those requests are sent. ``sold`` counts only this
+    exit's read-back fills. A touch re-entry on the exit that is sent is not
+    kept. BTC this state does not record is not sold. At most twelve actions
+    run; a remainder sets manual takeover and alerts.
     """
     if confirm is not True:
         raise Blocked('kill-switch requires --confirm')
@@ -386,6 +390,8 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
         raise Blocked('kill-switch requires demo or live')
     if config.capital_limit is None:
         raise Blocked('kill-switch requires a capital ceiling')
+    # First state change. A failed write must not reach recover, snapshot, cancel, or sell.
+    _arm_halt(state)
     from .execution import Lifecycle
     snapshot = venue.snapshot(config.account_uid)
     owned, dust = _recorded_qty(state)
@@ -466,7 +472,6 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
                           'sell quantity fails native lot filters; existing protection was kept',
                           takeover=_coverage_takeover(state, venue, config, lifecycle))
         try:
-            _arm_halt(state)
             for stop_id, payload, status, _ in list(lifecycle.rows()):
                 if status == 'resting' and (payload.get('order') or {}).get('type') == 'STOP_LOSS':
                     lifecycle.cancel(stop_id)
