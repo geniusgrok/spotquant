@@ -92,13 +92,20 @@ def protection_peak(fill_price, quote, *, quote_after_fill: bool):
 
 
 def protection_price(fill_price, quote, *, quote_after_fill: bool):
-    """28% under the verified peak, floored to the BTCUSDT tick."""
+    """28% strategy target under the verified peak, floored to the BTCUSDT tick.
+
+    This is stop_target. The placed stopPrice can be higher when the percent band is on.
+    """
     peak = protection_peak(fill_price, quote, quote_after_fill=quote_after_fill)
     return floor_step(Model(40).stop_price(peak), PRICE_STEP)
 
 
 def verification_stop(entry, snapshot, *, existing=D(0), apply=False):
-    """Native stop for one verification fill. Clamping waits for the confirmed rule."""
+    """Native stop for one verification fill.
+
+    ``apply`` false keeps the 28% target. Deployment sets the config flag, which
+    passes apply true and uses the percent-band floor when it is higher.
+    """
     observed = snapshot.get('quote_observed_ms')
     quote_after = type(observed) is int and type(entry.get('time_ms')) is int and observed >= entry['time_ms']
     target = protection_price(entry['price'], snapshot['last_price'], quote_after_fill=quote_after)

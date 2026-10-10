@@ -1,4 +1,4 @@
-"""Durable order allocation for explicitly authorized, bounded spot sessions."""
+"""Durable order allocation for bounded spot sessions that passed the UID check."""
 from __future__ import annotations
 
 import hashlib

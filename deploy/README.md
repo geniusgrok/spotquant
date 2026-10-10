@@ -22,7 +22,7 @@ sudo sh deploy/install.sh --enable-demo
 
 安装前需要已有 `/usr/bin/python3.13`。脚本发现没有就退出，不会自行安装软件包。
 
-然后编辑（权限保持 `root:spotquant`、`0640`）：
+示例 JSON 把 `stop_price_percent_band` 写成 true，这是部署选择：挂出价取 28% 目标、缓冲后的价格带下限和已有止损中的较高者，只上移。程序在省略该字段时仍默认 false，那样会发送 28% 目标。然后编辑（权限保持 `root:spotquant`、`0640`）：
 
 | 文件 | 作用 |
 | --- | --- |
@@ -74,7 +74,7 @@ sudo journalctl -u spotquant-session@demo.service -n 100
 
 1. 停用并 disable 上面三个 Demo 定时器。确认没有 `spotquant-session@demo.service` 还在跑。
 2. 把 `/etc/spotquant/live.json` 和 `live.env` 填好。`state_dir` 用 `/var/lib/spotquant/live`，不要和 Demo 共用。
-3. 资金上限、UID 和环境必须是实盘自己的。`stop_price_percent_band` 只有在 Demo 探针确认之后才设为 true。
+3. 资金上限、UID 和环境必须是实盘自己的。部署把 `stop_price_percent_band` 设为 true。Demo 已确认 `STOP_LOSS` 的 `stopPrice` 受 `PERCENT_PRICE_BY_SIDE` 约束：均价下方 15% 接受，20%、25%、28% 返回 `-1013` `Filter failure: PERCENT_PRICE_BY_SIDE`。当时 BTCUSDT 的 `askMultiplierDown` 是 0.8，代码按交易对读取，不写死。开关为 true 时，挂出价是 28% 目标、缓冲下限和已有止损中的较高者，只上移；靠近峰值时大约比 5 分钟均价低 20%。代码默认仍是 false，删掉这个字段会改回发送 28% 目标。`capital_limit_usdt` 只限制新买的名义，不是亏损上限；相对峰值停止新买的是 `max_drawdown_halt_pct`。
 4. 创建实盘开关文件。没有这个文件，实盘的会话、心跳检查和备份即使被启动也会被 systemd 跳过：
 
 ```sh

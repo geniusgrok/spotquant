@@ -126,12 +126,12 @@ def _position_decision(model: Model, snapshot: dict, owned: D) -> dict:
         )
     if model.position_peak is not None:
         reason = (
-            f'still above the SMA; protection is a stop {percent(model.trail)} '
-            'under the high since the fill'
+            f'still above the SMA; protection target is a stop {percent(model.trail)} '
+            'under the high since the fill; the exchange stopPrice can be higher when the percent band applies'
         )
     else:
         reason = (
-            f'still above the SMA; no fill is recorded, so the stop stays {percent(model.trail)} '
+            f'still above the SMA; no fill is recorded, so the target stays {percent(model.trail)} '
             'under the completed close'
         )
     return {
@@ -167,23 +167,23 @@ def _protection(model: Model, quantity: D | None, snapshot: dict) -> dict:
         peak = model.close
         if model.cap_enter:
             note = (
-                f'quantity would be the filled base amount; crash-reversal stop starts {trail} under '
+                f'quantity would be the filled base amount; crash-reversal target starts {trail} under '
                 'the completed close and is amended to the fill'
             )
         else:
             note = (
-                f'quantity would be the filled base amount; stop starts {trail} under the completed '
+                f'quantity would be the filled base amount; target starts {trail} under the completed '
                 'close and is amended to the fill'
             )
     elif model.repair and model.repair_peak is not None:
         peak = model.repair_peak
-        note = f'amended STOP_LOSS; {trail} under the high since the repair fill'
+        note = f'amended STOP_LOSS; target is {trail} under the high since the repair fill'
     elif model.position_peak is not None:
         peak = model.position_peak
-        note = f'amended STOP_LOSS; {trail} under the high since the fill'
+        note = f'amended STOP_LOSS; target is {trail} under the high since the fill'
     else:
         peak = model.close
-        note = f'amended STOP_LOSS; {trail} under the completed close until a fill is recorded'
+        note = f'amended STOP_LOSS; target is {trail} under the completed close until a fill is recorded'
     apply = snapshot.get('stop_price_percent_band') is True
     plan = clamp_stop(peak * (D(1) - model.trail), snapshot,
                       existing=getattr(model, '_stop_floor', D(0)), apply=apply)
@@ -230,7 +230,8 @@ def sell_percent_bounds(snapshot: dict, tick=None) -> dict:
     fresh average. The floor is ``reference * askMultiplierDown * (1 + buffer)``,
     rounded up to the tick so it cannot fall back through the raw multiplier.
     When both percent filters are present, the higher floor and the lower
-    ceiling bind. No filter leaves both bounds empty and the 28% target unchanged.
+    ceiling bind. No filter leaves both bounds empty, so the placed price stays
+    the 28% target unless an existing stop is already higher.
     """
     step = _tick(snapshot, tick)
     floors = []
@@ -446,7 +447,7 @@ def _summarize(out):
 
 
 def decision_view(model, position, owners):
-    """Static 28% trail on a copy, floored by any confirmed native stop."""
+    """Copy whose stop floor is the 28% target or a higher confirmed native stop."""
     view = copy.copy(model)
     from .execution import TERMINAL
     def same_position(owner):
@@ -471,7 +472,7 @@ def decision_view(model, position, owners):
 
 def decision(views, owned, snapshot, *, positions, owners, entries_enabled, capital_limit,
              crowding_source=None, decision_ms=None):
-    """28% trail protection, exits first, then one crowding scale on a new buy."""
+    """28% trail target, then the percent band when enabled; exits before a new buy."""
     from .crowding import evaluate
     price_views = views
     views = {w: decision_view(v, positions.get(w), owners) for w, v in views.items()}

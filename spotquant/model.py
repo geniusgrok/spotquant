@@ -5,7 +5,9 @@ fresh cross, and the crash-reversal repair. The account follows that book
 only at a session. One close back above the average can buy early. A trend
 whose session price is within 0.5% of the SMA sells. A retained touch permission
 can rejoin after a newer completed bar while the shadow book remains long.
-Protection uses verified post-fill peaks; a protection exit consumes that signal.
+Protection's target is 28% under verified post-fill peaks. When
+stop_price_percent_band is on, the exchange STOP_LOSS stopPrice can be the
+higher percent-band floor. A protection exit consumes that signal.
 """
 from __future__ import annotations
 

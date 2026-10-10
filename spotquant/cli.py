@@ -1,4 +1,8 @@
-"""Binance spot observation and explicitly capped owner-operated sessions."""
+"""Binance spot observation and explicitly capped sessions.
+
+The 28% figure is the trail target. Deployment sets stop_price_percent_band,
+so the STOP_LOSS stopPrice can be the percent-band floor instead.
+"""
 from __future__ import annotations
 
 import argparse
@@ -80,7 +84,11 @@ def observe(config_path) -> dict:
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog='spotquant',
-        description='BTCUSDT spot observation. Live orders stay off unless a capped run is authorized.',
+        description=(
+            'BTCUSDT spot observation. A write session needs --execute and a matching '
+            '--authorize-uid. 28% is the trail target; stop_price_percent_band can place '
+            'the STOP_LOSS at the percent-band floor. ops-run is the daily timer entry.'
+        ),
     )
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ('status', 'run'):
@@ -88,7 +96,7 @@ def main(argv=None):
         command.add_argument('--config', default='config.json')
         if name == 'run':
             command.add_argument('--execute', action='store_true',
-                                 help='With --authorize-uid, run a capped live session. Otherwise blocked.')
+                                 help='With a matching --authorize-uid, run one capped session. Otherwise blocked.')
             command.add_argument('--authorize-uid', help='Repeat the live account UID for this invocation')
     exported = commands.add_parser('snapshot', help='Export a fresh read-only BTC account snapshot')
     exported.add_argument('--config', default='config.json')

@@ -17,13 +17,19 @@ class Config:
     poll_seconds: int = 5
     # demo uses Binance spot demo hosts and a separate state scope.
     environment: str = 'live'
-    # Optional for observation; required for execution. It is not a loss limit.
+    # Optional for observation; required for execution. It caps new buys by
+    # whole-account BTC notional. It is not a loss limit and does not sell a
+    # position that has gained. max_drawdown_halt_pct is the separate buy halt.
     capital_limit_usdt: str | None = None
-    # Off until a Demo probe confirms that STOP_LOSS stopPrice is inside the
-    # symbol's PERCENT_PRICE filter. On, the native stop uses option A.
+    # Code default stays false: an omitted field still sends the 28% target.
+    # Deployment configs set true. Demo rejected STOP_LOSS stopPrice at 20/25/28%
+    # under the average with -1013 PERCENT_PRICE_BY_SIDE; 15% was accepted.
+    # On, the placed stop is max(28% target, buffered band floor, existing stop)
+    # and only ratchets up. Multipliers are read from the symbol's exchangeInfo.
     stop_price_percent_band: bool = False
     # Optional. When set, a drawdown from the recorded peak at least this large
     # stops new buys. Exits and resting stops still run. Example: "0.25".
+    # This is not capital_limit_usdt.
     max_drawdown_halt_pct: str | None = None
 
     def __post_init__(self):

@@ -2,7 +2,9 @@
 
 Live host ``api.binance.com``. Demo host ``demo-api.binance.com``. The API key
 is sent only to that configured host. Redirects are refused. Writes in either
-environment require its verified UID and a positive capital ceiling.
+environment require that environment's UID and a positive capital ceiling.
+The 28% trail is the strategy target. A STOP_LOSS stopPrice is sent at that
+target unless stop_price_percent_band lifts it to the symbol's percent floor.
 """
 from __future__ import annotations
 
