@@ -222,13 +222,26 @@ def main(argv=None):
             path = backup_database(Path(config.state_dir).expanduser() / 'intents.sqlite', dest)
             report = {'status': 'pass', 'backup': str(path), 'environment': config.environment}
         elif args.command == 'kill-switch':
-            from .ops import kill_switch
+            from .ops import dispatch_notifications, kill_switch
             config = load(args.config)
             if args.authorize_uid != config.account_uid:
                 raise Blocked('kill-switch requires matching --authorize-uid')
+            venue = connect(config, execute_orders=True)
             with State(config.state_dir, config.scope) as state:
-                report = kill_switch(state, connect(config, execute_orders=True), config,
-                                     confirm=args.confirm)
+                if hasattr(venue, 'bind_state'):
+                    venue.bind_state(state)
+                try:
+                    report = kill_switch(state, venue, config, confirm=args.confirm)
+                except (Blocked, Unknown) as exc:
+                    report = {
+                        'status': 'unknown' if isinstance(exc, Unknown) else 'blocked',
+                        'reason': str(exc),
+                        'environment': config.environment,
+                        'manual_takeover': isinstance(exc, Unknown),
+                        'native_execution_verified': False,
+                    }
+                    report['notifications'] = dispatch_notifications(
+                        Path(config.state_dir), report, exit_code=2)
         elif args.command == 'run' and args.execute:
             config = load(args.config)
             if config.environment != 'live' or config.capital_limit is None:

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from decimal import Decimal as D
 from pathlib import Path
+from unittest.mock import patch
 
 from spotquant.config import Config
 from spotquant.notify import (
@@ -514,3 +515,260 @@ class SourceShaWrapperTests(unittest.TestCase):
             forced = dict(base, SPOTQUANT_SOURCE_SHA='operator-sha')
             chosen = subprocess.run([str(wrapper), 'status'], check=True, capture_output=True, text=True, env=forced)
             self.assertEqual(chosen.stdout, 'operator-sha')
+
+
+class KillSwitchReviewTests(unittest.TestCase):
+    def _open(self, directory):
+        from test_execution import ExecutionTests
+        return ExecutionTests().entered(directory)
+
+    def test_a_stop_fill_during_cancel_resizes_the_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            owned = venue.btc
+            original = venue.cancel
+
+            def cancel(identity, **kwargs):
+                row = venue.query(kwargs['order_id'])
+                qty = D(row['quantity']) * D('0.4')
+                quote = qty * venue.price
+                venue.btc -= qty
+                venue.cash += quote * (D(1) - venue.fee)
+                row['executedQty'] = format(qty, 'f')
+                row['status'] = 'PARTIALLY_FILLED'
+                venue._fill(row, qty, quote)
+                return original(identity, **kwargs)
+
+            venue.cancel = cancel
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env={})
+            markets = [row for row in venue.orders.values()
+                       if row.get('type') == 'MARKET' and row.get('side') == 'SELL']
+            self.assertTrue(markets)
+            self.assertTrue(all(D(row['quantity']) < owned * D('0.7') for row in markets))
+            self.assertGreaterEqual(venue.btc, 0)
+            self.assertLess(abs(D(result['residual_btc']) - venue.btc), D('0.00005'))
+
+    def test_a_full_stop_fill_during_cancel_does_not_keep_the_old_sell(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            sent = list(venue.sent)
+
+            def cancel(identity, **kwargs):
+                row = venue.query(kwargs['order_id'])
+                qty = D(row['quantity'])
+                quote = qty * venue.price
+                venue.btc -= qty
+                venue.cash += quote * (D(1) - venue.fee)
+                row['executedQty'] = format(qty, 'f')
+                row['status'] = 'FILLED'
+                venue._fill(row, qty, quote)
+                return row
+
+            venue.cancel = cancel
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env={})
+            markets = [row for row in venue.orders.values()
+                       if row.get('type') == 'MARKET' and row.get('side') == 'SELL']
+            self.assertEqual(markets, [])
+            self.assertEqual(venue.sent, sent)
+            self.assertEqual(result['status'], 'pass', result)
+            self.assertLess(venue.btc * venue.price, D('5'))
+
+    def test_the_twelfth_partial_fill_is_booked_before_the_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            owned = venue.btc
+            venue.fraction = D('0.1')
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertLess(abs(D(result['residual_btc']) - venue.btc), D('0.00005'))
+            self.assertLess(abs(D(result['sold']) + D(result['residual_btc']) - owned), D('0.001'))
+            self.assertNotEqual(result['status'], 'pass')
+            self.assertTrue(result['manual_takeover'] or any(
+                row['status'] == 'NEW' and row['type'] == 'STOP_LOSS' for row in venue.orders.values()))
+
+    def test_not_sent_restores_protection_instead_of_looking_unknown(self):
+        from spotquant.types import NotSent
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            original = venue.submit
+            btc = venue.btc
+
+            def submit(identity, payload, preflight=None):
+                if payload.get('side') == 'SELL' and payload.get('type') == 'MARKET':
+                    raise NotSent('sell quantity fails native lot filters')
+                return original(identity, payload, preflight=preflight)
+
+            venue.submit = submit
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertNotEqual(result['status'], 'unknown')
+            self.assertNotIn('not confirmed', result.get('reason', ''))
+            self.assertEqual(venue.btc, btc)
+            self.assertTrue(any(row['status'] == 'NEW' and row['type'] == 'STOP_LOSS'
+                                for row in venue.orders.values()))
+            self.assertFalse(result['manual_takeover'])
+
+    def test_a_known_lot_filter_does_not_cancel_the_stop_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            original = venue.snapshot
+            stop_id = next(row['clientOrderId'] for row in venue.orders.values() if row['status'] == 'NEW')
+
+            def snapshot(uid):
+                row = original(uid)
+                row['market_max_qty'] = D(1)
+                return row
+
+            venue.snapshot = snapshot
+            sent = len(venue.sent)
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertEqual(len(venue.sent), sent)
+            self.assertEqual(venue.orders[stop_id]['status'], 'NEW')
+            self.assertIn('existing protection was kept', result['reason'])
+            self.assertNotEqual(result['status'], 'pass')
+
+    def test_a_short_or_partial_stop_still_requires_takeover_when_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            stop = next(row for row in venue.orders.values() if row['status'] == 'NEW')
+            stop['quantity'] = '0.1'
+            venue.cash += D(1)
+            with State(directory, config.scope) as state:
+                encoded = state.db.execute('SELECT payload FROM intents WHERE id=?',
+                                           (stop['clientOrderId'],)).fetchone()[0]
+                payload = json.loads(encoded)
+                payload['order']['quantity'] = '0.1'
+                state.db.execute('UPDATE intents SET payload=? WHERE id=?',
+                                 (json.dumps(payload), stop['clientOrderId']))
+                state.db.commit()
+                short = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertEqual(short['status'], 'unknown')
+            self.assertTrue(short['manual_takeover'])
+            self.assertEqual(stop['status'], 'NEW')
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            stop = next(row for row in venue.orders.values() if row['status'] == 'NEW')
+            filled = D(stop['quantity']) * D('0.2')
+            stop['status'] = 'PARTIALLY_FILLED'
+            stop['executedQty'] = format(filled, 'f')
+            venue.cash += D(1)
+            with State(directory, config.scope) as state:
+                partial = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertEqual(partial['status'], 'unknown')
+            self.assertTrue(partial['manual_takeover'])
+
+    def test_sold_ignores_an_older_cycle_and_an_unread_acknowledgement(self):
+        from spotquant.types import Unknown as OrderUnknown
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            original = venue.submit
+            original_query = venue.query
+            failed = {'n': 0}
+
+            def query(identity):
+                row = original_query(identity)
+                if (failed['n'] == 0 and isinstance(row, dict) and row.get('side') == 'SELL'
+                        and row.get('type') == 'MARKET'):
+                    failed['n'] += 1
+                    raise OrderUnknown('order query unavailable')
+                return row
+
+            def submit(identity, payload, preflight=None):
+                row = original(identity, payload, preflight=preflight)
+                venue.query = query
+                return row
+
+            venue.submit = submit
+            with State(directory, config.scope) as state:
+                first = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertEqual(first['status'], 'unknown')
+            self.assertIsNone(first['sold'])
+            self.assertEqual(D(first['unconfirmed_executed']), D(next(
+                row['executedQty'] for row in venue.orders.values()
+                if row.get('side') == 'SELL' and row.get('type') == 'MARKET')))
+            sent = len(venue.sent)
+            with State(directory, config.scope) as state:
+                second = kill_switch(state, venue, config, confirm=True, env={})
+                payload = json.dumps({'order': {
+                    'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': '9',
+                }, 'sleeves': [40], 'signal_ms': 1, 'weights': {'40': '9'}, 'repair': {'40': False},
+                    'rearm': {'40': False}})
+                result = json.dumps({'orderId': 50, 'executedQty': '9', 'status': 'FILLED',
+                                     'clientOrderId': 'sq-old-cycle'})
+                state.db.execute(
+                    'INSERT INTO intents VALUES (?,?,?,?,?,?)',
+                    ('sq-old-cycle', 'p4', payload, 'settled', result, 1))
+                state.db.commit()
+                third = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertEqual(len(venue.sent), sent)
+            self.assertEqual(third['sold'], second['sold'])
+            self.assertNotEqual(D(third['sold']), D(second['sold']) + D(9))
+
+    def test_cli_kill_switch_notifies_and_keeps_a_saved_backoff(self):
+        from spotquant.binance import Binance
+        from spotquant.cli import main
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('10001', directory, environment='demo', capital_limit_usdt='100')
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': '10001', 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '100',
+            }), encoding='utf-8')
+            with State(directory, config.scope) as state:
+                state.set('rate_limits', {'demo-api.binance.com': 1_100_000})
+            requests = []
+
+            def opener(method, url, headers):
+                requests.append(url)
+                return (429, b'', {'Retry-After': '120'})
+
+            def connect(loaded, execute_orders=False):
+                venue = Binance(key='k', secret='s', environment='demo', capital_limit=D('100'),
+                                demo_execution_uid='10001', clock=lambda: 1000, opener=opener)
+                venue._monotonic = lambda: 0
+                return venue
+
+            notes = []
+
+            def dispatch(directory, report, **kwargs):
+                notes.append(report['status'])
+                return {'sent': [], 'skipped': 0, 'errors': []}
+
+            with patch('spotquant.cli.connect', connect), \
+                    patch('spotquant.ops.dispatch_notifications', dispatch):
+                code = main(['kill-switch', '--config', str(path), '--authorize-uid', '10001', '--confirm'])
+            self.assertEqual(code, 2)
+            self.assertEqual(requests, [])
+            self.assertEqual(notes, ['unknown'])
+            with State(directory, config.scope) as state:
+                self.assertEqual(state.get('rate_limits'), {'demo-api.binance.com': 1_100_000})
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('10001', directory, environment='demo', capital_limit_usdt='100')
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': '10001', 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '100',
+            }), encoding='utf-8')
+            requests = []
+
+            def opener(method, url, headers):
+                requests.append(url)
+                return (429, b'', {'Retry-After': '120'})
+
+            def connect(loaded, execute_orders=False):
+                venue = Binance(key='k', secret='s', environment='demo', capital_limit=D('100'),
+                                demo_execution_uid='10001', clock=lambda: 1000, opener=opener)
+                venue._monotonic = lambda: 0
+                return venue
+
+            with patch('spotquant.cli.connect', connect), \
+                    patch('spotquant.ops.dispatch_notifications', lambda *args, **kwargs: {
+                        'sent': [], 'skipped': 0, 'errors': []}):
+                code = main(['kill-switch', '--config', str(path), '--authorize-uid', '10001', '--confirm'])
+            self.assertEqual(code, 2)
+            self.assertEqual(len(requests), 1)
+            with State(directory, config.scope) as state:
+                self.assertEqual(state.get('rate_limits'), {'demo-api.binance.com': 1_120_000})

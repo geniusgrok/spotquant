@@ -97,12 +97,12 @@ sudo systemctl enable --now spotquant-session@live.timer \
 取消本状态目录自己的挂单，并只卖出账本里记下的仓位：
 
 ```sh
-sudo -u spotquant env $(grep -v '^#' /etc/spotquant/live.env | xargs) \
+sudo -u spotquant env $(grep -v '^#' /etc/spotquant/live.env /etc/spotquant/notify.env | xargs) \
   /usr/local/bin/sq kill-switch \
   --config /etc/spotquant/live.json --authorize-uid 你的UID --confirm
 ```
 
-没有 `--confirm` 不会发单。账本之外的 BTC 不会被卖掉。卖单走原来的退出生命周期：意图、客户订单号和撤单号在发送前写入状态。报告里的成交数量只来自交易所回读；没卖完会留下残仓说明，并尽量把止损挂回去，不会把请求数量写成已成交。结果不是完成时会发告警。
+没有 `--confirm` 不会发单。账本之外的 BTC 不会被卖掉。卖单走原来的退出生命周期：意图、客户订单号和撤单号在发送前写入状态。报告里的 `sold` 只统计这一次退出里已经回读确认的市价成交，不含更早的周期，也不把尚未回读的回执当成成交。撤单期间如果止损先成交，退出数量按归账后的剩余再算。已知数量规则不合格时不先撤掉还有效的止损。没卖完会留下残仓说明；本地有一条止损记录但盖不住仓位时，仍要求人工接管。结果不是完成时会发告警。手动执行同样先接上状态目录里的限频退避。
 
 数据库备份在每天 UTC 01:05，排在 00:45 的会话结束之后，用 SQLite 在线备份，保留最近 14 份，目录是 `/var/backups/spotquant/demo` 或 `live`。
 
