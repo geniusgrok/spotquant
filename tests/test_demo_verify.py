@@ -798,6 +798,54 @@ class FeeAndStopTests(unittest.TestCase):
             self.assertEqual(finished['status'], 'pass')
             self.assertTrue(finished['real_cycle'])
 
+    def test_parent_latest_json_keeps_the_finished_run_and_the_child_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('10001', directory, environment='demo', capital_limit_usdt='100',
+                            stop_price_percent_band=True)
+            path = Path(directory) / 'demo.json'
+            path.write_text(json.dumps({
+                'account_uid': '10001', 'state_dir': directory, 'session_seconds': 300,
+                'poll_seconds': 5, 'environment': 'demo', 'capital_limit_usdt': '100',
+                'stop_price_percent_band': True,
+            }), encoding='utf-8')
+
+            class Child:
+                def __init__(self, argv, **_kwargs):
+                    self.pid = 2**22 + 17
+                    self.returncode = None
+                    saved = json.loads(Path(argv[argv.index('--config') + 1]).read_text())
+                    state = Path(saved['state_dir'])
+                    state.mkdir(parents=True, exist_ok=True)
+                    (state / 'latest.json').write_text(json.dumps({
+                        'status': 'demo_execution', 'cycles': 1, 'observation_current': True,
+                        'model_bull': {'40': False}, 'stop_reason': 'interrupted',
+                        'closeout_attempted': True, 'child_marker': 'keep-me',
+                    }), encoding='utf-8')
+
+                def poll(self):
+                    return None
+
+                def wait(self, timeout=None):
+                    self.returncode = 0
+                    return 0
+
+            with unittest.mock.patch('spotquant.demo_verify.os.killpg'):
+                report = execute_verification(
+                    config, _venue(SpotScript()), execute=True, scenarios=['graceful-stop'],
+                    config_path=path, popen=Child, sleep=lambda _seconds: None, graceful_timeout=5)
+            self.assertEqual(report['status'], 'pass', report)
+            self.assertTrue(report['stop_price_percent_band'])
+            self.assertEqual(report['scenarios'][0]['scenario'], 'graceful-stop')
+            self.assertTrue(report['scenarios'][0]['real_cycle'])
+            parent = json.loads((Path(directory) / 'latest.json').read_text())
+            self.assertEqual(parent['status'], 'pass')
+            self.assertTrue(parent['stop_price_percent_band'])
+            self.assertEqual([row['scenario'] for row in parent['scenarios']], ['graceful-stop'])
+            child = json.loads((Path(directory) / 'graceful-session' / 'latest.json').read_text())
+            self.assertEqual(child['child_marker'], 'keep-me')
+            self.assertNotIn('planned_scenarios', child)
+            self.assertNotIn('graceful-stop', json.dumps(child))
+
 
 if __name__ == '__main__':
     unittest.main()

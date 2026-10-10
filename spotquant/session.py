@@ -163,6 +163,7 @@ def _cycle(venue, state: State, config, *, lifecycle=None, crowding_source=None,
         'followed_sleeves': [window for window, item in positions.items() if item is not None],
         'observation_current': True,
         'recorded_limits': dict(RECORDED_LIMITS),
+        'stop_price_percent_band': config.stop_price_percent_band is True,
         'write_attempted': False,
     }
 
@@ -241,6 +242,7 @@ def run(config, venue, *, execute=False, monotonic=time.monotonic, wait=time.sle
         'session_ended': False,
         'stops_while_down': 'this process does not amend a stop while it is stopped',
         'recorded_limits': dict(RECORDED_LIMITS),
+        'stop_price_percent_band': config.stop_price_percent_band is True,
     }
     venue._monotonic = monotonic
     venue._risk_deadline_at = deadline

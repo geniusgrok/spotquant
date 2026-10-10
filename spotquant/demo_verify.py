@@ -1336,6 +1336,7 @@ def execute_verification(config, venue, *, execute, faults=False, scenarios=None
         'scenarios': [],
         'planned_scenarios': list(names),
         'demo_bnb_discount_allowance': fee_preflight['demo_bnb_discount_allowance'],
+        'stop_price_percent_band': config.stop_price_percent_band is True,
     }
     deferred = [name for name in names if name in ('graceful-stop', 'kill-restart')]
     token = None
@@ -1406,7 +1407,8 @@ def execute_verification(config, venue, *, execute, faults=False, scenarios=None
         report['scenarios'].append(serial(record))
     report['status'] = _rollup(report['scenarios'])
     report['reason'] = _reason(report['status'], report['scenarios'])
-    if 'graceful-stop' not in names:
-        with State(config.state_dir, config.scope) as state:
-            state.report(serial(report))
+    # The graceful child writes <state_dir>/graceful-session/latest.json itself.
+    # This file is the verification directory's finished scenario list.
+    with State(config.state_dir, config.scope) as state:
+        state.report(serial(report))
     return write_verification(out_dir, report, venue)

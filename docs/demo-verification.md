@@ -142,7 +142,7 @@ Binance 文档把 `PERCENT_PRICE_BY_SIDE` 说成订单 `price` 的限制，没�
 
 账户里还有可交易的 BTC 或未完成订单时，这一步立刻失败，原因是新的执行状态不能接管已有持仓。它不会为了等一个不会出现的成功轮次而空转。先把验证探针卖平，再跑这一步。
 
-父进程在账户已平时，等到子进程的 `latest.json` 出现一轮成功观察（`cycles >= 1`、`observation_current` 为 true、并且有 `model_bull`）再发送 SIGINT。子进程会话时长至少 900 秒，父进程最多等约 900 秒。日线补齐可能要几分钟。成功时 `stop_reason` 为 `interrupted` 或 `requested`，`closeout_attempted` 为 true，记录里 `real_cycle` 为 true。收尾期间不再开新的买单。这个场景本身不负责把验证探针的仓位卖光；完整顺序里，卖出场景排在它前面。探针止损如果放不进去，对应场景会把自己买来的 BTC 卖回。
+父进程在账户已平时，等到子进程的 `graceful-session/latest.json` 出现一轮成功观察（`cycles >= 1`、`observation_current` 为 true、并且有 `model_bull`）再发送 SIGINT。验证目录自己的 `latest.json` 在全部场景结束后写成最终结论，包含 `graceful-stop` 和 `kill-restart`；它不会覆盖子目录里的会话报告。子进程会话时长至少 900 秒，父进程最多等约 900 秒。日线补齐可能要几分钟。成功时 `stop_reason` 为 `interrupted` 或 `requested`，`closeout_attempted` 为 true，记录里 `real_cycle` 为 true。收尾期间不再开新的买单。这个场景本身不负责把验证探针的仓位卖光；完整顺序里，卖出场景排在它前面。探针止损如果放不进去，对应场景会把自己买来的 BTC 卖回。
 
 请在前台或 tmux 里看这一步。`nohup ... &` 不会把 SIGINT 送到进程。
 
