@@ -584,9 +584,9 @@ class KillSwitchReviewTests(unittest.TestCase):
                 result = kill_switch(state, venue, config, confirm=True, env={})
             self.assertLess(abs(D(result['residual_btc']) - venue.btc), D('0.00005'))
             self.assertLess(abs(D(result['sold']) + D(result['residual_btc']) - owned), D('0.001'))
-            self.assertNotEqual(result['status'], 'pass')
-            self.assertTrue(result['manual_takeover'] or any(
-                row['status'] == 'NEW' and row['type'] == 'STOP_LOSS' for row in venue.orders.values()))
+            self.assertEqual(result['status'], 'unknown')
+            self.assertTrue(result['manual_takeover'])
+            self.assertIn('notifications', result)
 
     def test_not_sent_restores_protection_instead_of_looking_unknown(self):
         from spotquant.types import NotSent
@@ -706,6 +706,84 @@ class KillSwitchReviewTests(unittest.TestCase):
             self.assertEqual(len(venue.sent), sent)
             self.assertEqual(third['sold'], second['sold'])
             self.assertNotEqual(D(third['sold']), D(second['sold']) + D(9))
+
+    def test_halt_is_written_before_cancel_and_a_session_does_not_buy(self):
+        from test_execution import SimulatedCrash, add_day, run_day, venue_before_entry
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            armed = {}
+            original = venue.cancel
+
+            def cancel(identity, **kwargs):
+                armed['before'] = (Path(directory) / 'HALT').is_file()
+                raise SimulatedCrash
+
+            venue.cancel = cancel
+            with State(directory, config.scope) as state:
+                with self.assertRaises(SimulatedCrash):
+                    kill_switch(state, venue, config, confirm=True, env={})
+            self.assertTrue(armed['before'])
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+            buys = len([row for row in venue.orders.values() if row.get('side') == 'BUY'])
+            venue.cancel = original
+            run_day(config, venue)
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+            self.assertEqual(len([row for row in venue.orders.values() if row.get('side') == 'BUY']), buys)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '101')
+            (Path(directory) / 'HALT').write_text('', encoding='utf-8')
+            sent = len(venue.sent)
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len(venue.sent), sent)
+            (Path(directory) / 'HALT').unlink()
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertGreater(len(venue.sent), sent)
+            self.assertTrue(any(row.get('side') == 'BUY' for row in venue.orders.values()))
+
+    def test_removing_halt_does_not_buy_the_stale_touch_signal(self):
+        from test_execution import SimulatedCrash, add_day, run_day
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            venue.price = D('100.4')
+            original = venue.cancel
+
+            def crash(identity, **kwargs):
+                original(identity, **kwargs)
+                raise SimulatedCrash
+
+            venue.cancel = crash
+            with self.assertRaises(SimulatedCrash):
+                run_day(config, venue)
+            venue.cancel = original
+            venue.price = D('102')
+            calls = []
+
+            def smtp(*args, **kwargs):
+                client = FakeMail(*args, **kwargs)
+                calls.append(client)
+                return client
+
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env=_smtp_env(), smtp_ssl=smtp)
+            self.assertTrue(result['halt'])
+            self.assertIn('halt file', result['buy_halt'])
+            self.assertTrue(any('halt file' in (client.message.get_content() if hasattr(client.message, 'get_content') else '')
+                                or '回撤停买' in str(client.message['Subject']) for client in calls))
+            with State(directory, config.scope) as state:
+                for payload, in state.db.execute("SELECT payload FROM intents"):
+                    body = json.loads(payload)
+                    if (body.get('order') or {}).get('side') == 'SELL' and (body.get('order') or {}).get('type') == 'MARKET':
+                        self.assertFalse(any((body.get('rearm') or {}).values()))
+            buys = len([row for row in venue.orders.values() if row.get('side') == 'BUY'])
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row.get('side') == 'BUY']), buys)
+            (Path(directory) / 'HALT').unlink()
+            add_day(venue, '103')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row.get('side') == 'BUY']), buys)
 
     def test_cli_kill_switch_notifies_and_keeps_a_saved_backoff(self):
         from spotquant.binance import Binance

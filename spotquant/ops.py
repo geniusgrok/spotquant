@@ -33,6 +33,16 @@ def halt_path(state) -> Path:
     return Path(state.directory) / HALT_FILENAME
 
 
+def _arm_halt(state) -> None:
+    """Create the halt file atomically. A crash cannot leave a partial name."""
+    path = halt_path(state)
+    if path.is_file():
+        return
+    temporary = path.with_name('.HALT.tmp')
+    temporary.write_text('', encoding='utf-8')
+    os.replace(temporary, path)
+
+
 def account_equity(snapshot: dict):
     if snapshot.get('last_price') is None or snapshot.get('btc') is None or snapshot.get('usdt_free') is None:
         return None
@@ -207,6 +217,20 @@ def _unresolved_sell(lifecycle) -> bool:
     return any(row[2] in ('unknown', 'resting', 'canceling') for row in _market_sells(lifecycle))
 
 
+def _drop_stale_rearm(lifecycle) -> None:
+    """A kill-switch exit does not keep a touch re-entry.
+
+    HALT is what pauses new buys. After that file is removed, the next buy
+    still needs a fresh cross; the prepared touch permission is not reused.
+    """
+    for row in list(_market_sells(lifecycle)):
+        rearm = row[1].get('rearm') or {}
+        if not any(rearm.values()):
+            continue
+        payload = dict(row[1], rearm={key: False for key in rearm})
+        lifecycle.save(row[0], payload, row[2], row[3])
+
+
 def _account_exit(state, venue, lifecycle, config) -> None:
     """Apply confirmed sells with the same book path a session uses."""
     from .model import SLEEVES, Model
@@ -281,6 +305,7 @@ def _finish_kill(state, config, lifecycle, *, status: str, reason: str | None, c
                  smtp_plain=None, urlopen=None, now: float | None = None) -> dict:
     qty, dust = _recorded_qty(state)
     sold, unconfirmed = _confirmed_sold(lifecycle, bar)
+    halted = halt_path(state).is_file()
     report = {
         'status': status,
         'environment': config.environment,
@@ -289,14 +314,17 @@ def _finish_kill(state, config, lifecycle, *, status: str, reason: str | None, c
         'residual_btc': format(qty, 'f'),
         'dust': dust or (qty > 0 and status == 'pass'),
         'manual_takeover': manual_takeover,
+        'halt': halted,
         'unexplained_btc': format(extra, 'f'),
         'native_execution_verified': False,
     }
+    if halted:
+        report['buy_halt'] = 'halt file is present; new buys are stopped'
     if unconfirmed is not None:
         report['unconfirmed_executed'] = unconfirmed
     if reason:
         report['reason'] = reason
-    if status != 'pass':
+    if status != 'pass' or halted:
         report['notifications'] = dispatch_notifications(
             Path(state.directory), report, exit_code=2, now=now, env=env,
             smtp_ssl=smtp_ssl, smtp_plain=smtp_plain, urlopen=urlopen)
@@ -360,6 +388,7 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
         if _unresolved_sell(lifecycle):
             return finish('unknown', 'sell is not confirmed; the original identity is not sent again',
                           takeover=True)
+        _drop_stale_rearm(lifecycle)
         try:
             _account_exit(state, venue, lifecycle, config)
         except Unknown as exc:
@@ -385,18 +414,19 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
                 'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET',
                 'quantity': format(free, 'f'), 'sleeves': [40],
             }
-            # A still-prepared touch exit is reused, including its rearm flag.
-            # Whether this command should keep that re-entry is an owner decision.
             identity = lifecycle.prepare(order, bar, state.get('positions') or {}, follows)
             prepared = [row for row in lifecycle.rows() if row[0] == identity]
         if prepared[0][2] != 'prepared':
             continue
+        _drop_stale_rearm(lifecycle)
+        prepared = [row for row in lifecycle.rows() if row[0] == prepared[0][0]]
         sell_qty = prepared[0][1]['order']['quantity']
         if not _qty_ok(sell_qty, fresh):
             return finish('partial' if _stop_resting(lifecycle) else 'unknown',
                           'sell quantity fails native lot filters; existing protection was kept',
                           takeover=_coverage_takeover(state, venue, config, lifecycle))
         try:
+            _arm_halt(state)
             for stop_id, payload, status, _ in list(lifecycle.rows()):
                 if status == 'resting' and (payload.get('order') or {}).get('type') == 'STOP_LOSS':
                     lifecycle.cancel(stop_id)
@@ -438,6 +468,7 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
         unresolved = unresolved or 'kill-switch stopped before the recorded position was flat'
     try:
         lifecycle.recover()
+        _drop_stale_rearm(lifecycle)
         _account_exit(state, venue, lifecycle, config)
     except Unknown as exc:
         return finish('unknown', str(exc), takeover=True)
@@ -448,12 +479,13 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
                       takeover=True)
     if unresolved or _tradable(qty, fresh, dust=dust):
         protected = _stop_resting(lifecycle) or _restore_protection(lifecycle, state, venue, config, bar)
-        takeover = _coverage_takeover(state, venue, config, lifecycle)
-        status = 'partial' if protected and not takeover else 'unknown'
+        status = 'unknown'
         reason = unresolved or 'recorded position remains after kill-switch'
         if not protected:
             reason += '; residual position is unprotected'
-        return finish(status, reason, takeover=takeover or not protected)
+        else:
+            reason += '; the twelve-action limit left a position that still needs the owner'
+        return finish(status, reason, takeover=True)
     try:
         lifecycle.verify(fresh)
     except Unknown as exc:

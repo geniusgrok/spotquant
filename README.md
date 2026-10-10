@@ -69,7 +69,7 @@ python3 -m spotquant demo-check --config demo.json --execute --authorize-uid <DE
 
 ## 定时会话、告警和停买
 
-无人值守的安装和定时器见 [deploy/README.md](deploy/README.md)。每天 UTC 00:45（北京时间 08:45）跑一次 300 秒会话，UTC 01:05 做 SQLite 在线备份。邮件使用 QQ SMTP（`smtp.qq.com`，端口 465 为隐式 TLS；587 为 STARTTLS）。心跳主题以 `[spotquant][心跳]` 开头，告警以 `[spotquant][告警]` 开头。状态目录里的 `HALT`，以及写了的 `max_drawdown_halt_pct`，都只停止新买。`kill-switch --confirm` 只撤本状态目录的订单，并卖出账本里记下的数量；成交要等交易所回读确认，残仓不会被写成已经卖光。实盘定时器还要有 `/etc/spotquant/LIVE_ENABLED`。这些不改变 `TRAIL`（仍是 0.28）。
+无人值守的安装和定时器见 [deploy/README.md](deploy/README.md)。每天 UTC 00:45（北京时间 08:45）跑一次 300 秒会话，UTC 01:05 做 SQLite 在线备份。邮件使用 QQ SMTP（`smtp.qq.com`，端口 465 为隐式 TLS；587 为 STARTTLS）。心跳主题以 `[spotquant][心跳]` 开头，告警以 `[spotquant][告警]` 开头。状态目录里的 `HALT`，以及写了的 `max_drawdown_halt_pct`，都只停止新买。`kill-switch --confirm` 在撤单或卖出之前，先把状态目录里的 `HALT` 原子写好。它只撤本状态目录的订单，并卖出账本里记下的数量；`sold` 只计已经回读确认的这一次市价成交。残仓会写明，未平完则告警并要求人工接管。退出最多做 12 次动作，没有另外的墙钟时限。删掉 `HALT` 之后会话恢复按策略运行，下一次买入仍要新的穿越，不会沿用急停前已经准备好的 touch 再入。实盘定时器还要有 `/etc/spotquant/LIVE_ENABLED`。这些不改变 `TRAIL`（仍是 0.28）。
 
 ## 执行与保护（Demo / 主网共用）
 
