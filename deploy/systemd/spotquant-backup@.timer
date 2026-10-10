@@ -1,8 +1,8 @@
 [Unit]
-Description=Daily Spotquant %i database backup after the UTC-open session
+Description=Daily Spotquant %i database backup after the 00:45 UTC session
 
 [Timer]
-OnCalendar=*-*-* 00:20:00 UTC
+OnCalendar=*-*-* 01:05:00 UTC
 Persistent=true
 AccuracySec=5min
 Unit=spotquant-backup@%i.service

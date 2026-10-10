@@ -1,12 +1,13 @@
 [Unit]
-Description=Spotquant %i daily session just after the UTC open
+Description=Spotquant %i daily session at 00:45 UTC (08:45 Beijing)
 # The published backtest schedule is an irregular historical sample of on-the-hour
 # UTC starts (about one 300s session on most sampled days, poll 5s), not a clock
-# to replay. Production runs that same 300s session once a day after the UTC open,
-# which is when the new daily bar is available.
+# to replay. Production runs that same 300s session once a day at 00:45 UTC,
+# 08:45 in Beijing, after the UTC daily open is available. Demo and live share
+# this template.
 
 [Timer]
-OnCalendar=*-*-* 00:05:00 UTC
+OnCalendar=*-*-* 00:45:00 UTC
 Persistent=true
 AccuracySec=1min
 Unit=spotquant-session@%i.service

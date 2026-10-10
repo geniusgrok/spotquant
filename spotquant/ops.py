@@ -24,6 +24,8 @@ HALT_FILENAME = 'HALT'
 HEARTBEAT_FILENAME = 'heartbeat.json'
 DEDUPE_FILENAME = 'alert-dedupe.json'
 BACKUP_KEEP = 14
+# The daily session is 00:45 UTC. A heartbeat from that run is late 26 hours
+# later, so the hourly checker alerts from about 02:45 UTC the next day.
 HEARTBEAT_MAX_AGE_SECONDS = 26 * 3600
 BASE_STEP = D('0.00001')
 MIN_NOTIONAL = D('5')

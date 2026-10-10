@@ -1,5 +1,5 @@
 [Unit]
-Description=Hourly check that the Spotquant %i heartbeat is still fresh
+Description=Hourly check that the Spotquant %i 00:45 UTC heartbeat is under 26 hours old
 
 [Timer]
 OnCalendar=hourly

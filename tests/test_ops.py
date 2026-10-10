@@ -12,8 +12,8 @@ from spotquant.notify import (
     missed_run_alert, remember_sent, smtp_settings, subject_for, unsent,
 )
 from spotquant.ops import (
-    account_equity, backup_database, buy_halt_reason, check_missed_run, execute_ops,
-    halt_path, kill_switch, note_equity,
+    HEARTBEAT_MAX_AGE_SECONDS, account_equity, backup_database, buy_halt_reason,
+    check_missed_run, execute_ops, halt_path, kill_switch, note_equity,
 )
 from spotquant.state import State
 from spotquant.types import Blocked
@@ -180,6 +180,21 @@ class BreakerTests(unittest.TestCase):
             backup_database(db, dest, keep=2, now=1_700_000_100)
             backup_database(db, dest, keep=2, now=1_700_000_200)
             self.assertEqual(len(list(dest.glob('intents-*.sqlite'))), 2)
+
+    def test_demo_and_live_sessions_start_at_0045_utc(self):
+        root = Path(__file__).resolve().parents[1]
+        session = (root / 'deploy/systemd/spotquant-session@.timer').read_text(encoding='utf-8')
+        self.assertIn('OnCalendar=*-*-* 00:45:00 UTC', session)
+        self.assertNotIn('00:05:00', session)
+        self.assertIn('spotquant-session@%i.service', session)
+        backup = (root / 'deploy/systemd/spotquant-backup@.timer').read_text(encoding='utf-8')
+        self.assertIn('OnCalendar=*-*-* 01:05:00 UTC', backup)
+        # 26 hours after 00:45 still includes the next day's start, then the
+        # hourly check alerts once the clock passes 02:45 UTC.
+        self.assertEqual(HEARTBEAT_MAX_AGE_SECONDS, 26 * 3600)
+        self.assertIsNone(missed_run_alert({'at': 0}, 26 * 3600, HEARTBEAT_MAX_AGE_SECONDS))
+        self.assertEqual(missed_run_alert({'at': 0}, 26 * 3600 + 1, HEARTBEAT_MAX_AGE_SECONDS)['key'],
+                         'missed-run')
 
 
 class KillSwitchTests(unittest.TestCase):
