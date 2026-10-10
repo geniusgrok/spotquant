@@ -63,6 +63,8 @@ python3 -m spotquant demo-check --config demo.json --execute --authorize-uid <DE
 
 填写专用 Demo UID、固定状态目录和正值资金上限。执行需显式 `--execute`，且 `--authorize-uid` 与配置一致。冷启动等待新鲜穿越，不强造入场；SELL 优先于新 BUY，不预支预计卖出所得。
 
+真实下单路径的分场景核对和对账见 [docs/demo-verification.md](docs/demo-verification.md)。`demo-verify` 与 `demo-reconcile` 只发往 Demo 主机。Demo 的成交和深度是模拟的，不能用来把回测摘要里的 `native_execution_verified` 改成通过。
+
 ## 执行与保护（Demo / 主网共用）
 
 发送前保存客户端订单身份和分配信息；接受回包后先保存交易所 `orderId`，再查询确认，实际成交按回读归属。回读的身份、方向、参数和累计成交量必须一致，原生订单 ID 不能被另一意图认领，累计成交量不能倒退。成交均价按毛数量累计，持仓数量保留扣费后的余额。同一 BUY 后续较高价成交同步提高持仓及修复高点。已接受止损的价格下限绑定其实际持仓，不能带到后来新买的仓位。未知委托、成交或余额变化阻止新增风险。查询返回 `-2013` 或未完成订单中没有该身份，均不能证明先前发送失败；交易所查询有异步延迟，同一客户端身份在前一张单成交后可以再次被接受。只有传输前的 `NotSent` 证据才允许原身份继续发送；超时、内部错误和重复身份拒绝仍查原单。

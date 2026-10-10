@@ -355,6 +355,47 @@ class Binance:
         found.sort(key=lambda item: (item['time'], item['id']))
         return found
 
+    def all_orders(self, since_ms: int) -> list[dict]:
+        """BTCUSDT order history at or after ``since_ms``.
+
+        A page that starts before the cursor or does not advance is unknown.
+        """
+        if type(since_ms) is not int:
+            raise Blocked('order cursor must be an integer millisecond timestamp')
+        params = {'symbol': 'BTCUSDT', 'startTime': str(since_ms), 'limit': '1000'}
+        found = []
+        seen = {}
+        while True:
+            payload = self._get('/api/v3/allOrders', params, signed=True)
+            if not isinstance(payload, list):
+                raise Unknown('order history response is not a list')
+            if not payload:
+                break
+            page = []
+            for row in payload:
+                order = normalize_order(row)
+                if params.get('orderId') is not None and order['orderId'] < int(params['orderId']):
+                    raise Unknown('order page precedes the requested id')
+                page.append(order)
+            ids = [order['orderId'] for order in page]
+            for order in page:
+                prior = seen.get(order['orderId'])
+                if prior is not None and prior != order:
+                    raise Unknown('duplicate order id has conflicting contents')
+                if order['time'] >= since_ms and order['orderId'] not in seen:
+                    seen[order['orderId']] = order
+                    found.append(order)
+                elif order['orderId'] not in seen:
+                    seen[order['orderId']] = order
+            if len(payload) < 1000:
+                break
+            nxt = max(ids) + 1
+            if params.get('orderId') is not None and nxt <= int(params['orderId']):
+                raise Unknown('order page does not advance')
+            params = {'symbol': 'BTCUSDT', 'orderId': str(nxt), 'limit': '1000'}
+        found.sort(key=lambda item: (item['time'], item['orderId']))
+        return found
+
     def completed_daily(self, after_open_ms: int | None) -> list[tuple[int, D, D, D, D]]:
         """Completed UTC daily bars strictly after ``after_open_ms`` (or from the origin).
 
@@ -574,6 +615,63 @@ def _header(headers, name: str):
         if str(key).lower() == name.lower():
             return value
     return None
+
+
+def normalize_order(row: dict) -> dict:
+    """One allOrders or order-query row, with numeric fields checked."""
+    if not isinstance(row, dict):
+        raise Unknown('order history row is incomplete')
+    if row.get('symbol', 'BTCUSDT') != 'BTCUSDT':
+        raise Unknown('order history symbol differs from BTCUSDT')
+    try:
+        order_id = row['orderId']
+        if type(order_id) is not int or order_id <= 0:
+            raise Unknown('order history identity is invalid')
+        side = row['side']
+        order_type = row['type']
+        status = row['status']
+        client = row['clientOrderId']
+        original = number(row['origQty'], 'origQty', nonnegative=True)
+        executed = number(row['executedQty'], 'executedQty', nonnegative=True)
+        stamp = row['time']
+        if type(stamp) is not int or stamp < 0:
+            raise Unknown('order history time is invalid')
+    except (KeyError, TypeError, ValueError, Blocked) as exc:
+        raise Unknown('order history row is incomplete') from exc
+    if (side not in ('BUY', 'SELL') or not isinstance(order_type, str) or not order_type
+            or not isinstance(status, str) or not status or not isinstance(client, str) or not client):
+        raise Unknown('order history row is incomplete')
+    if original > 0 and executed > original:
+        raise Unknown('order history executed quantity exceeds the original')
+    original_client = row.get('origClientOrderId')
+    if not isinstance(original_client, str) or not original_client:
+        original_client = client
+    parsed = {
+        'orderId': order_id,
+        'clientOrderId': client,
+        'origClientOrderId': original_client,
+        'symbol': 'BTCUSDT',
+        'side': side,
+        'type': order_type,
+        'status': status,
+        'origQty': format(original, 'f'),
+        'executedQty': format(executed, 'f'),
+        'time': stamp,
+        'updateTime': row['updateTime'] if type(row.get('updateTime')) is int else None,
+        'cummulativeQuoteQty': None,
+        'origQuoteOrderQty': None,
+        'stopPrice': None,
+    }
+    if row.get('cummulativeQuoteQty') not in (None, ''):
+        parsed['cummulativeQuoteQty'] = format(
+            number(row['cummulativeQuoteQty'], 'cummulativeQuoteQty', nonnegative=True), 'f')
+    if row.get('origQuoteOrderQty') not in (None, ''):
+        parsed['origQuoteOrderQty'] = format(
+            number(row['origQuoteOrderQty'], 'origQuoteOrderQty', nonnegative=True), 'f')
+    if row.get('stopPrice') not in (None, ''):
+        stop = number(row['stopPrice'], 'stopPrice', nonnegative=True)
+        parsed['stopPrice'] = None if stop == 0 else format(stop, 'f')
+    return parsed
 
 
 def _order(row: dict) -> dict:
