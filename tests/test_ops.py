@@ -1118,3 +1118,245 @@ class KillSwitchReviewTests(unittest.TestCase):
                 main(['--help'])
         self.assertEqual(caught.exception.code, 0)
         self.assertIn('kill-switch always writes HALT first', top.getvalue())
+        self.assertIn('不带 `--confirm`', combined)
+        self.assertIn('不会把上一笔退出', combined)
+
+    def test_a_flat_exit_identity_is_not_reused_for_a_new_position(self):
+        from test_execution import add_day, run_day, venue_before_entry
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            venue.fee = D('0.00111')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '101')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '102')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            venue.price = D('100.4')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(venue.btc, 0)
+            with State(directory, config.scope) as state:
+                touch = None
+                for (payload,) in state.db.execute("SELECT payload FROM intents WHERE status='settled'"):
+                    body = json.loads(payload)
+                    order = body.get('order') or {}
+                    if order.get('side') == 'SELL' and order.get('type') == 'MARKET':
+                        touch = body
+                self.assertIsNotNone(touch)
+                self.assertTrue(touch['rearm']['40'])
+                signal = touch['signal_ms']
+                flat = kill_switch(state, venue, config, confirm=True, env={})
+                kept = None
+                for (payload,) in state.db.execute('SELECT payload FROM intents'):
+                    body = json.loads(payload)
+                    order = body.get('order') or {}
+                    if order.get('side') == 'SELL' and order.get('type') == 'MARKET' and body.get('signal_ms') == signal:
+                        kept = body
+                self.assertIsNone(state.get('kill_exit'))
+            self.assertEqual(flat['status'], 'pass', flat)
+            self.assertIsNone(flat['sold'])
+            self.assertTrue(kept['rearm']['40'])
+            (Path(directory) / 'HALT').unlink()
+            add_day(venue, '90')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '101')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertGreater(venue.btc, D('9'))
+            with State(directory, config.scope) as state:
+                position = state.get('positions')['40']
+                self.assertNotEqual(position['first_ms'], signal)
+                sent = len(venue.sent)
+                result = kill_switch(state, venue, config, confirm=True, env={})
+                kept = None
+                for (payload,) in state.db.execute('SELECT payload FROM intents'):
+                    body = json.loads(payload)
+                    order = body.get('order') or {}
+                    if order.get('side') == 'SELL' and order.get('type') == 'MARKET' and body.get('signal_ms') == signal:
+                        kept = body
+                saved_signal = (state.get('kill_exit') or {}).get('signal_ms')
+            self.assertEqual(result['status'], 'pass', result)
+            self.assertGreater(len(venue.sent), sent)
+            self.assertLess(venue.btc * venue.price, D('5'))
+            self.assertLess(D(result['sold']), D('10'))
+            self.assertGreater(D(result['sold']), D('9'))
+            self.assertTrue(kept['rearm']['40'])
+            self.assertNotEqual(saved_signal, signal)
+
+    def test_taking_over_a_touch_consumes_its_permission_before_recover(self):
+        from test_execution import SimulatedCrash, add_day, run_day, venue_before_entry
+        from spotquant.types import Unknown as OrderUnknown
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '101')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '102')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            venue.price = D('100.4')
+            original = venue.submit
+
+            def submit(identity, payload, preflight=None):
+                row = original(identity, payload, preflight=preflight)
+                if payload.get('side') == 'SELL' and payload.get('type') == 'MARKET':
+                    raise SimulatedCrash
+                return row
+
+            venue.submit = submit
+            with self.assertRaises(SimulatedCrash):
+                run_day(config, venue)
+            venue.submit = original
+            with State(directory, config.scope) as state:
+                def query(identity):
+                    raise OrderUnknown('order query unavailable')
+
+                saved_query = venue.query
+                venue.query = query
+                failed = kill_switch(state, venue, config, confirm=True, env={})
+                body = json.loads(state.db.execute(
+                    "SELECT payload FROM intents WHERE status='unknown'").fetchone()[0])
+                saved = state.get('kill_exit')
+            self.assertEqual(failed['status'], 'unknown', failed)
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+            self.assertFalse(body['rearm']['40'])
+            self.assertEqual(saved['signal_ms'], body['signal_ms'])
+            self.assertIsNotNone(saved['position_first_ms'])
+            venue.query = saved_query
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            (Path(directory) / 'HALT').unlink()
+            buys = len([row for row in venue.orders.values() if row.get('side') == 'BUY'])
+            venue.price = D('102')
+            add_day(venue, '103')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row.get('side') == 'BUY']), buys)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '101')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '102')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            venue.price = D('100.4')
+            original = venue.submit
+
+            def submit(identity, payload, preflight=None):
+                row = original(identity, payload, preflight=preflight)
+                if payload.get('side') == 'SELL' and payload.get('type') == 'MARKET':
+                    raise SimulatedCrash
+                return row
+
+            venue.submit = submit
+            with self.assertRaises(SimulatedCrash):
+                run_day(config, venue)
+            venue.submit = original
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env={})
+                payload = None
+                for (encoded,) in state.db.execute("SELECT payload FROM intents WHERE status='settled'"):
+                    body = json.loads(encoded)
+                    order = body.get('order') or {}
+                    if order.get('side') == 'SELL' and order.get('type') == 'MARKET':
+                        payload = body
+            self.assertEqual(result['status'], 'pass', result)
+            self.assertIsNotNone(result['sold'])
+            self.assertGreater(D(result['sold']), 1)
+            self.assertIsNotNone(payload)
+            self.assertFalse(payload['rearm']['40'])
+            (Path(directory) / 'HALT').unlink()
+            buys = len([row for row in venue.orders.values() if row.get('side') == 'BUY'])
+            venue.price = D('102')
+            add_day(venue, '103')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row.get('side') == 'BUY']), buys)
+
+    def test_an_already_booked_touch_needs_a_fresh_cross_after_halt(self):
+        from test_execution import add_day, run_day, venue_before_entry
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '101')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '102')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            venue.price = D('100.4')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            with State(directory, config.scope) as state:
+                touch = None
+                for (payload,) in state.db.execute('SELECT payload FROM intents'):
+                    body = json.loads(payload)
+                    order = body.get('order') or {}
+                    if order.get('side') == 'SELL' and order.get('type') == 'MARKET':
+                        touch = body
+                self.assertIsNotNone(touch)
+                self.assertTrue(touch['rearm']['40'])
+                result = kill_switch(state, venue, config, confirm=True, env={})
+                kept = None
+                for (payload,) in state.db.execute('SELECT payload FROM intents'):
+                    body = json.loads(payload)
+                    order = body.get('order') or {}
+                    if (order.get('side') == 'SELL' and order.get('type') == 'MARKET'
+                            and body.get('signal_ms') == touch['signal_ms']):
+                        kept = body
+                model = state.get('models')['40']['body']
+            self.assertEqual(result['status'], 'pass', result)
+            self.assertTrue(kept['rearm']['40'])
+            self.assertEqual(model['shadow_blocked'], model['last'])
+            self.assertTrue(model['need_reset'])
+            (Path(directory) / 'HALT').unlink()
+            buys = len([row for row in venue.orders.values() if row.get('side') == 'BUY'])
+            venue.price = D('102')
+            add_day(venue, '103')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row.get('side') == 'BUY']), buys)
+
+    def test_unconfirmed_kill_switch_writes_nothing_and_sends_nothing(self):
+        from spotquant.cli import main
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': '10001', 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '100',
+            }), encoding='utf-8')
+
+            def connect(loaded, execute_orders=False):
+                raise AssertionError('unconfirmed kill-switch contacted the venue')
+
+            def dispatch(*args, **kwargs):
+                raise AssertionError('unconfirmed kill-switch sent a notification')
+
+            with patch('spotquant.cli.connect', connect), \
+                    patch('spotquant.ops.dispatch_notifications', dispatch):
+                code = main(['kill-switch', '--config', str(path), '--authorize-uid', '10001'])
+            self.assertEqual(code, 2)
+            self.assertFalse((Path(directory) / 'intents.sqlite').exists())
+            self.assertFalse((Path(directory) / 'execution.lock').exists())
+            self.assertFalse((Path(directory) / 'HALT').exists())
+            self.assertFalse((Path(directory) / 'alert-dedupe.json').exists())
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('10001', directory, environment='demo', capital_limit_usdt='100')
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': '10001', 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '100',
+            }), encoding='utf-8')
+            with State(directory, config.scope) as state:
+                state.set('marker', 'kept')
+            before = sorted(item.name for item in Path(directory).iterdir())
+
+            def connect(loaded, execute_orders=False):
+                raise AssertionError('unconfirmed kill-switch contacted the venue')
+
+            def dispatch(*args, **kwargs):
+                raise AssertionError('unconfirmed kill-switch sent a notification')
+
+            with patch('spotquant.cli.connect', connect), \
+                    patch('spotquant.ops.dispatch_notifications', dispatch):
+                code = main(['kill-switch', '--config', str(path), '--authorize-uid', '10001'])
+            self.assertEqual(code, 2)
+            self.assertEqual(sorted(item.name for item in Path(directory).iterdir()), before)
+            self.assertFalse((Path(directory) / 'HALT').is_file())
+            self.assertFalse((Path(directory) / 'alert-dedupe.json').exists())
+            with State(directory, config.scope) as state:
+                self.assertEqual(state.get('marker'), 'kept')

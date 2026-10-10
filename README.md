@@ -69,7 +69,7 @@ python3 -m spotquant demo-check --config demo.json --execute --authorize-uid <DE
 
 ## 定时会话、告警和停买
 
-无人值守的安装和定时器见 [deploy/README.md](deploy/README.md)。每天 UTC 00:45（北京时间 08:45）跑一次 300 秒会话，UTC 01:05 做 SQLite 在线备份。邮件使用 QQ SMTP（`smtp.qq.com`，端口 465 为隐式 TLS；587 为 STARTTLS）。心跳主题以 `[spotquant][心跳]` 开头，告警以 `[spotquant][告警]` 开头。状态目录里的 `HALT`，以及写了的 `max_drawdown_halt_pct`，都只停止新买。`kill-switch --confirm` 在 UID 和状态锁通过之后，第一步就原子写入 `HALT`（kill-switch always writes HALT first），先于退避恢复、查询、快照、撤单和卖出。第一次查询失败，或者仓位已经只剩不可卖尘埃、甚至已经是空仓，也同样写入。写 `HALT` 失败则中止、不发单，并告警。它只撤本状态目录的订单，并卖出账本里记下的数量；`sold` 只计这一次退出里已经回读确认的市价成交，同一次退出重启后仍能对上。残仓会写明；十二次动作后仍未平完才告警并要求人工接管，第十二次如果已经卖成尘埃则算完成。没有另外的墙钟时限。删掉 `HALT` 之后会话恢复按策略运行。急停卖掉的这一仓不沿用事先准备好的 touch 再入，下一次买入要新的穿越；更早周期里已经入账的 touch 许可保持原样。成功退出的告警只说明停买，不把退出码说成非零。实盘定时器还要有 `/etc/spotquant/LIVE_ENABLED`。这些不改变 `TRAIL`（仍是 0.28）。
+无人值守的安装和定时器见 [deploy/README.md](deploy/README.md)。每天 UTC 00:45（北京时间 08:45）跑一次 300 秒会话，UTC 01:05 做 SQLite 在线备份。邮件使用 QQ SMTP（`smtp.qq.com`，端口 465 为隐式 TLS；587 为 STARTTLS）。心跳主题以 `[spotquant][心跳]` 开头，告警以 `[spotquant][告警]` 开头。状态目录里的 `HALT`，以及写了的 `max_drawdown_halt_pct`，都只停止新买。`kill-switch --confirm` 在 UID 和状态锁通过之后，第一步就原子写入 `HALT`（kill-switch always writes HALT first），先于退避恢复、查询、快照、撤单和卖出。第一次查询失败，或者仓位已经只剩不可卖尘埃、甚至已经是空仓，也同样写入。写 `HALT` 失败则中止、不发单，并告警。不带 `--confirm` 时不创建状态文件、不写 `HALT`、不发通知、不发单。它只撤本状态目录的订单，并卖出账本里记下的数量；`sold` 只计这一次退出里已经回读确认的市价成交，同一次退出重启后仍能对上，不含已经结束的上一仓。残仓会写明；十二次动作后仍未平完才告警并要求人工接管，第十二次如果已经卖成尘埃则算完成。没有另外的墙钟时限。删掉 `HALT` 之后，当前账面不能沿用这次 touch 再入，包括已经入账、只等价格离开均线的那一次；下一次买入要新的穿越。更早卖单上记下的 rearm 不改。空仓这次确认不会把上一笔退出的身份留给后来的新仓。成功退出的告警只说明停买，不把退出码说成非零。实盘定时器还要有 `/etc/spotquant/LIVE_ENABLED`。这些不改变 `TRAIL`（仍是 0.28）。
 
 ## 执行与保护（Demo / 主网共用）
 
