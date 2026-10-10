@@ -229,16 +229,17 @@ def main(argv=None):
                 raise Blocked('kill-switch requires matching --authorize-uid')
             venue = connect(config, execute_orders=True)
             with State(config.state_dir, config.scope) as state:
-                if hasattr(venue, 'bind_state'):
-                    venue.bind_state(state)
                 try:
+                    if hasattr(venue, 'bind_state'):
+                        venue.bind_state(state)
                     report = kill_switch(state, venue, config, confirm=args.confirm)
-                except (Blocked, Unknown) as exc:
+                except (Blocked, Unknown, OSError) as exc:
+                    failed = isinstance(exc, Unknown) or isinstance(exc, OSError)
                     report = {
-                        'status': 'unknown' if isinstance(exc, Unknown) else 'blocked',
+                        'status': 'unknown' if failed else 'blocked',
                         'reason': str(exc),
                         'environment': config.environment,
-                        'manual_takeover': isinstance(exc, Unknown),
+                        'manual_takeover': failed,
                         'native_execution_verified': False,
                     }
                     report['notifications'] = dispatch_notifications(
