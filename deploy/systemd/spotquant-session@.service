@@ -1,0 +1,22 @@
+[Unit]
+Description=Spotquant %i session (300s, same length as the published backtest)
+After=network-online.target
+Wants=network-online.target
+OnFailure=spotquant-failed@%i.service
+
+[Service]
+Type=oneshot
+User=spotquant
+Group=spotquant
+EnvironmentFile=-/etc/spotquant/%i.env
+EnvironmentFile=-/etc/spotquant/notify.env
+WorkingDirectory=/opt/spotquant
+ExecStart=/usr/bin/flock -n -E 0 /run/lock/spotquant-%i.lock /usr/bin/python3.13 -m spotquant ops-run --config /etc/spotquant/%i.json --environment %i
+TimeoutStartSec=900
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spotquant-%i

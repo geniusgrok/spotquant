@@ -76,6 +76,9 @@ def _cycle_report(current, venue, config, lifecycle):
         evidence = dict(report.get('execution_evidence') or {})
         evidence['protection_failure'] = failure
         report['execution_evidence'] = evidence
+    halt = getattr(lifecycle, 'buy_halt', None) if lifecycle else None
+    if halt:
+        report['buy_halt'] = halt
     return report
 
 
@@ -126,6 +129,10 @@ def _cycle(venue, state: State, config, *, lifecycle=None, crowding_source=None,
         enabled = False
     if _entries_blocked(models, exit_through):
         enabled = False
+    from .ops import note_equity
+    equity_mark = note_equity(state, actual_snapshot, config)
+    if equity_mark.get('buy_halt'):
+        enabled = False
     views = {}
     owned = {}
     for window, model in models.items():
@@ -164,6 +171,8 @@ def _cycle(venue, state: State, config, *, lifecycle=None, crowding_source=None,
         'observation_current': True,
         'recorded_limits': dict(RECORDED_LIMITS),
         'stop_price_percent_band': config.stop_price_percent_band is True,
+        'equity_mark': equity_mark,
+        'buy_halt': equity_mark.get('buy_halt'),
         'write_attempted': False,
     }
 

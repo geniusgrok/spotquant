@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Spotquant %i database backup after the UTC-open session
+
+[Timer]
+OnCalendar=*-*-* 00:20:00 UTC
+Persistent=true
+AccuracySec=5min
+Unit=spotquant-backup@%i.service
+
+[Install]
+WantedBy=timers.target

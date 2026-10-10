@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly check that the Spotquant %i heartbeat is still fresh
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=5min
+Unit=spotquant-watch@%i.service
+
+[Install]
+WantedBy=timers.target

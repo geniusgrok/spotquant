@@ -800,6 +800,11 @@ class Lifecycle:
             return changed
         for order in decision['orders']:
             if order['side'] == 'BUY':
+                from .ops import note_equity
+                mark = note_equity(self.state, snapshot, self.config)
+                if mark.get('buy_halt'):
+                    self.buy_halt = mark['buy_halt']
+                    return False
                 if getattr(self.venue, '_risk_stop', lambda: False)():
                     return False
                 if any(result.get('absent') or result.get('recall_pending') for _, _, _, result in self.rows()):

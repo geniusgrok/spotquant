@@ -1,0 +1,16 @@
+[Unit]
+Description=Spotquant %i online SQLite backup
+
+[Service]
+Type=oneshot
+User=spotquant
+Group=spotquant
+EnvironmentFile=-/etc/spotquant/%i.env
+WorkingDirectory=/opt/spotquant
+ExecStart=/usr/bin/python3.13 -m spotquant backup --config /etc/spotquant/%i.json --dest /var/backups/spotquant/%i
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spotquant-backup-%i
