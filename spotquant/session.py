@@ -1033,7 +1033,10 @@ def _execution_evidence(state, snapshot):
                       'reference_price': reference, 'slippage_pct': slippage})
         if len(fills) == 20:
             break
+    recorded = list(reversed(fills))
     return {'quote': {'last_price': snapshot.get('last_price'), 'avg_price': snapshot.get('avg_price')},
             'fee_status': snapshot.get('fee_status'),
-            'fills': list(reversed(fills)),
+            'demo_bnb_discount_allowance': snapshot.get('demo_bnb_discount_allowance') is True,
+            'bnb_commission': any(item.get('commission_asset') == 'BNB' for item in recorded),
+            'fills': recorded,
             'protection_orders': [row for row in snapshot.get('orders') or [] if row['type'] == 'STOP_LOSS']}

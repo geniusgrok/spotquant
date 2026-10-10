@@ -70,6 +70,9 @@ class SpotScript:
         self.fail_post = False
         self.discount_account = False
         self.discount_symbol = False
+        self.bnb_free = D(0)
+        self.bnb_locked = D(0)
+        self.buy_commission_asset = 'BTC'
 
     def clock(self):
         return self.now_ms / 1000
@@ -133,6 +136,7 @@ class SpotScript:
             'balances': [
                 {'asset': 'BTC', 'free': format(self.btc_free, 'f'), 'locked': format(self.btc_locked, 'f')},
                 {'asset': 'USDT', 'free': format(self.usdt, 'f'), 'locked': '0'},
+                {'asset': 'BNB', 'free': format(self.bnb_free, 'f'), 'locked': format(self.bnb_locked, 'f')},
             ],
         }
 
@@ -176,7 +180,7 @@ class SpotScript:
                 gross = quote / self.price
                 self.usdt -= quote
                 self.btc_free += gross - gross * self.fee
-                self._trade(order_id, stamp, gross, quote, True, gross * self.fee, 'BTC')
+                self._trade(order_id, stamp, gross, quote, True, gross * self.fee, self.buy_commission_asset)
                 row = self._row(order_id, identity, side, order_type, gross, gross, format(quote, 'f'),
                                 'FILLED', stamp, stop=None, quote_order=params['quoteOrderQty'])
             else:
@@ -584,16 +588,48 @@ class FeeAndStopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             script = SpotScript()
             script.discount_account = True
+            script.discount_symbol = True
+            script.bnb_free = D('1')
             venue = _venue(script)
-            with self.assertRaisesRegex(Blocked, 'enabledForAccount'):
+            with self.assertRaisesRegex(Blocked, 'BNB balance is not zero'):
                 execute_verification(_config(directory), venue, execute=True, scenarios=['market-buy'])
             self.assertEqual(script.posts, [])
+
+    def test_zero_bnb_demo_discount_is_allowed_and_recorded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = SpotScript()
+            script.discount_account = True
+            script.discount_symbol = True
+            venue = _venue(script)
+            report = execute_verification(
+                _config(directory), venue, execute=True, scenarios=['market-buy'])
+            row = report['scenarios'][0]
+            self.assertEqual(report['status'], 'pass', report)
+            self.assertTrue(report['demo_bnb_discount_allowance'])
+            self.assertTrue(row['demo_bnb_discount_allowance'])
+            self.assertFalse(row['bnb_commission'])
+            self.assertEqual(row['commission_assets'], ['BTC'])
+            self.assertEqual(script.posts, [row['client_id']])
+
+    def test_bnb_commission_on_a_buy_is_flagged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = SpotScript()
+            script.buy_commission_asset = 'BNB'
+            venue = _venue(script)
+            report = execute_verification(
+                _config(directory), venue, execute=True, scenarios=['market-buy'])
+            row = report['scenarios'][0]
+            self.assertEqual(row['status'], 'fail')
+            self.assertTrue(row['bnb_commission'])
+            self.assertIn('BNB', row['reason'])
+            self.assertEqual(report['status'], 'failed')
 
     def test_network_loss_reports_a_pre_send_fee_block(self):
         with tempfile.TemporaryDirectory() as directory:
             script = SpotScript()
             script.discount_account = True
             script.discount_symbol = True
+            script.bnb_free = D('0.5')
             venue = _venue(script)
             config = _config(directory)
             with State(directory, config.scope) as state:

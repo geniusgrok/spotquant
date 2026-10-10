@@ -17,6 +17,7 @@ import time
 from decimal import Decimal as D
 from pathlib import Path
 
+from .binance import allow_demo_bnb_discount
 from .demo_guard import DEMO_ORIGIN, assert_demo_config, install_demo_guard, refuse_non_demo_url
 from .execution import Lifecycle
 from .model import Model
@@ -262,11 +263,21 @@ def remember_fills(state, venue, order_id, since_ms) -> dict:
     quote = sum((row['quote'] for row in trades), D(0))
     if gross <= 0 or quote <= 0:
         raise Unknown('filled order has no account trade')
+    assets = []
+    bnb_commission = False
+    for row in trades:
+        asset = row.get('commission_asset')
+        if asset and asset not in assets:
+            assets.append(asset)
+        if asset == 'BNB':
+            bnb_commission = True
     return {
         'price': quote / gross,
         'qty': gross,
         'time_ms': min(row['time'] for row in trades),
         'ids': [row['id'] for row in trades],
+        'commission_assets': assets,
+        'bnb_commission': bnb_commission,
     }
 
 
@@ -368,13 +379,18 @@ def _record_buy(ctx, operation):
         'client_id': identity,
         'quote': quote,
     }
+    charged_bnb = fill.get('bnb_commission') is True
     return {
-        'status': 'pass',
+        'status': 'fail' if charged_bnb else 'pass',
+        'reason': 'buy fill commission asset is BNB' if charged_bnb else None,
         'client_id': identity,
         'order_id': result['orderId'],
         'fill_price': ctx['entry']['price'],
         'quote_order_qty': quote,
         'trade_ids': fill['ids'],
+        'commission_assets': fill.get('commission_assets') or [],
+        'bnb_commission': charged_bnb,
+        'demo_bnb_discount_allowance': getattr(venue, 'demo_bnb_discount_allowance', False) is True,
         'resent': False,
         'simulated_trigger': False,
     }
@@ -1062,19 +1078,42 @@ def _reason(status, records=()) -> str:
     return 'Demo verification scenarios did not all pass'
 
 
-def assert_fee_discount_off(venue) -> None:
-    """Stop before any order when the Demo account pays fees with BNB."""
+def _bnb_total(account) -> D:
+    if not isinstance(account, dict) or not isinstance(account.get('balances'), list):
+        raise Unknown('account response is missing balances')
+    total = D(0)
+    for row in account['balances']:
+        if not isinstance(row, dict) or row.get('asset') != 'BNB':
+            continue
+        total += number(row.get('free', '0'), 'BNB', nonnegative=True)
+        total += number(row.get('locked', '0'), 'BNB', nonnegative=True)
+    return total
+
+
+def assert_demo_fee_preflight(venue) -> dict:
+    """Allow a Demo buy only when the stuck BNB discount has no BNB to spend.
+
+    The check is repeated inside each ``submit`` from a fresh account read.
+    A positive BNB balance, or any non-Demo host, still refuses the buy.
+    """
     try:
         payload = venue._get('/api/v3/account/commission', {'symbol': 'BTCUSDT'}, signed=True)
+        account = venue._get('/api/v3/account', signed=True)
     except (Unknown, Blocked) as exc:
         raise Unknown(f'Demo fee discount could not be read ({exc})') from exc
     discount = payload.get('discount') if isinstance(payload, dict) else None
-    if not isinstance(discount, dict) or type(discount.get('enabledForAccount')) is not bool:
+    if (not isinstance(discount, dict) or type(discount.get('enabledForAccount')) is not bool
+            or type(discount.get('enabledForSymbol')) is not bool):
         raise Unknown('commission discount mode is incomplete')
-    if discount.get('enabledForAccount') is True:
-        raise Blocked(
-            'BNB fee discount is enabled (discount.enabledForAccount). '
-            'Turn it off on the Demo account before demo-verify; buys require BTC/USDT fees')
+    third_asset = discount['enabledForAccount'] and discount['enabledForSymbol']
+    bnb = _bnb_total(account)
+    allowance = third_asset and allow_demo_bnb_discount(venue.environment, venue.base, bnb)
+    if third_asset and not allowance:
+        if bnb > 0:
+            raise Blocked(
+                'Demo BNB balance is not zero while the BNB fee discount is enabled; the buy stays refused')
+        raise Blocked('BNB fee discount is enabled; the buy stays refused')
+    return {'demo_bnb_discount_allowance': allowance}
 
 
 def render_verification_md(report: dict) -> str:
@@ -1085,6 +1124,7 @@ def render_verification_md(report: dict) -> str:
         f"- 账户：{report.get('account_uid')}",
         f"- 资金上限：{report.get('capital_limit_usdt')} USDT",
         '- native_execution_verified：false',
+        f"- Demo BNB 折扣豁免：{report.get('demo_bnb_discount_allowance') is True}",
         '',
     ]
     for item in report.get('limitations') or []:
@@ -1145,7 +1185,7 @@ def execute_verification(config, venue, *, execute, faults=False, scenarios=None
                          popen=subprocess.Popen, interrupt_after=2.0, graceful_timeout=900):
     assert_demo_config(config, capital=True)
     install_demo_guard(venue)
-    assert_fee_discount_off(venue)
+    fee_preflight = assert_demo_fee_preflight(venue)
     names = select_scenarios(scenarios, faults)
     out_dir = Path(out) if out is not None else Path(config.state_dir).expanduser() / 'verification'
     venue._monotonic = monotonic
@@ -1160,6 +1200,7 @@ def execute_verification(config, venue, *, execute, faults=False, scenarios=None
         'limitations': list(LIMITATIONS),
         'scenarios': [],
         'planned_scenarios': list(names),
+        'demo_bnb_discount_allowance': fee_preflight['demo_bnb_discount_allowance'],
     }
     deferred = [name for name in names if name in ('graceful-stop', 'kill-restart')]
     token = None

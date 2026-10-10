@@ -241,6 +241,7 @@ class Binance:
         btc_locked = D(0)
         usdt_free = D(0)
         usdt_locked = D(0)
+        bnb = D(0)
         seen = set()
         other_assets = []
         for row in account['balances']:
@@ -252,6 +253,8 @@ class Binance:
             seen.add(asset)
             free = number(row['free'], asset, nonnegative=True)
             locked = number(row['locked'], asset, nonnegative=True)
+            if asset == 'BNB':
+                bnb = free + locked
             if asset == 'BTC':
                 btc = free + locked
                 btc_free, btc_locked = free, locked
@@ -283,6 +286,15 @@ class Binance:
                 fee_status = 'confirmed'
             except (Unknown, KeyError, TypeError, Blocked):
                 fee_mode, fee_rate, fee_status = 'unknown', None, 'unavailable'
+        # Demo keeps the BNB discount on and its UI cannot disable it. When that
+        # account holds no BNB, the fill is charged in BTC or USDT. The standard
+        # rate above is unchanged; the 0.75 BNB discount is not applied. Mainnet
+        # and any positive BNB balance keep the refusal.
+        allowance = (fee_status == 'confirmed' and fee_mode == 'third_asset' and fee_rate is not None
+                     and allow_demo_bnb_discount(self.environment, self.base, bnb))
+        if allowance:
+            fee_mode = 'base_quote'
+        self.demo_bnb_discount_allowance = allowance
         last = self._get('/api/v3/ticker/price', {'symbol': 'BTCUSDT'}, signed=False)
         if not isinstance(last, dict) or last.get('symbol') != 'BTCUSDT':
             raise Unknown('last price response is incomplete')
@@ -304,6 +316,8 @@ class Binance:
             'fee_rate': fee_rate,
             'fee_mode': fee_mode,
             'fee_status': fee_status,
+            'bnb': bnb,
+            'demo_bnb_discount_allowance': allowance,
             'min_notional': self.min_notional,
             'min_price': self.min_price,
             'max_price': self.max_price,
@@ -608,6 +622,15 @@ class Binance:
         if cutoff is None or clock is None:
             return ceiling
         return max(.001, min(ceiling, cutoff - clock()))
+
+
+def allow_demo_bnb_discount(environment, base, bnb) -> bool:
+    """True only for the Spot Demo host when the BNB balance is exactly zero."""
+    if environment != 'demo' or base != HOSTS['demo'] or bnb != 0:
+        return False
+    parts = urllib.parse.urlsplit(base)
+    return (parts.scheme == 'https' and parts.hostname == 'demo-api.binance.com'
+            and parts.port in (None, 443) and not parts.username)
 
 
 def _header(headers, name: str):

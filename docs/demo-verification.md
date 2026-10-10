@@ -22,7 +22,7 @@ Demo 的成交和盘口是交易所模拟的。这里能核对的是请求是否
 2. 打开 Demo 的 API 管理。当前入口是 <https://demo.binance.com/en/my/settings/api-management>。选择系统生成的密钥。
 3. 打开读取和现货交易权限。不要打开提现。秘密只显示一次，放到下面的环境变量里，不要写入仓库、配置或聊天记录。
 4. 在 Demo 现货钱包准备 USDT。默认探针每笔买入 15 USDT；一次完整订单场景会在卖出之后再买一笔，两笔都受 100 USDT 上限约束。余额要覆盖这两笔和手续费。
-5. 关闭用 BNB 抵扣手续费。`demo-verify` 会先读手续费接口；`discount.enabledForAccount` 为 true 时直接停止，并说明要先关掉这笔折扣。买单只在手续费确认为 BTC/USDT 时才会发送。
+5. Demo 现货账户通常开着 BNB 手续费折扣（`discount.enabledForAccount` 为 true，折扣资产 BNB），页面上没有开关可以关掉。`demo-verify` 和 `demo-check` 在每次买单前重新读取余额：BNB 可用加冻结恰好为 0 时，按 BTC/USDT 标准费率允许买入，并在报告里写 `demo_bnb_discount_allowance: true`。不把 0.75 的 BNB 折扣算进费率。BNB 余额大于 0 时仍然拒绝。主网只要折扣开着就拒绝，这条豁免不会用到主网。买入之后如果成交的 `commissionAsset` 是 BNB，结果会标成失败。
 6. 记下 Demo 账户的数字 UID，填进配置的 `account_uid`。
 
 ## 配置
