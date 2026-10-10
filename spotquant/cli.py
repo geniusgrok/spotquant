@@ -87,7 +87,8 @@ def main(argv=None):
         description=(
             'BTCUSDT spot observation. A write session needs --execute and a matching '
             '--authorize-uid. 28% is the trail target; stop_price_percent_band can place '
-            'the STOP_LOSS at the percent-band floor. ops-run is the daily timer entry.'
+            'the STOP_LOSS at the percent-band floor. ops-run is the 00:45 UTC timer entry. '
+            'kill-switch writes HALT before it cancels or sells.'
         ),
     )
     commands = parser.add_subparsers(dest='command', required=True)
@@ -137,7 +138,7 @@ def main(argv=None):
     backup.add_argument('--dest', type=Path)
     switch = commands.add_parser(
         'kill-switch',
-        help='Cancel this state\'s orders and sell its recorded position. Success requires a confirmed fill.')
+        help='Sell the recorded position after writing HALT. sold is confirmed fills only. Delete HALT to resume.')
     switch.add_argument('--config', required=True)
     switch.add_argument('--authorize-uid', required=True)
     switch.add_argument('--confirm', action='store_true')
@@ -222,13 +223,26 @@ def main(argv=None):
             path = backup_database(Path(config.state_dir).expanduser() / 'intents.sqlite', dest)
             report = {'status': 'pass', 'backup': str(path), 'environment': config.environment}
         elif args.command == 'kill-switch':
-            from .ops import kill_switch
+            from .ops import dispatch_notifications, kill_switch
             config = load(args.config)
             if args.authorize_uid != config.account_uid:
                 raise Blocked('kill-switch requires matching --authorize-uid')
+            venue = connect(config, execute_orders=True)
             with State(config.state_dir, config.scope) as state:
-                report = kill_switch(state, connect(config, execute_orders=True), config,
-                                     confirm=args.confirm)
+                if hasattr(venue, 'bind_state'):
+                    venue.bind_state(state)
+                try:
+                    report = kill_switch(state, venue, config, confirm=args.confirm)
+                except (Blocked, Unknown) as exc:
+                    report = {
+                        'status': 'unknown' if isinstance(exc, Unknown) else 'blocked',
+                        'reason': str(exc),
+                        'environment': config.environment,
+                        'manual_takeover': isinstance(exc, Unknown),
+                        'native_execution_verified': False,
+                    }
+                    report['notifications'] = dispatch_notifications(
+                        Path(config.state_dir), report, exit_code=2)
         elif args.command == 'run' and args.execute:
             config = load(args.config)
             if config.environment != 'live' or config.capital_limit is None:

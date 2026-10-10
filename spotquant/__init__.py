@@ -1,3 +1,3 @@
-"""Manually invoked Binance BTCUSDT spot sessions. No leverage."""
+"""Binance BTCUSDT spot sessions, manual or on the daily timer. No leverage."""
 
 __version__ = '0.1.0'

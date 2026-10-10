@@ -92,17 +92,17 @@ sudo systemctl enable --now spotquant-session@live.timer \
 
 ## 停买、急停和备份
 
-在状态目录放下 `HALT` 文件后，定时会话仍会跑，用来维护止损，但不再新买。回撤停买由配置 `max_drawdown_halt_pct` 控制（相对已记录峰值，例如 `"0.25"`）。不写这项就没有回撤停买。
+在状态目录放下 `HALT` 文件后，定时会话仍会跑，用来维护止损，但不再新买。`kill-switch` 在撤单或卖出之前也会写这个文件。恢复新买只做一件事：删除该状态目录里的 `HALT`。删除之后下一次买入仍要新的穿越。回撤停买由配置 `max_drawdown_halt_pct` 控制（相对已记录峰值，例如 `"0.25"`）。不写这项就没有回撤停买。
 
 取消本状态目录自己的挂单，并只卖出账本里记下的仓位：
 
 ```sh
-sudo -u spotquant env $(grep -v '^#' /etc/spotquant/live.env | xargs) \
+sudo -u spotquant env $(grep -v '^#' /etc/spotquant/live.env /etc/spotquant/notify.env | xargs) \
   /usr/local/bin/sq kill-switch \
   --config /etc/spotquant/live.json --authorize-uid 你的UID --confirm
 ```
 
-没有 `--confirm` 不会发单。账本之外的 BTC 不会被卖掉。卖单走原来的退出生命周期：意图、客户订单号和撤单号在发送前写入状态。报告里的成交数量只来自交易所回读；没卖完会留下残仓说明，并尽量把止损挂回去，不会把请求数量写成已成交。结果不是完成时会发告警。
+没有 `--confirm` 不会发单。账本之外的 BTC 不会被卖掉。一旦决定退出，程序先把 `state_dir/HALT` 原子写好，然后才撤止损或卖出。卖单走原来的退出生命周期：意图、客户订单号和撤单号在发送前写入状态。报告里的 `sold` 只统计这一次退出里已经回读确认的市价成交，不含更早的周期，也不把尚未回读的回执当成成交。撤单期间如果止损先成交，退出数量按归账后的剩余再算。已知数量规则不合格时不先撤掉还有效的止损。没卖完会留下残仓说明，并告警、要求人工接管；循环最多 12 次，没有另外的墙钟时限。`HALT` 只停止新买，退出和止损照常。恢复交易：确认仓位和止损之后，删除该状态目录里的 `HALT`。删除之后下一次买入仍要新的穿越，不会沿用急停前准备好的 touch 再入。手动执行同样先接上状态目录里的限频退避；第一次快照失败也会发告警。
 
 数据库备份在每天 UTC 01:05，排在 00:45 的会话结束之后，用 SQLite 在线备份，保留最近 14 份，目录是 `/var/backups/spotquant/demo` 或 `live`。
 
