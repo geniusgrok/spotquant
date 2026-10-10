@@ -19,6 +19,9 @@ class Config:
     environment: str = 'live'
     # Optional for observation; required for execution. It is not a loss limit.
     capital_limit_usdt: str | None = None
+    # Off until a Demo probe confirms that STOP_LOSS stopPrice is inside the
+    # symbol's PERCENT_PRICE filter. On, the native stop uses option A.
+    stop_price_percent_band: bool = False
 
     def __post_init__(self):
         if (not isinstance(self.account_uid, str) or not self.account_uid.isascii()
@@ -38,6 +41,8 @@ class Config:
                 limit = None
             if limit is None or not limit.is_finite() or limit <= 0:
                 raise Blocked('capital_limit_usdt must be a positive decimal string')
+        if type(self.stop_price_percent_band) is not bool:
+            raise Blocked('stop_price_percent_band must be true or false')
 
     @property
     def scope(self) -> str:

@@ -108,6 +108,12 @@ def main(argv=None):
     reconcile = commands.add_parser('demo-reconcile', help='Compare the Demo ledger with exchange order and trade history')
     reconcile.add_argument('--config', required=True)
     reconcile.add_argument('--out', type=Path, help='Directory for the JSON and Markdown report')
+    probe = commands.add_parser(
+        'demo-band-probe',
+        help='Demo-only STOP_LOSS depth probe. Without --execute it only reads filters and prices.')
+    probe.add_argument('--config', required=True)
+    probe.add_argument('--execute', action='store_true')
+    probe.add_argument('--authorize-uid', help='Repeat the dedicated Demo account UID before any order')
     args = parser.parse_args(argv)
     try:
         if args.command == 'run' and args.execute and not args.authorize_uid:
@@ -141,6 +147,14 @@ def main(argv=None):
             report = execute_verification(
                 config, connect(config, execute_orders=args.execute), execute=args.execute,
                 faults=args.faults, scenarios=args.scenario, out=args.out, config_path=args.config)
+        elif args.command == 'demo-band-probe':
+            from .band_probe import execute_probe
+            from .demo_guard import assert_demo_config
+            config = load(args.config)
+            assert_demo_config(config, capital=args.execute)
+            if args.execute and args.authorize_uid != config.account_uid:
+                raise Blocked('Demo band probe requires matching --authorize-uid')
+            report = execute_probe(config, connect(config, execute_orders=args.execute), execute=args.execute)
         elif args.command == 'demo-reconcile':
             from .demo_guard import assert_demo_config
             from .reconcile import execute_reconcile

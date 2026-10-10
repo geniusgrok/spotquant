@@ -22,7 +22,7 @@ from .demo_guard import DEMO_ORIGIN, assert_demo_config, install_demo_guard, ref
 from .execution import Lifecycle
 from .model import Model
 from .preview import (
-    BASE_STEP, PRICE_STEP, QUOTE_STEP, _position_decision, _qty_ok, _step, stop_band_violation,
+    BASE_STEP, PRICE_STEP, QUOTE_STEP, _position_decision, _qty_ok, _step, clamp_stop,
 )
 from .state import State, client_id
 from .types import Blocked, NotSent, Unknown, floor_step, number, serial
@@ -95,6 +95,18 @@ def protection_price(fill_price, quote, *, quote_after_fill: bool):
     """28% under the verified peak, floored to the BTCUSDT tick."""
     peak = protection_peak(fill_price, quote, quote_after_fill=quote_after_fill)
     return floor_step(Model(40).stop_price(peak), PRICE_STEP)
+
+
+def verification_stop(entry, snapshot, *, existing=D(0), apply=False):
+    """Native stop for one verification fill. Clamping waits for the confirmed rule."""
+    observed = snapshot.get('quote_observed_ms')
+    quote_after = type(observed) is int and type(entry.get('time_ms')) is int and observed >= entry['time_ms']
+    target = protection_price(entry['price'], snapshot['last_price'], quote_after_fill=quote_after)
+    plan = clamp_stop(target, snapshot, existing=existing, apply=apply)
+    plan['quote_after_fill'] = quote_after
+    plan['peak'] = format(protection_peak(entry['price'], snapshot['last_price'],
+                                          quote_after_fill=quote_after), 'f')
+    return plan
 
 
 def simulated_exit_decision(kind: str, quantity, snapshot: dict):
@@ -436,20 +448,21 @@ def _place_stop(ctx, operation):
     if qty * D(snapshot['avg_price']) < D(snapshot['min_notional']):
         return {'status': 'fail', 'reason': 'position is below the venue minimum notional',
                 'simulated_trigger': False}
-    observed = snapshot.get('quote_observed_ms')
-    quote_after = type(observed) is int and type(entry.get('time_ms')) is int and observed >= entry['time_ms']
-    stop = protection_price(entry['price'], snapshot['last_price'], quote_after_fill=quote_after)
-    if stop >= D(snapshot['last_price']):
+    plan = verification_stop(entry, snapshot, apply=ctx['config'].stop_price_percent_band is True)
+    if D(plan['placed']) >= D(snapshot['last_price']):
         return {'status': 'fail', 'reason': 'stop is already crossed at the latest price',
-                'stop_price': format(stop, 'f'), 'simulated_trigger': False}
-    violation = stop_band_violation(snapshot, _step(stop, PRICE_STEP))
-    if violation:
-        return {'status': 'fail', 'reason': violation, 'stop_price': _step(stop, PRICE_STEP),
+                'stop_target': plan['target'], 'band_floor': plan['band_floor'],
+                'stop_price': plan['placed'], 'clamped': plan['clamped'],
+                'simulated_trigger': False, 'unprotected': True}
+    if plan['unplaceable_reason']:
+        return {'status': 'fail', 'reason': plan['unplaceable_reason'],
+                'stop_target': plan['target'], 'band_floor': plan['band_floor'],
+                'stop_price': plan['placed'], 'clamped': plan['clamped'],
                 'simulated_trigger': False, 'unprotected': True}
     _reject_unconfirmed(ctx['lifecycle'])
     order = {
         'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
-        'quantity': _step(qty, BASE_STEP), 'stopPrice': _step(stop, PRICE_STEP),
+        'quantity': _step(qty, BASE_STEP), 'stopPrice': plan['placed'],
     }
     identity = verification_identity(config.scope, ctx['token'], operation, ctx['nonce'])
     row = dispatch_order(ctx['lifecycle'], identity, order, signal_ms=ctx['token'])
@@ -458,14 +471,16 @@ def _place_stop(ctx, operation):
     matched = row[3].get('status') == 'NEW' and actual is not None and number(actual) == number(order['stopPrice'])
     return {
         'status': 'pass' if matched else 'fail',
-        'reason': None if matched else 'native stop price or status differs from the 28% trail',
+        'reason': None if matched else 'native stop price or status differs from the clamped stop',
         'client_id': identity,
         'order_id': row[3].get('orderId'),
+        'stop_target': plan['target'],
+        'band_floor': plan['band_floor'],
         'stop_price': order['stopPrice'],
+        'clamped': plan['clamped'],
         'exchange_stop_price': None if actual is None else str(actual),
         'fill_price': entry['price'],
-        'peak_price': format(protection_peak(entry['price'], snapshot['last_price'],
-                                             quote_after_fill=quote_after), 'f'),
+        'peak_price': plan['peak'],
         'trail': '0.28',
         'resent': False,
         'simulated_trigger': False,
@@ -489,10 +504,17 @@ def scenario_stop_replace(ctx):
         return {'status': 'skipped', 'reason': 'no verified buy fill is available for a stop',
                 'simulated_trigger': False}
     snapshot = ctx['venue'].snapshot(ctx['config'].account_uid)
-    observed = snapshot.get('quote_observed_ms')
-    quote_after = type(observed) is int and type(entry.get('time_ms')) is int and observed >= entry['time_ms']
-    stop = protection_price(entry['price'], snapshot['last_price'], quote_after_fill=quote_after)
-    new_price = _step(stop, PRICE_STEP)
+    plan = verification_stop(
+        entry, snapshot, existing=old_payload['order']['stopPrice'],
+        apply=ctx['config'].stop_price_percent_band is True)
+    new_price = plan['placed']
+    if plan['unplaceable_reason'] or D(new_price) >= D(snapshot['last_price']):
+        return {'status': 'fail',
+                'reason': plan['unplaceable_reason'] or 'replacement stop is already crossed at the latest price',
+                'stop_target': plan['target'], 'band_floor': plan['band_floor'],
+                'stop_price': new_price, 'clamped': plan['clamped'],
+                'previous_stop_price': old_payload['order'].get('stopPrice'),
+                'simulated_trigger': False, 'unprotected': False}
     forced = number(new_price) == number(old_payload['order']['stopPrice'])
     clock = ctx['monotonic']
     clock()
@@ -529,7 +551,10 @@ def scenario_stop_replace(ctx):
         'client_id': identity,
         'order_id': row[3].get('orderId'),
         'canceled_client_id': old_id,
+        'stop_target': plan['target'],
+        'band_floor': plan['band_floor'],
         'stop_price': new_price,
+        'clamped': plan['clamped'],
         'previous_stop_price': old_payload['order'].get('stopPrice'),
         'forced_rereplace': forced,
         'simulated_trigger': forced,
@@ -1294,6 +1319,7 @@ def execute_verification(config, venue, *, execute, faults=False, scenarios=None
                          popen=subprocess.Popen, interrupt_after=2.0, graceful_timeout=900):
     assert_demo_config(config, capital=True)
     install_demo_guard(venue)
+    venue.stop_price_percent_band = config.stop_price_percent_band is True
     fee_preflight = assert_demo_fee_preflight(venue)
     names = select_scenarios(scenarios, faults)
     out_dir = Path(out) if out is not None else Path(config.state_dir).expanduser() / 'verification'

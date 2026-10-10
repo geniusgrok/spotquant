@@ -442,18 +442,27 @@ class BinanceTests(unittest.TestCase):
         venue = Binance(key=KEY, secret=SECRET, environment='demo', opener=opener,
                         clock=lambda: 1_700_000_000, capital_limit=D('100'),
                         demo_execution_uid='10001')
-        with self.assertRaisesRegex(NotSent, 'PERCENT_PRICE_BY_SIDE') as caught:
+        with self.assertRaises(Blocked) as caught:
             venue.submit('sq-stop', dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
                                          quantity='0.1', stopPrice='72'))
-        self.assertIn('unprotected', str(caught.exception))
-        self.assertEqual(posts, [])
+        self.assertIn('Filter failure: PERCENT_PRICE_BY_SIDE', str(caught.exception))
+        self.assertEqual(venue.last_exchange_error['msg'], 'Filter failure: PERCENT_PRICE_BY_SIDE')
+        self.assertEqual(venue.last_exchange_error['code'], -1013)
+        self.assertEqual(len(posts), 1)
+        self.assertIn('stopPrice=72', posts[0])
+        venue.stop_price_percent_band = True
+        with self.assertRaisesRegex(NotSent, 'PERCENT_PRICE_BY_SIDE') as refused:
+            venue.submit('sq-held', dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
+                                         quantity='0.1', stopPrice='72'))
+        self.assertIn('unprotected', str(refused.exception))
+        self.assertEqual(len(posts), 1)
         observed = venue.snapshot('10001')
         self.assertEqual(observed['percent_price_by_side']['ask_multiplier_down'], D('0.8'))
         with self.assertRaises(Blocked):
             venue.submit('sq-high', dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
-                                         quantity='0.1', stopPrice='90'))
-        self.assertEqual(len(posts), 1)
-        self.assertIn('stopPrice=90', posts[0])
+                                         quantity='0.1', stopPrice='80.08'))
+        self.assertEqual(len(posts), 2)
+        self.assertIn('stopPrice=80.08', posts[1])
         def leak(method, url, headers):
             return 400, b'{"code":-1013,"msg":"secret in signature"}'
         venue._opener = leak

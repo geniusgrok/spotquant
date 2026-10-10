@@ -744,6 +744,61 @@ class ExecutionTests(TestCase):
             self.assertFalse(report['manual_takeover'])
             self.assertGreater(report['risk_state']['residual_btc'], 0)
 
+    def test_percent_band_replaces_the_stop_upward_and_does_not_lower_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            entered, venue = self.entered(directory)
+            config = Config(entered.account_uid, entered.state_dir, entered.session_seconds,
+                            entered.poll_seconds, entered.environment, entered.capital_limit_usdt,
+                            stop_price_percent_band=True)
+            observed = venue.snapshot
+
+            def banded(uid, avg=None):
+                row = observed(uid)
+                if avg is not None:
+                    row['avg_price'] = D(avg)
+                row['percent_price_by_side'] = {
+                    'filter': 'PERCENT_PRICE_BY_SIDE',
+                    'ask_multiplier_down': D('0.8'),
+                    'ask_multiplier_up': D('5'),
+                    'avg_price_mins': 5,
+                }
+                return row
+
+            venue.snapshot = lambda uid: banded(uid)
+            report = run_day(config, venue)
+            self.assertEqual(report['errors'], [])
+            active = [row for row in venue.orders.values() if row['status'] == 'NEW']
+            self.assertEqual(len(active), 1)
+            # Fresh average is the session price 102. Buffered floor is 81.69,
+            # above the 28% target, so the resting stop moves up to the band.
+            self.assertEqual(D(active[0]['stopPrice']), D('81.69'))
+            clamp = report['execution_evidence']['stop_clamp']
+            self.assertEqual(clamp['band_floor'], '81.69')
+            self.assertEqual(clamp['placed'], '81.69')
+            self.assertTrue(clamp['clamped'])
+            self.assertLess(D(clamp['target']), D('81.69'))
+            venue.snapshot = lambda uid: banded(uid, avg='80')
+            report = run_day(config, venue)
+            self.assertEqual(report['errors'], [])
+            active = [row for row in venue.orders.values() if row['status'] == 'NEW']
+            self.assertEqual(len(active), 1)
+            self.assertGreaterEqual(D(active[0]['stopPrice']), D('81.69'))
+            self.assertFalse(report['execution_evidence']['stop_clamp']['clamped'])
+            self.assertEqual(report['execution_evidence']['stop_clamp']['placed'], '81.69')
+
+    def test_a_rejected_stop_is_sold_and_the_exchange_message_is_kept(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self.entered(directory)
+            venue.reject_stop_known = True
+            venue.price = D('110')
+            report = run_day(config, venue)
+            self.assertEqual(report['status'], 'demo_execution', report)
+            self.assertLess(venue.btc * venue.price, D('5'))
+            failure = report['protection_failure']
+            self.assertEqual(failure['response'], 'market_sell')
+            self.assertIn('native filter rejected stop', failure['reason'])
+            self.assertFalse(report['risk_state']['manual_takeover'])
+
     def entered(self, directory):
         config = Config('1', directory, 1, 1, 'demo', '1000')
         venue = venue_before_entry()

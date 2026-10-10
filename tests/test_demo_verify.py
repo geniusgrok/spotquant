@@ -34,7 +34,19 @@ SECRET = 'test-secret'
 KEY = 'demo-key'
 
 
-def _filters():
+def _filters(percent_band=False):
+    filters = [
+        {'filterType': 'PRICE_FILTER', 'tickSize': '0.01000000'},
+        {'filterType': 'LOT_SIZE', 'stepSize': '0.00001000', 'minQty': '0.00001000'},
+        {'filterType': 'NOTIONAL', 'minNotional': '5.00000000'},
+    ]
+    if percent_band:
+        filters.append({
+            'filterType': 'PERCENT_PRICE_BY_SIDE',
+            'bidMultiplierUp': '5', 'bidMultiplierDown': '0.2',
+            'askMultiplierUp': '5', 'askMultiplierDown': '0.8',
+            'avgPriceMins': 5,
+        })
     return {
         'symbols': [{
             'symbol': 'BTCUSDT',
@@ -43,11 +55,7 @@ def _filters():
             'quoteAsset': 'USDT',
             'isSpotTradingAllowed': True,
             'orderTypes': ['MARKET', 'STOP_LOSS', 'LIMIT'],
-            'filters': [
-                {'filterType': 'PRICE_FILTER', 'tickSize': '0.01000000'},
-                {'filterType': 'LOT_SIZE', 'stepSize': '0.00001000', 'minQty': '0.00001000'},
-                {'filterType': 'NOTIONAL', 'minNotional': '5.00000000'},
-            ],
+            'filters': filters,
         }],
     }
 
@@ -74,6 +82,8 @@ class SpotScript:
         self.bnb_locked = D(0)
         self.buy_commission_asset = 'BTC'
         self.reject_stop = False
+        self.percent_band = False
+        self.min_stop = None
 
     def clock(self):
         return self.now_ms / 1000
@@ -91,7 +101,7 @@ class SpotScript:
         if path == '/api/v3/time':
             return 200, json.dumps({'serverTime': self.now_ms}).encode()
         if path == '/api/v3/exchangeInfo':
-            return 200, json.dumps(_filters()).encode()
+            return 200, json.dumps(_filters(self.percent_band)).encode()
         if path == '/api/v3/avgPrice':
             return 200, json.dumps({'mins': 5, 'price': '100.00'}).encode()
         if path == '/api/v3/ticker/price':
@@ -167,6 +177,9 @@ class SpotScript:
         side = params['side']
         order_type = params['type']
         if order_type == 'STOP_LOSS':
+            if self.min_stop is not None and D(params['stopPrice']) < self.min_stop:
+                return 400, json.dumps({
+                    'code': -1013, 'msg': 'Filter failure: PERCENT_PRICE_BY_SIDE'}).encode()
             if self.reject_stop:
                 return 400, json.dumps({
                     'code': -1013, 'msg': 'Filter failure: PERCENT_PRICE_BY_SIDE'}).encode()
@@ -394,6 +407,9 @@ class WalkTests(unittest.TestCase):
             by_name = {row['scenario']: row for row in report['scenarios']}
             self.assertEqual(by_name['market-buy']['fill_price'], '100')
             self.assertFalse(by_name['market-buy']['resent'])
+            self.assertEqual(by_name['stop-place']['stop_target'], '72.00')
+            self.assertIsNone(by_name['stop-place']['band_floor'])
+            self.assertFalse(by_name['stop-place']['clamped'])
             self.assertEqual(by_name['stop-place']['stop_price'], '72.00')
             self.assertEqual(by_name['stop-place']['exchange_stop_price'], '72.00')
             self.assertTrue(by_name['stop-replace']['forced_rereplace'])
@@ -413,6 +429,46 @@ class WalkTests(unittest.TestCase):
             reconciled = execute_reconcile(config, venue)
             self.assertTrue(reconciled['passed'], reconciled['mismatches'])
             self.assertIn('通过', Path(reconciled['results_dir'], 'reconcile.md').read_text())
+
+    def test_stop_place_uses_the_clamped_band_on_demo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = SpotScript()
+            script.percent_band = True
+            venue = _venue(script)
+            config = Config('10001', directory, environment='demo', capital_limit_usdt='100',
+                            stop_price_percent_band=True)
+            report = execute_verification(
+                config, venue, execute=True, scenarios=['market-buy', 'stop-place', 'stop-replace'])
+            self.assertEqual(report['status'], 'pass', report)
+            by_name = {row['scenario']: row for row in report['scenarios']}
+            placed = by_name['stop-place']
+            self.assertEqual(placed['stop_target'], '72.00')
+            self.assertEqual(placed['band_floor'], '80.08')
+            self.assertEqual(placed['stop_price'], '80.08')
+            self.assertEqual(placed['exchange_stop_price'], '80.08')
+            self.assertTrue(placed['clamped'])
+            self.assertEqual(placed['status'], 'pass')
+            self.assertTrue(by_name['stop-replace']['forced_rereplace'])
+            self.assertEqual(by_name['stop-replace']['stop_price'], '80.08')
+            placed_stops = [D(row['stopPrice']) for row in script.orders.values()
+                            if row['type'] == 'STOP_LOSS']
+            self.assertTrue(placed_stops)
+            self.assertTrue(all(price >= D('80.08') for price in placed_stops))
+
+    def test_stop_place_keeps_the_28_percent_price_until_the_rule_is_confirmed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = SpotScript()
+            script.percent_band = True
+            report = execute_verification(
+                _config(directory), _venue(script), execute=True,
+                scenarios=['market-buy', 'stop-place'])
+            self.assertEqual(report['status'], 'pass', report)
+            placed = {row['scenario']: row for row in report['scenarios']}['stop-place']
+            self.assertEqual(placed['stop_target'], '72.00')
+            self.assertEqual(placed['band_floor'], '80.08')
+            self.assertEqual(placed['stop_price'], '72.00')
+            self.assertEqual(placed['exchange_stop_price'], '72.00')
+            self.assertFalse(placed['clamped'])
 
 
 class FaultTests(unittest.TestCase):

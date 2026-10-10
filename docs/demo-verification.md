@@ -79,6 +79,18 @@ python3 -m spotquant demo-verify --config demo-verify.json --execute --authorize
 
 故障名称是 `clock-skew`、`rate-limit`、`network-loss`、`kill-restart`。不带 `--faults` 时点名这些场景会被拒绝。
 
+价格带探针。不加 `--execute` 时只读 `exchangeInfo` 和均价，列出均价下方 15%、20%、25%、28% 的止损价，不下单：
+
+```sh
+python3 -m spotquant demo-band-probe --config demo-verify.json
+```
+
+确认交易所对 `stopPrice` 的真实回答时才下单。它使用 `<state_dir>/band-probe`，不写策略检查点。账户里已有可交易的 BTC 或挂单时拒绝，不会接管。买到探针后逐个深度提交 `STOP_LOSS`，把 Binance 的 `code` 和 `msg` 原样记下来；挂上的单先撤掉，最后把探针卖回：
+
+```sh
+python3 -m spotquant demo-band-probe --config demo-verify.json --execute --authorize-uid 123456789
+```
+
 对账（只读，比较 `latest.json`、sqlite 和 Demo 的 `allOrders` / `myTrades`）：
 
 ```sh
@@ -106,13 +118,15 @@ python3 -m spotquant demo-reconcile --config demo-verify.json
 
 ### stop-place
 
-止损价是成交均价（若成交之后又有会话报价，则取两者较高者）再下降 28%，然后按 0.01 向下取整。核对记录里的 `stop_price` 和交易所回读的 `exchange_stop_price`。状态应为 `NEW`。峰值来自这笔成交和成交后的报价，不用未完成日线的高点。
+默认止损仍是成交均价（若成交之后又有会话报价，则取两者较高者）再下降 28%，然后按 tick 向下取整。记录里的 `stop_target` 是这个价格。`band_floor` 只是按当前快照里的过滤器算出来的参考下限，默认不拿它改价格。`clamped` 为 false，`stop_price` 等于 28% 目标（不会低于这一仓已经确认的止损）。核对 `stop_price` 和交易所回读的 `exchange_stop_price`。状态应为 `NEW`。峰值来自这笔成交和成交后的报价，不用未完成日线的高点。
 
-若交易所的 `PERCENT_PRICE_BY_SIDE`（或 `PERCENT_PRICE`）不允许这个卖出触发价，程序在发送前拒绝，错误里带有过滤器名字和 Binance 的 `msg`。仓位此时没有原生止损。验证场景会把自己刚买的探针卖回，不会把别人的 BTC 卖掉。28% 这个策略参数没有改。
+Binance 文档把 `PERCENT_PRICE_BY_SIDE` 说成订单 `price` 的限制，没有写明它约束 `STOP_LOSS` 的 `stopPrice`，`askMultiplierDown` 也是这个交易对自己的配置。不要把 0.8 写死。用下面的 `demo-band-probe` 看交易所实际返回的 `msg`。只有确认之后，才在配置里把 `stop_price_percent_band` 设为 true。那时 `stop_price` 才是 28% 目标、缓冲后的下限（参考价乘实时 `askMultiplierDown` 再乘 1.001，按 tick 向上取整）和已有止损三者中的较高者，`clamped` 才可能为 true。`avgPriceMins` 为 0 时参考价是最新价，否则是交易所均价。
+
+止损被拒绝时，错误里有 Binance 的 `msg`。策略会话会立刻市价卖出这仓；这一笔验证探针若因此卖不掉，对应场景记 `unprotected`。退出场景只会卖掉自己刚买的 BTC。28% 这个策略参数没有改。
 
 ### stop-replace
 
-先撤掉上一张止损，再挂一张。本地空窗 `unprotected_window_ms` 是撤单确认到新止损回读确认的时间。`exchange_unprotected_window_ms` 是新单 `time` 减去旧单 `updateTime`。报价没有抬高保护价时，程序按同一正确价格重挂，并写上 `forced_rereplace: true` 和 `simulated_trigger: true`。报价已经抬高时，新价格按同一 28% 规则上移，`simulated_trigger` 为 false。结束后应只剩一张 `NEW` 止损。
+先撤掉上一张止损，再挂一张。本地空窗 `unprotected_window_ms` 是撤单确认到新止损回读确认的时间。`exchange_unprotected_window_ms` 是新单 `time` 减去旧单 `updateTime`。报价没有抬高保护价时，程序按同一挂出价格重挂，并写上 `forced_rereplace: true` 和 `simulated_trigger: true`。报价已经更高时，新价格按同一规则上移，且不会低于正在撤的那张止损；`simulated_trigger` 为 false。`stop_price_percent_band` 为 true 且价格带下限已经更高时，同样只上移。新价格如果在确认规则下已经无法挂出，这一步在撤单之前失败，原来的止损还在。结束后应只剩一张 `NEW` 止损。
 
 ### adverse-exit
 

@@ -181,9 +181,9 @@ class Binance:
             raise NotSent('sell quantity fails native lot filters')
         if payload['type'] == 'STOP_LOSS' and (buying or number(payload.get('stopPrice'), positive=True) <= 0):
             raise Blocked('only sell-side spot stop protection is supported')
-        if payload['type'] == 'STOP_LOSS':
+        if payload['type'] == 'STOP_LOSS' and getattr(self, 'stop_price_percent_band', False):
             from .preview import stop_band_violation
-            # The snapshot above is the account read for this buy or stop.
+            # Only after the owner confirms the filter includes stopPrice.
             violation = stop_band_violation(observed, payload.get('stopPrice'))
             if violation:
                 raise NotSent(violation)
@@ -617,6 +617,7 @@ class Binance:
             if code == -2010 and 'duplicate' in str(payload.get('msg', '')).lower():
                 # This attempt was refused, but the original identity may be live.
                 rejected = False
+            self.last_exchange_error = _exchange_error(status, payload)
             detail = _venue_message(payload)
             if method != 'GET' and 400 <= status < 500 and status not in (403, 409) and rejected:
                 raise Blocked(f'Binance {path} rejected HTTP {status} code {code}{detail}')
@@ -677,12 +678,23 @@ def _percent_filter(item, *, by_side: bool):
     return spec
 
 
+def _exchange_error(status, payload) -> dict:
+    """HTTP status, Binance code, and the msg field as the exchange sent it."""
+    msg = payload.get('msg') if isinstance(payload, dict) else None
+    code = payload.get('code') if isinstance(payload, dict) else None
+    return {
+        'http_status': status,
+        'code': code if type(code) is int else None,
+        'msg': msg if isinstance(msg, str) else None,
+    }
+
+
 def _venue_message(payload) -> str:
     """Binance msg text, without credentials or a multi-line body."""
     if not isinstance(payload, dict) or not isinstance(payload.get('msg'), str):
         return ''
     text = ' '.join(payload['msg'].split())
-    if not text or len(text) > 240:
+    if not text or len(text) > 500:
         return ''
     lowered = text.lower()
     if 'signature' in lowered or 'api-key' in lowered or 'secret' in lowered:

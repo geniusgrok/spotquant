@@ -48,6 +48,7 @@ def cycle(venue, state: State, config, *, execute=False) -> dict:
     _guard_state(state)
     _guard_venue(venue, config)
     lifecycle = None
+    venue.stop_price_percent_band = config.stop_price_percent_band is True
     if execute:
         from .execution import Lifecycle
         lifecycle = Lifecycle(state, venue, config)
@@ -62,9 +63,20 @@ def cycle(venue, state: State, config, *, execute=False) -> dict:
             state._execution_owners = lifecycle.owners()
         current = _cycle(venue, state, config, lifecycle=lifecycle)
         if not lifecycle or not lifecycle.act(current['model_preview'], current['market_through'], current['actual']):
-            return dict(current, write_attempted=_writes(venue),
-                        status=f'{config.environment}_execution' if execute else 'read_only')
+            return _cycle_report(current, venue, config, lifecycle)
     raise Unknown('bounded execution cycle exhausted; reconcile on the next cycle')
+
+
+def _cycle_report(current, venue, config, lifecycle):
+    report = dict(current, write_attempted=_writes(venue),
+                  status=f'{config.environment}_execution' if lifecycle else 'read_only')
+    failure = getattr(lifecycle, 'protection_failure', None) if lifecycle else None
+    if failure:
+        report['protection_failure'] = failure
+        evidence = dict(report.get('execution_evidence') or {})
+        evidence['protection_failure'] = failure
+        report['execution_evidence'] = evidence
+    return report
 
 
 def _writes(venue):
@@ -94,6 +106,7 @@ def _cycle(venue, state: State, config, *, lifecycle=None, crowding_source=None,
     state._recovery_only = compatible
     models, enabled, fresh = _load_models(state, venue)
     snapshot = venue.snapshot(config.account_uid)
+    snapshot['stop_price_percent_band'] = config.stop_price_percent_band is True
     actual_snapshot = snapshot
     if lifecycle:
         lifecycle.verify(snapshot)
@@ -135,12 +148,14 @@ def _cycle(venue, state: State, config, *, lifecycle=None, crowding_source=None,
                       crowding_source=source, features_loaded=True)
     risk = _risk_state(state, actual_snapshot, venue)
     risk['account_reconciled'] = lifecycle is not None
+    evidence = _execution_evidence(state, actual_snapshot)
+    evidence['stop_clamp'] = stop_clamp_report(proposed)
     return {
         'status': 'read_only',
         'model_preview': proposed,
         'actual': _public_snapshot(actual_snapshot),
         'risk_state': risk,
-        'execution_evidence': _execution_evidence(state, actual_snapshot),
+        'execution_evidence': evidence,
         'market_through': reference.last,
         'model_bull': {str(window): model.bull for window, model in models.items()},
         'entries_enabled': enabled,
@@ -1040,3 +1055,18 @@ def _execution_evidence(state, snapshot):
             'bnb_commission': any(item.get('commission_asset') == 'BNB' for item in recorded),
             'fills': recorded,
             'protection_orders': [row for row in snapshot.get('orders') or [] if row['type'] == 'STOP_LOSS']}
+
+
+def stop_clamp_report(proposed) -> dict | None:
+    """28% target, exchange band floor, selected stop, and whether the band won."""
+    rows = (proposed or {}).get('protections') or []
+    if not rows or 'stop_target' not in rows[0]:
+        return None
+    item = rows[0]
+    return {
+        'target': item['stop_target'],
+        'band_floor': item.get('band_floor'),
+        'placed': item.get('stopPrice'),
+        'clamped': item.get('clamped') is True,
+        'rule_enabled': item.get('rule_enabled') is True,
+    }
