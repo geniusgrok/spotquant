@@ -17,8 +17,10 @@ from spotquant.demo_guard import (
     DEMO_ORIGIN, assert_demo_config, install_demo_guard, refuse_non_demo_url,
 )
 from spotquant.demo_verify import (
-    demo_check_argv, dispatch_order, execute_verification, interrupt_child, judge_graceful,
-    protection_price, select_scenarios, simulated_exit_decision, verification_identity,
+    assess_graceful, demo_check_argv, dispatch_order, execute_verification, interrupt_child,
+    judge_graceful, protection_price, select_scenarios, session_cycle_ready,
+    simulated_exit_decision, verification_identity, write_graceful_config, _verification_nonce,
+    scenario_network_loss,
 )
 from spotquant.execution import Lifecycle
 from spotquant.model import Model
@@ -66,6 +68,8 @@ class SpotScript:
         self.next_id = 1
         self.next_trade = 1
         self.fail_post = False
+        self.discount_account = False
+        self.discount_symbol = False
 
     def clock(self):
         return self.now_ms / 1000
@@ -96,7 +100,8 @@ class SpotScript:
                 'standardCommission': {'taker': '0.001', 'buyer': '0'},
                 'specialCommission': {'taker': '0', 'buyer': '0'},
                 'taxCommission': {'taker': '0', 'buyer': '0'},
-                'discount': {'enabledForAccount': False, 'enabledForSymbol': False},
+                'discount': {'enabledForAccount': self.discount_account,
+                             'enabledForSymbol': self.discount_symbol},
             }).encode()
         if path == '/api/v3/openOrders':
             return 200, json.dumps([row for row in self.orders.values() if row['status'] == 'NEW']).encode()
@@ -353,7 +358,7 @@ class DispatchTests(unittest.TestCase):
             with State(directory, config.scope) as state:
                 venue.bind_state(state)
                 lifecycle = Lifecycle(state, venue, config)
-                identity = verification_identity(config.scope, 1, 'unknown-buy')
+                identity = verification_identity(config.scope, 1, 'unknown-buy', 'ab' * 16)
                 order = {'symbol': 'BTCUSDT', 'side': 'BUY', 'type': 'MARKET', 'quoteOrderQty': '15.00'}
                 with self.assertRaisesRegex(Unknown, 'not resent'):
                     dispatch_order(lifecycle, identity, order, signal_ms=1)
@@ -552,6 +557,100 @@ class StopSignalTests(unittest.TestCase):
                                         report_updated=True)['status'], 'pass')
         self.assertEqual(judge_graceful({'stop_reason': 'deadline'}, report_updated=True)['status'], 'fail')
         self.assertEqual(judge_graceful({}, report_updated=False)['status'], 'fail')
+
+
+class IdentityTests(unittest.TestCase):
+    def test_a_new_directory_cannot_repeat_a_previous_client_id(self):
+        with tempfile.TemporaryDirectory() as parent:
+            scope = _config(parent).scope
+            first, second = Path(parent) / 'one', Path(parent) / 'two'
+            with State(first, scope) as state:
+                nonce_a = _verification_nonce(state)
+            with State(second, scope) as state:
+                nonce_b = _verification_nonce(state)
+            with State(first, scope) as state:
+                self.assertEqual(_verification_nonce(state), nonce_a)
+            self.assertNotEqual(nonce_a, nonce_b)
+            self.assertNotEqual(
+                verification_identity(scope, 1, 'market-buy', nonce_a),
+                verification_identity(scope, 1, 'market-buy', nonce_b))
+            self.assertEqual(
+                verification_identity(scope, 1, 'market-buy', nonce_a),
+                verification_identity(scope, 1, 'market-buy', nonce_a))
+
+
+class FeeAndStopTests(unittest.TestCase):
+    def test_fee_discount_aborts_before_any_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = SpotScript()
+            script.discount_account = True
+            venue = _venue(script)
+            with self.assertRaisesRegex(Blocked, 'enabledForAccount'):
+                execute_verification(_config(directory), venue, execute=True, scenarios=['market-buy'])
+            self.assertEqual(script.posts, [])
+
+    def test_network_loss_reports_a_pre_send_fee_block(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = SpotScript()
+            script.discount_account = True
+            script.discount_symbol = True
+            venue = _venue(script)
+            config = _config(directory)
+            with State(directory, config.scope) as state:
+                venue.bind_state(state)
+                record = scenario_network_loss({
+                    'venue': venue,
+                    'config': config,
+                    'state': state,
+                    'lifecycle': Lifecycle(state, venue, config),
+                    'token': 1,
+                    'nonce': _verification_nonce(state),
+                    'sleep': lambda _seconds: None,
+                })
+            self.assertEqual(record['status'], 'blocked')
+            self.assertIn('buy fee mode is not confirmed as BTC/USDT', record['reason'])
+            self.assertEqual(record['post_count'], 0)
+            self.assertFalse(record['response_lost'])
+            self.assertEqual(script.posts, [])
+
+    def test_graceful_stop_uses_a_clean_directory_and_a_real_cycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            raw = {
+                'account_uid': '10001',
+                'state_dir': str(Path(directory) / 'verify'),
+                'session_seconds': 300,
+                'poll_seconds': 5,
+                'environment': 'demo',
+                'capital_limit_usdt': '100',
+            }
+            path = Path(directory) / 'demo.json'
+            path.write_text(json.dumps(raw), encoding='utf-8')
+            config = _config(raw['state_dir'])
+            child_json, child_state = write_graceful_config(config, path)
+            saved = json.loads(Path(child_json).read_text(encoding='utf-8'))
+            self.assertEqual(saved['environment'], 'demo')
+            self.assertGreaterEqual(saved['session_seconds'], 900)
+            self.assertNotEqual(Path(saved['state_dir']).resolve(), Path(config.state_dir).resolve())
+            self.assertEqual(child_state.name, 'graceful-session')
+            refused = {'cycles': 1, 'observation_current': True, 'model_bull': {'40': False},
+                       'reason': 'missing model checkpoint for durable state'}
+            self.assertFalse(session_cycle_ready(refused))
+            ready = {'cycles': 1, 'observation_current': True, 'model_bull': {'40': False}}
+            self.assertTrue(session_cycle_ready(ready))
+            blocked = assess_graceful(
+                {'status': 'pass', 'stop_reason': 'interrupted'},
+                {'stop_reason': 'interrupted', 'closeout_attempted': True,
+                 'reason': 'missing model checkpoint for durable state'},
+                real_cycle=False)
+            self.assertEqual(blocked['status'], 'fail')
+            self.assertIn('missing model checkpoint', blocked['reason'])
+            self.assertFalse(blocked['real_cycle'])
+            finished = assess_graceful(
+                {'status': 'pass', 'stop_reason': 'requested'},
+                {'stop_reason': 'requested', 'closeout_attempted': True, 'cycles': 2},
+                real_cycle=True)
+            self.assertEqual(finished['status'], 'pass')
+            self.assertTrue(finished['real_cycle'])
 
 
 if __name__ == '__main__':

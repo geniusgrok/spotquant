@@ -22,12 +22,14 @@ Demo 的成交和盘口是交易所模拟的。这里能核对的是请求是否
 2. 打开 Demo 的 API 管理。当前入口是 <https://demo.binance.com/en/my/settings/api-management>。选择系统生成的密钥。
 3. 打开读取和现货交易权限。不要打开提现。秘密只显示一次，放到下面的环境变量里，不要写入仓库、配置或聊天记录。
 4. 在 Demo 现货钱包准备 USDT。默认探针每笔买入 15 USDT；一次完整订单场景会在卖出之后再买一笔，两笔都受 100 USDT 上限约束。余额要覆盖这两笔和手续费。
-5. 关闭用 BNB 抵扣手续费。程序在手续费不是 BTC/USDT 时会拒绝新的买入。
+5. 关闭用 BNB 抵扣手续费。`demo-verify` 会先读手续费接口；`discount.enabledForAccount` 为 true 时直接停止，并说明要先关掉这笔折扣。买单只在手续费确认为 BTC/USDT 时才会发送。
 6. 记下 Demo 账户的数字 UID，填进配置的 `account_uid`。
 
 ## 配置
 
-在仓库目录执行。使用一份专用状态目录，不要指向正在跑策略的 `state_dir`。
+在仓库目录的前台或 tmux 里执行。不要用 `nohup ... &` 启动：那样外壳不会把 SIGINT 交给进程，Ctrl-C 停不掉会话。使用一份专用状态目录，不要指向正在跑策略的 `state_dir`。
+
+每个状态目录第一次运行时写入 `verification_nonce`。客户订单号由该值、目录内序号和操作名一起决定。新的空目录会得到新的 nonce，因此不会和上一份目录里已经发出的订单撞号。同一目录里这个 nonce 保持不变，重启后仍按原客户订单号查询，不会另发一笔。
 
 ```sh
 cp config.demo.example.json demo-verify.json
@@ -120,9 +122,13 @@ python3 -m spotquant demo-reconcile --config demo-verify.json
 
 ### graceful-stop
 
-对子进程执行 `demo-check --execute`，约 2 秒后向该进程组发送 SIGINT。子进程应写出新的 `latest.json`，`stop_reason` 为 `interrupted` 或 `requested`，且 `closeout_attempted` 为 true。收尾会读取日线，可能要几分钟。收尾期间不再开新的买单。这个场景本身不负责把仓位卖光；完整顺序里，卖出场景排在它前面。
+子进程跑的是 `demo-check --execute`，但使用 `<state_dir>/graceful-session`，不使用已经写下验证订单的目录。验证订单还没有模型检查点时，会话每一轮都会报 `missing model checkpoint for durable state`，来不及做一次真正的观察。独立目录避免这件事。
 
-`graceful-stop` 成功之后，状态目录里会有会话检查点。再跑订单场景会被拒绝。要再测一轮，换一个新的空目录。不要删除策略正在使用的目录，也不要把它改成 Demo 来绕过。
+父进程等到子进程的 `latest.json` 出现一轮成功观察（`cycles >= 1`、`observation_current` 为 true、并且有 `model_bull`）再发送 SIGINT。子进程会话时长至少 900 秒，父进程最多等约 900 秒。日线补齐可能要几分钟。成功时 `stop_reason` 为 `interrupted` 或 `requested`，`closeout_attempted` 为 true，记录里 `real_cycle` 为 true。收尾期间不再开新的买单。这个场景本身不负责把验证探针的仓位卖光；完整顺序里，卖出场景排在它前面。
+
+请在前台或 tmux 里看这一步。`nohup ... &` 不会把 SIGINT 送到进程。
+
+`graceful-session` 里成功之后会有会话检查点。那是子目录，不挡住原验证目录里的下一轮订单场景。不要把策略的 `state_dir` 指到 `graceful-session`，也不要删除策略正在使用的目录。
 
 ### clock-skew（需要 --faults）
 
@@ -135,6 +141,8 @@ python3 -m spotquant demo-reconcile --config demo-verify.json
 ### network-loss（需要 --faults）
 
 真实发送一笔市价买单，然后丢掉响应。程序按原客户订单号查询，`post_count` 必须是 1。查到成交后会再卖出，把 Demo 账户平回。若查询仍不能确认，场景状态是 `unknown`，不会再发第二笔买单。
+
+若买单在发送前就被拒绝（例如手续费模式不是 BTC/USDT），`post_count` 为 0，场景状态是 `blocked`，`reason` 是交易所或适配器给出的原因，而不是「响应丢失后又重发」。
 
 ### kill-restart（需要 --faults）
 
@@ -175,7 +183,7 @@ stop-place      止损价：        成交价：        峰值：
 stop-replace    本地空窗 ms：    交易所空窗 ms：   forced_rereplace：
 adverse-exit    simulated_trigger：true
 sma-exit        simulated_trigger：true
-graceful-stop   stop_reason：    closeout_attempted：
+graceful-stop   stop_reason：    closeout_attempted：    real_cycle：
 clock-skew      -1021 次数：      是否重试 POST：
 rate-limit      simulated_transport：true    退避期间请求数：
 network-loss    post_count：     是否按原身份查回：

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -52,10 +53,31 @@ def select_scenarios(names, faults) -> tuple:
     return tuple(names)
 
 
-def verification_identity(scope: str, token: int, operation: str) -> str:
-    if type(token) is not int or token <= 0 or not operation or any(item in operation for item in ('/', ' ')):
+def _nonce_ok(nonce) -> bool:
+    return isinstance(nonce, str) and len(nonce) == 32 and all(c in '0123456789abcdef' for c in nonce)
+
+
+def verification_identity(scope: str, token: int, operation: str, nonce: str) -> str:
+    """Stable for one state directory and sequence, and different for every new directory.
+
+    ``nonce`` is stored in that directory. A fresh directory therefore cannot
+    repeat a client id that an earlier directory already sent.
+    """
+    if (type(token) is not int or token <= 0 or not _nonce_ok(nonce)
+            or not operation or any(item in operation for item in ('/', ' '))):
         raise Blocked('verification identity is not stable')
-    return client_id(scope, token, 'verify-' + operation)
+    return client_id(scope, token, f'verify-{nonce}-{operation}')
+
+
+def _verification_nonce(state) -> str:
+    saved = state.get('verification_nonce')
+    if saved is None:
+        nonce = secrets.token_hex(16)
+        state.set('verification_nonce', nonce)
+        return nonce
+    if _nonce_ok(saved):
+        return saved
+    raise Blocked('verification identity is not stable')
 
 
 def protection_peak(fill_price, quote, *, quote_after_fill: bool):
@@ -327,7 +349,7 @@ def _record_buy(ctx, operation):
     _reject_unconfirmed(ctx['lifecycle'])
     quote = probe_quote(snapshot, config.capital_limit)
     order = {'symbol': 'BTCUSDT', 'side': 'BUY', 'type': 'MARKET', 'quoteOrderQty': quote}
-    identity = verification_identity(config.scope, ctx['token'], operation)
+    identity = verification_identity(config.scope, ctx['token'], operation, ctx['nonce'])
     row = dispatch_order(ctx['lifecycle'], identity, order, signal_ms=ctx['token'])
     row = confirm_order(ctx['lifecycle'], identity, sleep=ctx['sleep'])
     result = row[3]
@@ -407,7 +429,7 @@ def _place_stop(ctx, operation):
         'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
         'quantity': _step(qty, BASE_STEP), 'stopPrice': _step(stop, PRICE_STEP),
     }
-    identity = verification_identity(config.scope, ctx['token'], operation)
+    identity = verification_identity(config.scope, ctx['token'], operation, ctx['nonce'])
     row = dispatch_order(ctx['lifecycle'], identity, order, signal_ms=ctx['token'])
     row = confirm_order(ctx['lifecycle'], identity, sleep=ctx['sleep'])
     actual = row[3].get('stopPrice')
@@ -463,7 +485,7 @@ def scenario_stop_replace(ctx):
         'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
         'quantity': _step(qty, BASE_STEP), 'stopPrice': new_price,
     }
-    identity = verification_identity(ctx['config'].scope, ctx['token'], 'stop-replace')
+    identity = verification_identity(ctx['config'].scope, ctx['token'], 'stop-replace', ctx['nonce'])
     row = dispatch_order(lifecycle, identity, order, signal_ms=ctx['token'])
     row = confirm_order(lifecycle, identity, sleep=ctx['sleep'])
     place_done = clock()
@@ -504,7 +526,7 @@ def _sell_free(ctx, operation):
     if free <= 0 or free * D(snapshot['avg_price']) < D(snapshot['min_notional']) or not _qty_ok(free, snapshot):
         return {'status': 'fail', 'reason': 'no free BTC to sell', 'resent': False}
     order = {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': _step(free, BASE_STEP)}
-    identity = verification_identity(ctx['config'].scope, ctx['token'], operation)
+    identity = verification_identity(ctx['config'].scope, ctx['token'], operation, ctx['nonce'])
     row = dispatch_order(ctx['lifecycle'], identity, order, signal_ms=ctx['token'])
     row = confirm_order(ctx['lifecycle'], identity, sleep=ctx['sleep'])
     if row[3].get('status') != 'FILLED':
@@ -571,6 +593,57 @@ def demo_check_argv(config_path, uid) -> list:
             '--execute', '--authorize-uid', str(uid)]
 
 
+def session_cycle_ready(report) -> bool:
+    """True after demo-check has committed one observation, not a checkpoint refusal."""
+    if not isinstance(report, dict):
+        return False
+    if 'missing model checkpoint' in str(report.get('reason', '')):
+        return False
+    return (report.get('cycles', 0) >= 1 and report.get('observation_current') is True
+            and isinstance(report.get('model_bull'), dict))
+
+
+def write_graceful_config(config, config_path):
+    """Point the child at an empty directory so verification intents cannot block it.
+
+    A session with orders and no model checkpoint refuses every cycle. The child
+    therefore uses ``<state_dir>/graceful-session`` and a longer session so one
+    daily catch-up can finish before the parent sends SIGINT.
+    """
+    source = json.loads(Path(config_path).read_text(encoding='utf-8'))
+    if not isinstance(source, dict):
+        raise Blocked('graceful stop configuration cannot be read')
+    parent = Path(config.state_dir).expanduser().resolve()
+    parent.mkdir(parents=True, exist_ok=True)
+    child_state = parent / 'graceful-session'
+    if child_state.resolve() == parent:
+        raise Blocked('graceful stop needs its own state directory')
+    source['state_dir'] = str(child_state)
+    source['environment'] = 'demo'
+    source['session_seconds'] = max(int(source.get('session_seconds') or config.session_seconds), 900)
+    poll = int(source.get('poll_seconds') or config.poll_seconds)
+    if poll > source['session_seconds']:
+        source['poll_seconds'] = min(poll, source['session_seconds'])
+    path = parent / 'graceful-session.json'
+    path.write_text(json.dumps(source, indent=2) + '\n', encoding='utf-8')
+    return path, child_state
+
+
+def assess_graceful(judged, report, *, real_cycle: bool) -> dict:
+    out = dict(judged)
+    text = json.dumps(report, ensure_ascii=False) if isinstance(report, dict) else ''
+    if 'missing model checkpoint' in text:
+        out['status'] = 'fail'
+        out['reason'] = 'missing model checkpoint for durable state'
+        out['real_cycle'] = False
+        return out
+    out['real_cycle'] = bool(real_cycle)
+    if out.get('status') == 'pass' and not real_cycle:
+        out['status'] = 'fail'
+        out['reason'] = 'graceful stop did not finish a real session cycle before SIGINT'
+    return out
+
+
 def judge_graceful(report, *, report_updated: bool) -> dict:
     if not report_updated or not isinstance(report, dict):
         return {'status': 'fail', 'reason': 'session report was not updated after SIGINT',
@@ -584,9 +657,20 @@ def judge_graceful(report, *, report_updated: bool) -> dict:
             'reason': 'SIGINT did not finish as a protective closeout', 'simulated_trigger': False}
 
 
-def interrupt_child(argv, *, popen=subprocess.Popen, sleep=time.sleep, interrupt_after=2.0, timeout=240):
+def interrupt_child(argv, *, popen=subprocess.Popen, sleep=time.sleep, interrupt_after=2.0, timeout=240,
+                    until=None):
     proc = popen(argv, start_new_session=True, cwd=str(ROOT))
-    sleep(interrupt_after)
+    started = time.time()
+    deadline = started + timeout
+    ready = False
+    while proc.poll() is None and time.time() < deadline:
+        if until is not None:
+            if until():
+                ready = True
+                break
+        elif time.time() - started >= interrupt_after:
+            break
+        sleep(0.05 if until is None else 0.25)
     try:
         os.killpg(proc.pid, signal.SIGINT)
     except ProcessLookupError:
@@ -599,20 +683,32 @@ def interrupt_child(argv, *, popen=subprocess.Popen, sleep=time.sleep, interrupt
         except ProcessLookupError:
             pass
         code = proc.wait(timeout=10)
-        return {'returncode': code, 'timed_out': True}
-    return {'returncode': code, 'timed_out': False}
+        return {'returncode': code, 'timed_out': True, 'real_cycle': ready}
+    return {'returncode': code, 'timed_out': False, 'real_cycle': ready}
 
 
 def scenario_graceful_stop(ctx):
     path = ctx.get('config_path')
     if not path:
         return {'status': 'fail', 'reason': 'graceful stop needs the configuration path',
-                'simulated_trigger': False}
-    latest = Path(ctx['config'].state_dir).expanduser() / 'latest.json'
+                'simulated_trigger': False, 'real_cycle': False}
+    child_config, child_state = write_graceful_config(ctx['config'], path)
+    latest = child_state / 'latest.json'
     before = latest.read_text(encoding='utf-8') if latest.exists() else ''
-    argv = demo_check_argv(path, ctx['config'].account_uid)
-    outcome = interrupt_child(argv, popen=ctx['popen'], sleep=ctx['sleep'],
-                              interrupt_after=ctx['interrupt_after'], timeout=ctx['graceful_timeout'])
+
+    def until():
+        try:
+            text = latest.read_text(encoding='utf-8')
+        except OSError:
+            return False
+        try:
+            return session_cycle_ready(json.loads(text))
+        except json.JSONDecodeError:
+            return False
+
+    outcome = interrupt_child(
+        demo_check_argv(child_config, ctx['config'].account_uid), popen=ctx['popen'], sleep=ctx['sleep'],
+        interrupt_after=ctx['interrupt_after'], timeout=ctx['graceful_timeout'], until=until)
     after = latest.read_text(encoding='utf-8') if latest.exists() else ''
     updated = bool(after) and after != before
     try:
@@ -620,12 +716,16 @@ def scenario_graceful_stop(ctx):
     except json.JSONDecodeError:
         report = {}
         updated = False
-    judged = judge_graceful(report, report_updated=updated)
+    judged = assess_graceful(judge_graceful(report, report_updated=updated), report,
+                             real_cycle=outcome.get('real_cycle') is True)
     judged['returncode'] = outcome['returncode']
     judged['timed_out'] = outcome['timed_out']
-    if outcome['timed_out']:
+    judged['child_state_dir'] = str(child_state)
+    if outcome['timed_out'] and judged.get('reason') != 'missing model checkpoint for durable state':
         judged['status'] = 'fail'
-        judged['reason'] = 'graceful stop did not finish before the timeout'
+        judged['reason'] = ('graceful stop did not finish a real session cycle before the timeout'
+                            if not outcome.get('real_cycle') else
+                            'graceful stop did not finish before the timeout')
     return judged
 
 
@@ -741,20 +841,42 @@ def scenario_network_loss(ctx):
     _reject_unconfirmed(ctx['lifecycle'])
     quote = probe_quote(snapshot, ctx['config'].capital_limit)
     order = {'symbol': 'BTCUSDT', 'side': 'BUY', 'type': 'MARKET', 'quoteOrderQty': quote}
-    identity = verification_identity(ctx['config'].scope, ctx['token'], 'network-loss')
+    identity = verification_identity(ctx['config'].scope, ctx['token'], 'network-loss', ctx['nonce'])
     guarded = venue._opener
     lost = LostResponse(guarded)
     venue._opener = lost
     row = None
-    reason = None
+    blocked_reason = None
+    unknown_reason = None
     try:
         try:
             row = dispatch_order(ctx['lifecycle'], identity, order, signal_ms=ctx['token'])
-        except (Unknown, Blocked, NotSent) as exc:
-            reason = str(exc)
+        except NotSent as exc:
+            blocked_reason = str(exc)
+            row = _intent(ctx['lifecycle'], identity)
+        except Blocked as exc:
+            blocked_reason = str(exc)
+            row = _intent(ctx['lifecycle'], identity)
+        except Unknown as exc:
+            unknown_reason = str(exc)
             row = _intent(ctx['lifecycle'], identity)
     finally:
         venue._opener = guarded
+    posts = lost.post_count
+    if blocked_reason and posts == 0:
+        return {
+            'status': 'blocked',
+            'reason': blocked_reason,
+            'client_id': identity,
+            'order_id': None if not row else row[3].get('orderId'),
+            'post_count': 0,
+            'response_lost': False,
+            'recovered_by_query': False,
+            'resent': False,
+            'simulated_transport': True,
+            'simulated_trigger': False,
+            'flatten': None,
+        }
     for _ in range(4):
         if row and row[3].get('orderId'):
             break
@@ -764,7 +886,6 @@ def scenario_network_loss(ctx):
         except (Unknown, Blocked):
             pass
         row = _intent(ctx['lifecycle'], identity)
-    posts = lost.post_count
     flattened = None
     if row and row[3].get('status') == 'FILLED':
         flattened = _sell_free(ctx, 'network-loss-flatten')
@@ -772,14 +893,14 @@ def scenario_network_loss(ctx):
     if posts != 1:
         status, detail = 'fail', 'lost response was resent or was not sent'
     elif not found:
-        status, detail = 'unknown', 'order outcome is unknown; the same identity was not resent'
+        status, detail = 'unknown', unknown_reason or 'order outcome is unknown; the same identity was not resent'
     elif flattened is not None and flattened.get('status') != 'pass':
         status, detail = 'fail', flattened.get('reason')
     else:
         status, detail = 'pass', None
     return {
         'status': status,
-        'reason': reason if status == 'unknown' else detail,
+        'reason': detail,
         'client_id': identity,
         'order_id': None if not row else row[3].get('orderId'),
         'post_count': posts,
@@ -808,9 +929,9 @@ def _order_ids(snapshot) -> tuple:
     return tuple(sorted(row['order_id'] for row in snapshot.get('orders') or []))
 
 
-def scenario_kill_restart(config, venue, token, *, sleep=time.sleep):
+def scenario_kill_restart(config, venue, token, nonce, *, sleep=time.sleep):
     """Leave one unknown buy, SIGKILL a lock holder, and recover without a second order."""
-    identity = verification_identity(config.scope, token, 'kill-restart')
+    identity = verification_identity(config.scope, token, 'kill-restart', nonce)
     order = {'symbol': 'BTCUSDT', 'side': 'BUY', 'type': 'MARKET', 'quoteOrderQty': '10.00'}
     with State(config.state_dir, config.scope) as state:
         lifecycle = Lifecycle(state, venue, config)
@@ -903,7 +1024,7 @@ def _run_one(name, ctx) -> dict:
     try:
         record = SCENARIOS[name](ctx)
     except NotSent as exc:
-        record = {'status': 'fail', 'reason': str(exc), 'resent': False}
+        record = {'status': 'blocked', 'reason': str(exc), 'resent': False}
     except Unknown as exc:
         record = {'status': 'unknown', 'reason': str(exc), 'resent': False}
     except Blocked as exc:
@@ -918,19 +1039,42 @@ def _run_one(name, ctx) -> dict:
 def _rollup(records) -> str:
     if not records:
         return 'failed'
-    if any(row.get('status') == 'unknown' for row in records):
+    statuses = [row.get('status') for row in records]
+    if 'unknown' in statuses:
         return 'unknown'
-    if any(row.get('status') != 'pass' for row in records):
+    if 'blocked' in statuses:
+        return 'blocked'
+    if any(status != 'pass' for status in statuses):
         return 'failed'
     return 'pass'
 
 
-def _reason(status) -> str:
+def _reason(status, records=()) -> str:
     if status == 'pass':
         return 'Demo verification scenarios passed; mainnet execution is not verified'
     if status == 'unknown':
         return 'Demo verification has an unconfirmed order; it was not resent'
+    if status == 'blocked':
+        for row in records:
+            if row.get('status') == 'blocked' and row.get('reason'):
+                return row['reason']
+        return 'Demo verification stopped before sending; a precondition is not met'
     return 'Demo verification scenarios did not all pass'
+
+
+def assert_fee_discount_off(venue) -> None:
+    """Stop before any order when the Demo account pays fees with BNB."""
+    try:
+        payload = venue._get('/api/v3/account/commission', {'symbol': 'BTCUSDT'}, signed=True)
+    except (Unknown, Blocked) as exc:
+        raise Unknown(f'Demo fee discount could not be read ({exc})') from exc
+    discount = payload.get('discount') if isinstance(payload, dict) else None
+    if not isinstance(discount, dict) or type(discount.get('enabledForAccount')) is not bool:
+        raise Unknown('commission discount mode is incomplete')
+    if discount.get('enabledForAccount') is True:
+        raise Blocked(
+            'BNB fee discount is enabled (discount.enabledForAccount). '
+            'Turn it off on the Demo account before demo-verify; buys require BTC/USDT fees')
 
 
 def render_verification_md(report: dict) -> str:
@@ -998,9 +1142,10 @@ def _preview(snapshot) -> dict:
 
 def execute_verification(config, venue, *, execute, faults=False, scenarios=None, out=None,
                          config_path=None, sleep=time.sleep, monotonic=time.monotonic,
-                         popen=subprocess.Popen, interrupt_after=2.0, graceful_timeout=240):
+                         popen=subprocess.Popen, interrupt_after=2.0, graceful_timeout=900):
     assert_demo_config(config, capital=True)
     install_demo_guard(venue)
+    assert_fee_discount_off(venue)
     names = select_scenarios(scenarios, faults)
     out_dir = Path(out) if out is not None else Path(config.state_dir).expanduser() / 'verification'
     venue._monotonic = monotonic
@@ -1033,6 +1178,7 @@ def execute_verification(config, venue, *, execute, faults=False, scenarios=None
                for _, _, status, _ in Lifecycle(state, venue, config).rows()):
             raise Blocked('an unconfirmed verification order is still open; reconcile it before another order')
         token = _next_token(state)
+        nonce = _verification_nonce(state)
         ctx = {
             'config': config,
             'config_path': config_path,
@@ -1040,6 +1186,7 @@ def execute_verification(config, venue, *, execute, faults=False, scenarios=None
             'state': state,
             'lifecycle': Lifecycle(state, venue, config),
             'token': token,
+            'nonce': nonce,
             'sleep': sleep,
             'monotonic': monotonic,
             'popen': popen,
@@ -1074,14 +1221,14 @@ def execute_verification(config, venue, *, execute, faults=False, scenarios=None
     if 'kill-restart' in names:
         started = time.time()
         try:
-            record = scenario_kill_restart(config, venue, token, sleep=sleep)
+            record = scenario_kill_restart(config, venue, token, nonce, sleep=sleep)
         except (Blocked, Unknown, OSError, ValueError) as exc:
             record = {'status': 'fail', 'reason': str(exc), 'resent': False, 'simulated_trigger': False}
         record['scenario'] = 'kill-restart'
         record['elapsed_seconds'] = round(time.time() - started, 3)
         report['scenarios'].append(serial(record))
     report['status'] = _rollup(report['scenarios'])
-    report['reason'] = _reason(report['status'])
+    report['reason'] = _reason(report['status'], report['scenarios'])
     if 'graceful-stop' not in names:
         with State(config.state_dir, config.scope) as state:
             state.report(serial(report))
