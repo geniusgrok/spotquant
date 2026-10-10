@@ -1,9 +1,10 @@
 """Unattended session helpers: drawdown halt, kill switch, backup, heartbeats.
 
 Strategy parameters are not changed here. A halt file stops new buys only.
-kill-switch writes that file before its first cancel or sell. Deleting it
-resumes entries; the next buy still needs a fresh cross. ``sold`` counts only
-this exit's read-back fills. The exit loop is at most twelve actions.
+kill-switch always writes HALT first, before recover, snapshot, cancel, or
+sell, including a failed query and dust that is already untradable. Deleting
+it resumes entries; the next buy still needs a fresh cross. ``sold`` counts
+only this exit's read-back fills. The exit loop is at most twelve actions.
 """
 from __future__ import annotations
 
@@ -220,13 +221,39 @@ def _unresolved_sell(lifecycle) -> bool:
     return any(row[2] in ('unknown', 'resting', 'canceling') for row in _market_sells(lifecycle))
 
 
-def _drop_stale_rearm(lifecycle) -> None:
-    """A kill-switch exit does not keep a touch re-entry.
+def _position_first_ms(state):
+    position = (state.get('positions') or {}).get('40')
+    if isinstance(position, dict) and position.get('first_ms') is not None:
+        return int(position['first_ms'])
+    return None
 
-    HALT is what pauses new buys. After that file is removed, the next buy
-    still needs a fresh cross; the prepared touch permission is not reused.
+
+def _saved_exit_bar(state):
+    """Signal time of the exit this position already started, if it is still that position."""
+    saved = state.get('kill_exit')
+    if not isinstance(saved, dict) or type(saved.get('signal_ms')) is not int:
+        return None
+    current = _position_first_ms(state)
+    saved_first = saved.get('position_first_ms')
+    if current is not None and saved_first is not None and int(saved_first) != current:
+        return None
+    return int(saved['signal_ms'])
+
+
+def _remember_exit(state, bar) -> None:
+    state.set('kill_exit', {
+        'signal_ms': int(bar),
+        'position_first_ms': _position_first_ms(state),
+    })
+
+
+def _drop_stale_rearm(lifecycle, bar) -> None:
+    """Drop touch re-entry only on this exit's sell chain.
+
+    Older market sells keep the rearm flag they were booked with. HALT pauses
+    new buys; after that file is removed, this exit still needs a fresh cross.
     """
-    for row in list(_market_sells(lifecycle)):
+    for row in list(_exit_sells(lifecycle, bar)):
         rearm = row[1].get('rearm') or {}
         if not any(rearm.values()):
             continue
@@ -272,15 +299,24 @@ def _restore_protection(lifecycle, state, venue, config, bar) -> bool:
 def _kill_bar(state, lifecycle) -> int:
     for _, payload, status, _ in _market_sells(lifecycle):
         if status in ('prepared', 'unknown', 'resting', 'canceling') and payload.get('signal_ms') is not None:
-            return int(payload['signal_ms'])
+            bar = int(payload['signal_ms'])
+            _remember_exit(state, bar)
+            return bar
+    saved = _saved_exit_bar(state)
+    if saved is not None:
+        return saved
     position = (state.get('positions') or {}).get('40')
     if isinstance(position, dict) and position.get('first_ms') is not None:
-        return int(position['first_ms'])
-    saved = state.get('models') or {}
-    body = (saved.get('40') or {}).get('body') or {}
+        bar = int(position['first_ms'])
+        _remember_exit(state, bar)
+        return bar
+    saved_model = state.get('models') or {}
+    body = (saved_model.get('40') or {}).get('body') or {}
     if body.get('last') is None:
         raise Unknown('kill-switch has no recorded position time')
-    return int(body['last'])
+    bar = int(body['last'])
+    _remember_exit(state, bar)
+    return bar
 
 
 def _coverage_takeover(state, venue, config, lifecycle) -> bool:
@@ -329,8 +365,8 @@ def _finish_kill(state, config, lifecycle, *, status: str, reason: str | None, c
         report['reason'] = reason
     if status != 'pass' or halted:
         report['notifications'] = dispatch_notifications(
-            Path(state.directory), report, exit_code=2, now=now, env=env,
-            smtp_ssl=smtp_ssl, smtp_plain=smtp_plain, urlopen=urlopen)
+            Path(state.directory), report, exit_code=0 if status == 'pass' else 2, now=now,
+            env=env, smtp_ssl=smtp_ssl, smtp_plain=smtp_plain, urlopen=urlopen)
     return report
 
 
@@ -338,12 +374,15 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
                 urlopen=None, now: float | None = None) -> dict:
     """Cancel this state's orders and sell its recorded position through the normal exit lifecycle.
 
-    When an exit is attempted, ``HALT`` is written atomically before the first
-    cancel or sell. The sell intent, its client id, and any cancel id are saved
-    before those requests are sent. ``sold`` counts only this exit's read-back
-    fills. A touch re-entry prepared before this command is not kept. BTC this
-    state does not record is not sold. ``confirm`` must be true or nothing is sent.
-    At most twelve actions run; a remainder sets manual takeover and alerts.
+    kill-switch always writes HALT first. After ``--confirm``, the environment,
+    and the capital ceiling pass, ``HALT`` is written atomically before recover,
+    snapshot, cancel, or sell. A failed query and an already flat or dust
+    position still leave that file. If the write fails, nothing is queried or
+    sent and the caller alerts. The sell intent, its client id, and any cancel
+    id are saved before those requests are sent. ``sold`` counts only this
+    exit's read-back fills. A touch re-entry on the exit that is sent is not
+    kept. BTC this state does not record is not sold. At most twelve actions
+    run; a remainder sets manual takeover and alerts.
     """
     if confirm is not True:
         raise Blocked('kill-switch requires --confirm')
@@ -351,6 +390,8 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
         raise Blocked('kill-switch requires demo or live')
     if config.capital_limit is None:
         raise Blocked('kill-switch requires a capital ceiling')
+    # First state change. A failed write must not reach recover, snapshot, cancel, or sell.
+    _arm_halt(state)
     from .execution import Lifecycle
     snapshot = venue.snapshot(config.account_uid)
     owned, dust = _recorded_qty(state)
@@ -383,9 +424,9 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
         return finish('pass')
     bar = _kill_bar(state, lifecycle)
     follows = state.get('follows') or {}
-    unresolved = None
     # One session allows twelve actions. A finished session clock is not reused:
     # this command is the operator's exit, not a continuation of that clock.
+    exhausted = False
     for _ in range(12):
         try:
             lifecycle.recover()
@@ -394,7 +435,7 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
         if _unresolved_sell(lifecycle):
             return finish('unknown', 'sell is not confirmed; the original identity is not sent again',
                           takeover=True)
-        _drop_stale_rearm(lifecycle)
+        _drop_stale_rearm(lifecycle, bar)
         try:
             _account_exit(state, venue, lifecycle, config)
         except Unknown as exc:
@@ -409,7 +450,6 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
             _supersede_unsent(lifecycle, prepared[0], 'prepared exit quantity no longer matches the booked remainder')
             prepared = []
         if not prepared and not _tradable(free, fresh, dust=dust):
-            unresolved = None
             break
         try:
             lifecycle.verify(fresh)
@@ -424,7 +464,7 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
             prepared = [row for row in lifecycle.rows() if row[0] == identity]
         if prepared[0][2] != 'prepared':
             continue
-        _drop_stale_rearm(lifecycle)
+        _drop_stale_rearm(lifecycle, bar)
         prepared = [row for row in lifecycle.rows() if row[0] == prepared[0][0]]
         sell_qty = prepared[0][1]['order']['quantity']
         if not _qty_ok(sell_qty, fresh):
@@ -432,7 +472,6 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
                           'sell quantity fails native lot filters; existing protection was kept',
                           takeover=_coverage_takeover(state, venue, config, lifecycle))
         try:
-            _arm_halt(state)
             for stop_id, payload, status, _ in list(lifecycle.rows()):
                 if status == 'resting' and (payload.get('order') or {}).get('type') == 'STOP_LOSS':
                     lifecycle.cancel(stop_id)
@@ -471,10 +510,10 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
             reason = str(exc) if protected else str(exc) + '; residual position is unprotected'
             return finish(status, reason, takeover=_coverage_takeover(state, venue, config, lifecycle))
     else:
-        unresolved = unresolved or 'kill-switch stopped before the recorded position was flat'
+        exhausted = True
     try:
         lifecycle.recover()
-        _drop_stale_rearm(lifecycle)
+        _drop_stale_rearm(lifecycle, bar)
         _account_exit(state, venue, lifecycle, config)
     except Unknown as exc:
         return finish('unknown', str(exc), takeover=True)
@@ -483,15 +522,15 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
     if _unresolved_sell(lifecycle):
         return finish('unknown', 'sell is not confirmed; the original identity is not sent again',
                       takeover=True)
-    if unresolved or _tradable(qty, fresh, dust=dust):
+    if _tradable(qty, fresh, dust=dust):
         protected = _stop_resting(lifecycle) or _restore_protection(lifecycle, state, venue, config, bar)
-        status = 'unknown'
-        reason = unresolved or 'recorded position remains after kill-switch'
+        reason = ('kill-switch stopped before the recorded position was flat'
+                  if exhausted else 'recorded position remains after kill-switch')
         if not protected:
             reason += '; residual position is unprotected'
-        else:
+        elif exhausted:
             reason += '; the twelve-action limit left a position that still needs the owner'
-        return finish(status, reason, takeover=True)
+        return finish('unknown', reason, takeover=True)
     try:
         lifecycle.verify(fresh)
     except Unknown as exc:

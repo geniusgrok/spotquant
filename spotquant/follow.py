@@ -13,8 +13,9 @@ from .types import Blocked, Unknown, floor_step, number
 def _rearm(model, position: dict, owner: dict, window: int) -> bool:
     """Only a durable touch sale that still has rearm set may rejoin the long book.
 
-    kill-switch clears that flag before the exit is booked, so deleting HALT
-    does not buy from the touch permission that was prepared beforehand.
+    kill-switch always writes HALT first and clears that flag on the exit it
+    sends, so deleting HALT does not buy from the touch permission prepared
+    beforehand. The next buy still needs a fresh cross.
     """
     order = owner.get('order', {})
     return bool(order.get('side') == 'SELL' and order.get('type') == 'MARKET'

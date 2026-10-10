@@ -223,6 +223,7 @@ class KillSwitchTests(unittest.TestCase):
                 with self.assertRaisesRegex(Blocked, '--confirm'):
                     kill_switch(state, venue, config, confirm=False)
             self.assertEqual(len(venue.sent), sent)
+            self.assertFalse((Path(directory) / 'HALT').is_file())
         with tempfile.TemporaryDirectory() as directory:
             config = Config('10001', directory, environment='demo', capital_limit_usdt='100')
 
@@ -238,6 +239,7 @@ class KillSwitchTests(unittest.TestCase):
             with State(directory, config.scope) as state:
                 with self.assertRaisesRegex(Blocked, 'will not adopt'):
                     kill_switch(state, Venue(), config, confirm=True, env={})
+            self.assertTrue((Path(directory) / 'HALT').is_file())
 
     def test_full_fill_is_confirmed_and_the_next_session_continues(self):
         from test_execution import run_day
@@ -770,8 +772,9 @@ class KillSwitchReviewTests(unittest.TestCase):
                 result = kill_switch(state, venue, config, confirm=True, env=_smtp_env(), smtp_ssl=smtp)
             self.assertTrue(result['halt'])
             self.assertIn('halt file', result['buy_halt'])
-            self.assertTrue(any('halt file' in (client.message.get_content() if hasattr(client.message, 'get_content') else '')
-                                or '回撤停买' in str(client.message['Subject']) for client in calls))
+            subjects = [str(client.message['Subject']) for client in calls]
+            self.assertTrue(any('回撤停买' in subject for subject in subjects))
+            self.assertFalse(any('退出码非零' in subject for subject in subjects))
             with State(directory, config.scope) as state:
                 for payload, in state.db.execute("SELECT payload FROM intents"):
                     body = json.loads(payload)
@@ -784,6 +787,134 @@ class KillSwitchReviewTests(unittest.TestCase):
             add_day(venue, '103')
             self.assertEqual(run_day(config, venue)['errors'], [])
             self.assertEqual(len([row for row in venue.orders.values() if row.get('side') == 'BUY']), buys)
+
+    def test_the_twelfth_fill_can_finish_as_dust(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            original = venue.submit
+            markets = {'n': 0}
+
+            def submit(identity, payload, preflight=None):
+                if payload.get('side') == 'SELL' and payload.get('type') == 'MARKET':
+                    markets['n'] += 1
+                    venue.fraction = D('1') if markets['n'] >= 12 else D('0.1')
+                return original(identity, payload, preflight=preflight)
+
+            venue.submit = submit
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertEqual(result['status'], 'pass', result)
+            self.assertFalse(result['manual_takeover'])
+            self.assertTrue(result['dust'])
+            self.assertLess(venue.btc * venue.price, D('5'))
+            self.assertLess(abs(D(result['residual_btc']) - venue.btc), D('0.00005'))
+
+    def test_a_touch_exit_keeps_its_confirmed_sold_after_restart(self):
+        from test_execution import SimulatedCrash, run_day
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            venue.price = D('100.4')
+            original = venue.cancel
+
+            def crash(identity, **kwargs):
+                original(identity, **kwargs)
+                raise SimulatedCrash
+
+            venue.cancel = crash
+            with self.assertRaises(SimulatedCrash):
+                run_day(config, venue)
+            venue.cancel = original
+            venue.price = D('102')
+            with State(directory, config.scope) as state:
+                payload = json.dumps({
+                    'order': {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': '1'},
+                    'sleeves': [40], 'signal_ms': 1, 'weights': {'40': '1'},
+                    'repair': {'40': False}, 'rearm': {'40': True},
+                })
+                state.db.execute('INSERT INTO intents VALUES (?,?,?,?,?,?)',
+                                 ('sq-history', 'p4', payload, 'settled', '{}', 1))
+                state.db.commit()
+                first = kill_switch(state, venue, config, confirm=True, env={})
+                second = kill_switch(state, venue, config, confirm=True, env={})
+                kept = json.loads(state.db.execute(
+                    'SELECT payload FROM intents WHERE id=?', ('sq-history',)).fetchone()[0])
+            self.assertEqual(first['status'], 'pass', first)
+            self.assertIsNotNone(first['sold'])
+            self.assertEqual(second['sold'], first['sold'])
+            self.assertTrue(kept['rearm']['40'])
+
+    def test_documented_env_grep_does_not_prefix_names(self):
+        root = Path(__file__).resolve().parents[1]
+        text = (root / 'deploy/README.md').read_text(encoding='utf-8')
+        self.assertIn("grep -h -v '^#' /etc/spotquant/live.env /etc/spotquant/notify.env", text)
+        with tempfile.TemporaryDirectory() as directory:
+            live = Path(directory) / 'live.env'
+            notify = Path(directory) / 'notify.env'
+            live.write_text('SPOTQUANT_BINANCE_DEMO_KEY=one\n', encoding='utf-8')
+            notify.write_text('SPOTQUANT_SMTP_HOST=two\n', encoding='utf-8')
+            seen = subprocess.run(
+                ['sh', '-c', "env $(grep -h -v '^#' live.env notify.env | xargs) "
+                 "python3 -c 'import os; print(os.environ[\"SPOTQUANT_BINANCE_DEMO_KEY\"]"
+                 "+\"|\"+os.environ[\"SPOTQUANT_SMTP_HOST\"])'"],
+                cwd=directory, check=True, capture_output=True, text=True)
+            self.assertEqual(seen.stdout.strip(), 'one|two')
+
+    def test_cli_notifies_when_halt_or_backoff_setup_fails(self):
+        from spotquant.cli import main
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': '10001', 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '100',
+            }), encoding='utf-8')
+            notes = []
+
+            def connect(loaded, execute_orders=False):
+                class Venue:
+                    execution_authorized = True
+
+                    def bind_state(self, state):
+                        raise Blocked('persisted rate limit state is invalid')
+
+                    def snapshot(self, uid):
+                        raise AssertionError('snapshot after a bad backoff record')
+
+                return Venue()
+
+            def dispatch(directory, report, **kwargs):
+                notes.append(report['reason'])
+                return {'sent': [], 'skipped': 0, 'errors': []}
+
+            with patch('spotquant.cli.connect', connect), \
+                    patch('spotquant.ops.dispatch_notifications', dispatch):
+                code = main(['kill-switch', '--config', str(path), '--authorize-uid', '10001', '--confirm'])
+            self.assertEqual(code, 2)
+            self.assertEqual(notes, ['persisted rate limit state is invalid'])
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': config.account_uid, 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '1000',
+                'session_seconds': 1, 'poll_seconds': 1,
+            }), encoding='utf-8')
+            notes = []
+
+            def connect(loaded, execute_orders=False):
+                return venue
+
+            def dispatch(directory, report, **kwargs):
+                notes.append(report['status'])
+                return {'sent': [], 'skipped': 0, 'errors': []}
+
+            with patch('spotquant.cli.connect', connect), \
+                    patch('spotquant.ops._arm_halt', side_effect=OSError('halt directory is read only')), \
+                    patch('spotquant.ops.dispatch_notifications', dispatch):
+                code = main(['kill-switch', '--config', str(path), '--authorize-uid', config.account_uid,
+                             '--confirm'])
+            self.assertEqual(code, 2)
+            self.assertEqual(notes, ['unknown'])
 
     def test_cli_kill_switch_notifies_and_keeps_a_saved_backoff(self):
         from spotquant.binance import Binance
@@ -821,6 +952,7 @@ class KillSwitchReviewTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(requests, [])
             self.assertEqual(notes, ['unknown'])
+            self.assertTrue((Path(directory) / 'HALT').is_file())
             with State(directory, config.scope) as state:
                 self.assertEqual(state.get('rate_limits'), {'demo-api.binance.com': 1_100_000})
         with tempfile.TemporaryDirectory() as directory:
@@ -848,5 +980,141 @@ class KillSwitchReviewTests(unittest.TestCase):
                 code = main(['kill-switch', '--config', str(path), '--authorize-uid', '10001', '--confirm'])
             self.assertEqual(code, 2)
             self.assertEqual(len(requests), 1)
+            self.assertTrue((Path(directory) / 'HALT').is_file())
             with State(directory, config.scope) as state:
                 self.assertEqual(state.get('rate_limits'), {'demo-api.binance.com': 1_120_000})
+
+    def test_halt_is_written_when_the_first_recover_fails(self):
+        from spotquant.types import Unknown as OrderUnknown
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            sent = list(venue.sent)
+
+            def query(identity):
+                raise OrderUnknown('order query unavailable')
+
+            venue.query = query
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+            self.assertEqual(result['status'], 'unknown', result)
+            self.assertTrue(result['halt'])
+            self.assertEqual(venue.sent, sent)
+            self.assertTrue(any(row.get('status') == 'NEW' and row.get('type') == 'STOP_LOSS'
+                                for row in venue.orders.values()))
+            self.assertFalse(any(row.get('side') == 'SELL' and row.get('type') == 'MARKET'
+                                 for row in venue.orders.values()))
+
+    def test_halt_is_written_on_a_dust_or_flat_account(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            with State(directory, config.scope) as state:
+                first = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertEqual(first['status'], 'pass', first)
+            self.assertTrue(first['dust'])
+            (Path(directory) / 'HALT').unlink()
+            sent = list(venue.sent)
+            with State(directory, config.scope) as state:
+                second = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertEqual(second['status'], 'pass', second)
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+            self.assertEqual(venue.sent, sent)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('10001', directory, environment='demo', capital_limit_usdt='100')
+
+            class Flat:
+                execution_authorized = True
+
+                def clock(self):
+                    return 1_700_000_000
+
+                def snapshot(self, uid):
+                    return {
+                        'btc': D(0), 'btc_free': D(0), 'last_price': D('100'),
+                        'avg_price': D('100'), 'min_notional': D('5'), 'orders': [],
+                        'usdt_free': D('100'), 'usdt_locked': D(0),
+                    }
+
+                def trades(self, since, from_id=None):
+                    return []
+
+                def query(self, identity):
+                    raise AssertionError('flat kill queried an order')
+
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, Flat(), config, confirm=True, env={})
+            self.assertEqual(result['status'], 'pass', result)
+            self.assertTrue(result['halt'])
+            self.assertEqual(result['cancelled'], [])
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+
+    def test_halt_write_failure_aborts_without_orders_and_alerts(self):
+        from spotquant.cli import main
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': config.account_uid, 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '1000',
+                'session_seconds': 1, 'poll_seconds': 1,
+            }), encoding='utf-8')
+            sent = list(venue.sent)
+            snapshots = []
+            original = venue.snapshot
+
+            def snapshot(uid):
+                snapshots.append(uid)
+                return original(uid)
+
+            venue.snapshot = snapshot
+            notes = []
+
+            def connect(loaded, execute_orders=False):
+                return venue
+
+            def dispatch(directory, report, **kwargs):
+                notes.append(report)
+                return {'sent': [], 'skipped': 0, 'errors': []}
+
+            with patch('spotquant.cli.connect', connect), \
+                    patch('spotquant.ops._arm_halt', side_effect=OSError('halt directory is read only')), \
+                    patch('spotquant.ops.dispatch_notifications', dispatch):
+                code = main(['kill-switch', '--config', str(path), '--authorize-uid', config.account_uid,
+                             '--confirm'])
+            self.assertEqual(code, 2)
+            self.assertEqual(len(notes), 1)
+            self.assertEqual(notes[0]['status'], 'unknown')
+            self.assertIn('read only', notes[0]['reason'])
+            self.assertTrue(notes[0]['manual_takeover'])
+            self.assertEqual(venue.sent, sent)
+            self.assertEqual(snapshots, [])
+            self.assertFalse((Path(directory) / 'HALT').is_file())
+            self.assertFalse(any(row.get('side') == 'SELL' and row.get('type') == 'MARKET'
+                                 for row in venue.orders.values()))
+
+    def test_docs_say_kill_switch_always_writes_halt_first(self):
+        import contextlib
+        from io import StringIO
+        from spotquant.cli import main
+        root = Path(__file__).resolve().parents[1]
+        for name in ('README.md', 'deploy/README.md', 'AGENTS.md',
+                     'spotquant/ops.py', 'spotquant/cli.py', 'spotquant/follow.py'):
+            text = (root / name).read_text(encoding='utf-8')
+            self.assertIn('kill-switch always writes HALT first', text, name)
+        combined = '\n'.join((root / name).read_text(encoding='utf-8')
+                              for name in ('README.md', 'deploy/README.md', 'AGENTS.md'))
+        self.assertNotIn('查询失败或已经只剩尘埃时不写', combined)
+        self.assertNotIn('还没进入撤单或卖出就因查询失败', combined)
+        self.assertNotIn('查询还没到这一步就失败', combined)
+        buf = StringIO()
+        with contextlib.redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as caught:
+                main(['kill-switch', '--help'])
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn('kill-switch always writes HALT first', buf.getvalue())
+        top = StringIO()
+        with contextlib.redirect_stdout(top):
+            with self.assertRaises(SystemExit) as caught:
+                main(['--help'])
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn('kill-switch always writes HALT first', top.getvalue())
