@@ -102,7 +102,7 @@ sudo -u spotquant env $(grep -v '^#' /etc/spotquant/live.env | xargs) \
   --config /etc/spotquant/live.json --authorize-uid 你的UID --confirm
 ```
 
-没有 `--confirm` 不会发单。账本之外的 BTC 不会被卖掉。
+没有 `--confirm` 不会发单。账本之外的 BTC 不会被卖掉。卖单走原来的退出生命周期：意图、客户订单号和撤单号在发送前写入状态。报告里的成交数量只来自交易所回读；没卖完会留下残仓说明，并尽量把止损挂回去，不会把请求数量写成已成交。结果不是完成时会发告警。
 
 数据库备份在每天 UTC 01:05，排在 00:45 的会话结束之后，用 SQLite 在线备份，保留最近 14 份，目录是 `/var/backups/spotquant/demo` 或 `live`。
 

@@ -135,7 +135,9 @@ def main(argv=None):
     backup = commands.add_parser('backup', help='Online SQLite backup with rotation.')
     backup.add_argument('--config', required=True)
     backup.add_argument('--dest', type=Path)
-    switch = commands.add_parser('kill-switch', help='Cancel this state\'s orders and sell its recorded position.')
+    switch = commands.add_parser(
+        'kill-switch',
+        help='Cancel this state\'s orders and sell its recorded position. Success requires a confirmed fill.')
     switch.add_argument('--config', required=True)
     switch.add_argument('--authorize-uid', required=True)
     switch.add_argument('--confirm', action='store_true')
