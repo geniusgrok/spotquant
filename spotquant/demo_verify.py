@@ -21,7 +21,9 @@ from .binance import allow_demo_bnb_discount
 from .demo_guard import DEMO_ORIGIN, assert_demo_config, install_demo_guard, refuse_non_demo_url
 from .execution import Lifecycle
 from .model import Model
-from .preview import BASE_STEP, PRICE_STEP, QUOTE_STEP, _position_decision, _qty_ok, _step
+from .preview import (
+    BASE_STEP, PRICE_STEP, QUOTE_STEP, _position_decision, _qty_ok, _step, stop_band_violation,
+)
 from .state import State, client_id
 from .types import Blocked, NotSent, Unknown, floor_step, number, serial
 
@@ -440,6 +442,10 @@ def _place_stop(ctx, operation):
     if stop >= D(snapshot['last_price']):
         return {'status': 'fail', 'reason': 'stop is already crossed at the latest price',
                 'stop_price': format(stop, 'f'), 'simulated_trigger': False}
+    violation = stop_band_violation(snapshot, _step(stop, PRICE_STEP))
+    if violation:
+        return {'status': 'fail', 'reason': violation, 'stop_price': _step(stop, PRICE_STEP),
+                'simulated_trigger': False, 'unprotected': True}
     _reject_unconfirmed(ctx['lifecycle'])
     order = {
         'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
@@ -535,6 +541,38 @@ def scenario_stop_replace(ctx):
     }
 
 
+def _ledger_net_btc(state) -> D:
+    """BTC this state directory's own fills still explain."""
+    net = D(0)
+    for (payload,) in state.db.execute('SELECT payload FROM fills'):
+        row = json.loads(payload)
+        qty = D(str(row['qty']))
+        commission = D(str(row.get('commission') or '0'))
+        base_fee = commission if row.get('commission_asset') == 'BTC' else D(0)
+        if row.get('buyer'):
+            net += qty - base_fee
+        else:
+            net -= qty
+    return net
+
+
+def _foreign_btc(ctx, snapshot) -> bool:
+    """True when the account holds material BTC this verification ledger did not buy."""
+    held = D(snapshot['btc'])
+    price = D(snapshot['last_price'])
+    minimum = D(snapshot.get('min_notional') or '5')
+    if held * price < minimum:
+        return False
+    gap = held - _ledger_net_btc(ctx['state'])
+    return gap * price >= minimum
+
+
+def _flat_for_fresh_session(snapshot) -> bool:
+    if snapshot.get('orders'):
+        return False
+    return D(snapshot['btc']) * D(snapshot['last_price']) < D(snapshot.get('min_notional') or '5')
+
+
 def _sell_free(ctx, operation):
     _cancel_resting(ctx['lifecycle'])
     snapshot = ctx['venue'].snapshot(ctx['config'].account_uid)
@@ -554,46 +592,104 @@ def _sell_free(ctx, operation):
             'trade_ids': fill['ids'], 'resent': False}
 
 
+def _flatten_probe(ctx, kind):
+    try:
+        return _sell_free(ctx, f'{kind}-probe-flatten')
+    except (Blocked, NotSent, Unknown) as exc:
+        return {'status': 'fail', 'reason': str(exc)}
+
+
 def _scenario_exit(ctx, kind):
     snapshot = ctx['venue'].snapshot(ctx['config'].account_uid)
-    qty = floor_step(D(snapshot['btc']), BASE_STEP)
+    if _foreign_btc(ctx, snapshot):
+        return {
+            'status': 'fail',
+            'reason': 'account already holds BTC; verification will not adopt it',
+            'simulated_trigger': True,
+            'trigger': kind,
+            'unprotected': False,
+        }
     bought = None
-    stopped = None
-    if qty <= 0 or qty * D(snapshot['avg_price']) < D(snapshot['min_notional']):
-        bought = _record_buy(ctx, f'market-buy-before-{kind}')
-        if bought.get('status') != 'pass':
-            return {'status': 'skipped', 'reason': 'no position for the exit', 'buy': bought,
-                    'simulated_trigger': True, 'trigger': kind}
-        stopped = _place_stop(ctx, f'stop-before-{kind}')
+    try:
+        qty = floor_step(D(snapshot['btc']), BASE_STEP)
+        owned = qty * D(snapshot['avg_price']) >= D(snapshot['min_notional'])
+        if not owned:
+            bought = _record_buy(ctx, f'market-buy-before-{kind}')
+            if bought.get('status') != 'pass':
+                return {'status': 'skipped', 'reason': 'no position for the exit', 'buy': bought,
+                        'simulated_trigger': True, 'trigger': kind}
+        stopped = None
+        if bought:
+            try:
+                stopped = _place_stop(ctx, f'stop-before-{kind}')
+            except (Blocked, NotSent, Unknown) as exc:
+                stopped = {'status': 'fail', 'reason': str(exc)}
         snapshot = ctx['venue'].snapshot(ctx['config'].account_uid)
         qty = floor_step(D(snapshot['btc']), BASE_STEP)
-    decision, evidence = simulated_exit_decision(kind, qty, snapshot)
-    if decision.get('action') != 'exit' or not decision.get('order'):
-        return {'status': 'fail', 'reason': 'forced prices did not produce a tradable exit',
-                'simulated_trigger': True, 'trigger': kind, 'synthetic_inputs': evidence}
-    _reject_unconfirmed(ctx['lifecycle'])
-    sale = _sell_free(ctx, f'{kind}-exit')
-    stop_failed = stopped is not None and stopped.get('status') != 'pass'
-    passed = sale.get('status') == 'pass' and not stop_failed
-    record = {
-        'status': 'pass' if passed else 'fail',
-        'reason': None if passed else (sale.get('reason') or 'exit filled but the stop before it did not confirm'),
-        'simulated_trigger': True,
-        'trigger': kind,
-        'decision_reason': decision.get('reason'),
-        'synthetic_inputs': evidence,
-        'client_id': sale.get('client_id'),
-        'order_id': sale.get('order_id'),
-        'order_status': 'FILLED' if sale.get('status') == 'pass' else sale.get('order_status'),
-        'resent': False,
-        'note': '触发价格是验证程序构造的，不是当时行情。卖单使用真实下单与回读。',
-    }
-    if bought:
-        record['probe_buy'] = {'client_id': bought.get('client_id'), 'order_id': bought.get('order_id')}
-    if stopped:
-        record['stop_before_exit'] = {'status': stopped.get('status'), 'client_id': stopped.get('client_id'),
-                                      'stop_price': stopped.get('stop_price')}
-    return record
+        if qty * D(snapshot['avg_price']) < D(snapshot['min_notional']):
+            flat = _flatten_probe(ctx, kind) if bought else None
+            return {'status': 'fail', 'reason': 'no position for the exit', 'buy': bought,
+                    'stop_before_exit': stopped, 'probe_flattened': flat,
+                    'unprotected': bool(bought) and not (flat and flat.get('status') == 'pass'),
+                    'simulated_trigger': True, 'trigger': kind}
+        decision, evidence = simulated_exit_decision(kind, qty, snapshot)
+        if decision.get('action') != 'exit' or not decision.get('order'):
+            flat = _flatten_probe(ctx, kind) if bought else None
+            return {
+                'status': 'fail',
+                'reason': 'forced prices did not produce a tradable exit',
+                'simulated_trigger': True,
+                'trigger': kind,
+                'synthetic_inputs': evidence,
+                'probe_flattened': flat,
+                'unprotected': not (flat and flat.get('status') == 'pass'),
+            }
+        _reject_unconfirmed(ctx['lifecycle'])
+        sale = _sell_free(ctx, f'{kind}-exit')
+        stop_failed = stopped is not None and stopped.get('status') != 'pass'
+        passed = sale.get('status') == 'pass' and not stop_failed
+        if stop_failed and sale.get('status') != 'pass' and bought:
+            sale = _flatten_probe(ctx, kind)
+        reason = None
+        if not passed:
+            reason = (stopped or {}).get('reason') or sale.get('reason') or (
+                'exit filled but the stop before it did not confirm')
+            if stop_failed and sale.get('status') == 'pass':
+                reason = str((stopped or {}).get('reason') or 'stop was not confirmed') + '; probe position was sold'
+        record = {
+            'status': 'pass' if passed else 'fail',
+            'reason': reason,
+            'simulated_trigger': True,
+            'trigger': kind,
+            'decision_reason': decision.get('reason'),
+            'synthetic_inputs': evidence,
+            'client_id': sale.get('client_id'),
+            'order_id': sale.get('order_id'),
+            'order_status': 'FILLED' if sale.get('status') == 'pass' else sale.get('order_status'),
+            'resent': False,
+            'unprotected': sale.get('status') != 'pass',
+            'note': '触发价格是验证程序构造的，不是当时行情。卖单使用真实下单与回读。',
+        }
+        if bought:
+            record['probe_buy'] = {'client_id': bought.get('client_id'), 'order_id': bought.get('order_id')}
+        if stopped:
+            record['stop_before_exit'] = {
+                'status': stopped.get('status'), 'client_id': stopped.get('client_id'),
+                'stop_price': stopped.get('stop_price'), 'reason': stopped.get('reason'),
+            }
+        return record
+    except (Blocked, NotSent, Unknown) as exc:
+        flat = _flatten_probe(ctx, kind) if bought and bought.get('status') == 'pass' else None
+        return {
+            'status': 'fail',
+            'reason': str(exc),
+            'simulated_trigger': True,
+            'trigger': kind,
+            'probe_buy': None if not bought else {
+                'client_id': bought.get('client_id'), 'order_id': bought.get('order_id')},
+            'probe_flattened': flat,
+            'unprotected': not (flat and flat.get('status') == 'pass'),
+        }
 
 
 def scenario_adverse_exit(ctx):
@@ -708,6 +804,19 @@ def scenario_graceful_stop(ctx):
     if not path:
         return {'status': 'fail', 'reason': 'graceful stop needs the configuration path',
                 'simulated_trigger': False, 'real_cycle': False}
+    venue = ctx.get('venue')
+    if venue is not None:
+        observed = venue.snapshot(ctx['config'].account_uid)
+        if not _flat_for_fresh_session(observed):
+            return {
+                'status': 'fail',
+                'real_cycle': False,
+                'simulated_trigger': False,
+                'btc': format(D(observed['btc']), 'f'),
+                'open_orders': len(observed.get('orders') or []),
+                'reason': ('graceful stop needs a flat account with no open orders; '
+                           'fresh execution state cannot adopt holdings'),
+            }
     child_config, child_state = write_graceful_config(ctx['config'], path)
     latest = child_state / 'latest.json'
     before = latest.read_text(encoding='utf-8') if latest.exists() else ''
@@ -1245,6 +1354,7 @@ def execute_verification(config, venue, *, execute, faults=False, scenarios=None
         ctx = {
             'config': config,
             'config_path': config_path,
+            'venue': venue,
             'sleep': sleep,
             'popen': popen,
             'interrupt_after': interrupt_after,

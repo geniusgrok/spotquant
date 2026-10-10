@@ -5,7 +5,7 @@ import copy
 from decimal import Decimal as D
 
 from .model import Model, percent
-from .types import Unknown, floor_step, serial
+from .types import Blocked, Unknown, floor_step, number, serial
 
 MIN_NOTIONAL = D('5')
 QUOTE_STEP = D('0.01')
@@ -195,15 +195,61 @@ def _protection(model: Model, quantity: D | None, snapshot: dict) -> dict:
     return order
 
 
+def stop_band_violation(snapshot: dict, stop_price) -> str | None:
+    """Why a sell STOP_LOSS stopPrice is outside the exchange percent band.
+
+    Binance applies PERCENT_PRICE_BY_SIDE to the order price. A STOP_LOSS has
+    no limit price; the trigger ``stopPrice`` is the price that must sit inside
+    the sell band around the weighted average (or the last price when
+    ``avgPriceMins`` is 0). A 28% trail is 0.72 times the fill, which is below
+    an askMultiplierDown of 0.8.
+    """
+    try:
+        stop = number(stop_price, 'stopPrice', positive=True)
+    except Blocked:
+        return None
+    reasons = []
+    for spec in (snapshot.get('percent_price_by_side'), snapshot.get('percent_price')):
+        if not isinstance(spec, dict):
+            continue
+        mins = spec.get('avg_price_mins')
+        reference = snapshot.get('last_price') if mins == 0 else snapshot.get('avg_price')
+        if reference is None:
+            continue
+        ref = D(reference)
+        name = spec.get('filter') or 'PERCENT_PRICE'
+        down = spec.get('ask_multiplier_down')
+        up = spec.get('ask_multiplier_up')
+        if down is not None and stop < ref * D(down):
+            floor = ref * D(down)
+            reasons.append(
+                f'{name} askMultiplierDown {down} times reference {ref} '
+                f'requires stopPrice >= {floor}')
+        if up is not None and stop > ref * D(up):
+            ceiling = ref * D(up)
+            reasons.append(
+                f'{name} askMultiplierUp {up} times reference {ref} '
+                f'requires stopPrice <= {ceiling}')
+    if not reasons:
+        return None
+    return ('SELL STOP_LOSS stopPrice ' + format(stop, 'f') + ' is outside '
+            + '; '.join(reasons)
+            + '; order was not sent and the position is unprotected')
+
+
 def _annotate_venue(order: dict, model: Model, snapshot: dict) -> None:
     """Check filters for the fixed STOP_LOSS price and owned quantity."""
     known = any(snapshot.get(key) is not None for key in (
         'min_price', 'max_price', 'avg_price', 'min_qty',
-    ))
+    )) or snapshot.get('percent_price_by_side') or snapshot.get('percent_price')
     if not known:
         return
     stop = D(order['stopPrice'])
     price_ok = True
+    band = stop_band_violation(snapshot, order['stopPrice'])
+    if band:
+        price_ok = False
+        order['unplaceable_reason'] = band
     if snapshot.get('min_price') is not None and stop < D(snapshot['min_price']):
         price_ok = False
     if snapshot.get('max_price') is not None and stop > D(snapshot['max_price']):
@@ -217,6 +263,9 @@ def _annotate_venue(order: dict, model: Model, snapshot: dict) -> None:
             notional_ok = False
     qty_ok = _qty_ok(order.get('quantity'), snapshot)
     order['placeable'] = bool(price_ok and notional_ok and qty_ok)
+    if order['placeable'] is False and 'unplaceable_reason' not in order:
+        order['unplaceable_reason'] = (
+            'desired protection fails venue filters; the position is unprotected')
 
 
 def _qty_ok(quantity, snapshot: dict) -> bool:

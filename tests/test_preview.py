@@ -3,7 +3,7 @@ from decimal import Decimal as D
 import unittest
 
 from spotquant.model import DAY, ORIGIN, Model, SLEEVES
-from spotquant.preview import decision, decision_view, portfolio
+from spotquant.preview import _annotate_venue, decision, decision_view, portfolio, stop_band_violation
 from spotquant.session import _entries_blocked, _follow_after, _view
 
 
@@ -312,3 +312,24 @@ class PreviewTests(unittest.TestCase):
                 self.assertEqual(bool(result['orders']), tradable)
                 self.assertEqual(result['untradeable'], not tradable)
                 self.assertEqual('below the minimum notional' in result['reason'], not tradable)
+
+
+class PercentBandTests(unittest.TestCase):
+    def test_a_28_percent_stop_is_outside_the_sell_band(self):
+        snapshot = {
+            'avg_price': D('100'), 'last_price': D('100'), 'min_notional': D('5'),
+            'percent_price_by_side': {
+                'filter': 'PERCENT_PRICE_BY_SIDE',
+                'ask_multiplier_down': D('0.8'),
+                'ask_multiplier_up': D('5'),
+                'avg_price_mins': 5,
+            },
+        }
+        self.assertIn('PERCENT_PRICE_BY_SIDE', stop_band_violation(snapshot, '72'))
+        self.assertIn('unprotected', stop_band_violation(snapshot, '72'))
+        self.assertIsNone(stop_band_violation(snapshot, '80'))
+        order = {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
+                 'quantity': '0.1', 'stopPrice': '72.00'}
+        _annotate_venue(order, Model(40), snapshot)
+        self.assertFalse(order['placeable'])
+        self.assertIn('unprotected', order['unplaceable_reason'])

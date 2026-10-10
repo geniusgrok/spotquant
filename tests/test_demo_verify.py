@@ -20,7 +20,7 @@ from spotquant.demo_verify import (
     assess_graceful, demo_check_argv, dispatch_order, execute_verification, interrupt_child,
     judge_graceful, protection_price, select_scenarios, session_cycle_ready,
     simulated_exit_decision, verification_identity, write_graceful_config, _verification_nonce,
-    scenario_network_loss,
+    scenario_graceful_stop, scenario_network_loss,
 )
 from spotquant.execution import Lifecycle
 from spotquant.model import Model
@@ -73,6 +73,7 @@ class SpotScript:
         self.bnb_free = D(0)
         self.bnb_locked = D(0)
         self.buy_commission_asset = 'BTC'
+        self.reject_stop = False
 
     def clock(self):
         return self.now_ms / 1000
@@ -166,6 +167,9 @@ class SpotScript:
         side = params['side']
         order_type = params['type']
         if order_type == 'STOP_LOSS':
+            if self.reject_stop:
+                return 400, json.dumps({
+                    'code': -1013, 'msg': 'Filter failure: PERCENT_PRICE_BY_SIDE'}).encode()
             qty = D(params['quantity'])
             if qty > self.btc_free:
                 return 400, b'{"code":-2010,"msg":"insufficient balance"}'
@@ -648,6 +652,56 @@ class FeeAndStopTests(unittest.TestCase):
             self.assertEqual(record['post_count'], 0)
             self.assertFalse(record['response_lost'])
             self.assertEqual(script.posts, [])
+
+    def test_sma_exit_sells_the_probe_when_the_stop_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = SpotScript()
+            script.reject_stop = True
+            venue = _venue(script)
+            report = execute_verification(
+                _config(directory), venue, execute=True, scenarios=['sma-exit'])
+            row = report['scenarios'][0]
+            self.assertEqual(row['status'], 'fail', row)
+            self.assertIn('probe position was sold', row['reason'])
+            self.assertFalse(row['unprotected'])
+            self.assertEqual(script.btc_free, D(0))
+            self.assertEqual(script.btc_locked, D(0))
+
+    def test_adverse_exit_does_not_sell_bitcoin_it_did_not_buy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = SpotScript()
+            script.btc_free = D('0.2')
+            venue = _venue(script)
+            report = execute_verification(
+                _config(directory), venue, execute=True, scenarios=['adverse-exit'])
+            row = report['scenarios'][0]
+            self.assertEqual(row['status'], 'fail', row)
+            self.assertIn('will not adopt', row['reason'])
+            self.assertEqual(script.posts, [])
+            self.assertEqual(script.btc_free, D('0.2'))
+
+    def test_graceful_stop_fails_fast_when_the_account_is_not_flat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            class Holding:
+                def snapshot(self, uid):
+                    return {'btc': D('0.2'), 'last_price': D('100'), 'avg_price': D('100'),
+                            'min_notional': D('5'), 'orders': []}
+
+            def popen(*args, **kwargs):
+                raise AssertionError('graceful stop spawned while the account held BTC')
+
+            record = scenario_graceful_stop({
+                'config': _config(directory),
+                'config_path': str(Path(directory) / 'missing.json'),
+                'venue': Holding(),
+                'popen': popen,
+                'sleep': lambda _seconds: None,
+                'interrupt_after': 0.1,
+                'graceful_timeout': 1,
+            })
+            self.assertEqual(record['status'], 'fail')
+            self.assertFalse(record['real_cycle'])
+            self.assertIn('cannot adopt holdings', record['reason'])
 
     def test_graceful_stop_uses_a_clean_directory_and_a_real_cycle(self):
         with tempfile.TemporaryDirectory() as directory:

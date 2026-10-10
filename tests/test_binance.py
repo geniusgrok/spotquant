@@ -419,6 +419,49 @@ class BinanceTests(unittest.TestCase):
             venue.query('sq-missing')
         self.assertNotIsInstance(caught.exception, NotFound)
 
+    def test_exchange_message_is_kept_and_a_stop_outside_the_band_is_not_sent(self):
+        script = Script()
+        posts = []
+
+        def opener(method, url, headers):
+            if method == 'POST':
+                posts.append(url)
+                return 400, json.dumps({
+                    'code': -1013, 'msg': 'Filter failure: PERCENT_PRICE_BY_SIDE'}).encode()
+            if '/api/v3/exchangeInfo' in url:
+                body = _filters()
+                body['symbols'][0]['filters'].append({
+                    'filterType': 'PERCENT_PRICE_BY_SIDE',
+                    'bidMultiplierUp': '5', 'bidMultiplierDown': '0.2',
+                    'askMultiplierUp': '5', 'askMultiplierDown': '0.8',
+                    'avgPriceMins': 5,
+                })
+                return 200, json.dumps(body).encode()
+            return script(method, url, headers)
+
+        venue = Binance(key=KEY, secret=SECRET, environment='demo', opener=opener,
+                        clock=lambda: 1_700_000_000, capital_limit=D('100'),
+                        demo_execution_uid='10001')
+        with self.assertRaisesRegex(NotSent, 'PERCENT_PRICE_BY_SIDE') as caught:
+            venue.submit('sq-stop', dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
+                                         quantity='0.1', stopPrice='72'))
+        self.assertIn('unprotected', str(caught.exception))
+        self.assertEqual(posts, [])
+        observed = venue.snapshot('10001')
+        self.assertEqual(observed['percent_price_by_side']['ask_multiplier_down'], D('0.8'))
+        with self.assertRaises(Blocked):
+            venue.submit('sq-high', dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
+                                         quantity='0.1', stopPrice='90'))
+        self.assertEqual(len(posts), 1)
+        self.assertIn('stopPrice=90', posts[0])
+        def leak(method, url, headers):
+            return 400, b'{"code":-1013,"msg":"secret in signature"}'
+        venue._opener = leak
+        with self.assertRaises(Blocked) as leaked:
+            venue._get('/api/v3/order', {'symbol': 'BTCUSDT'}, signed=True, method='POST')
+        self.assertNotIn('secret', str(leaked.exception))
+        self.assertIn('code -1013', str(leaked.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

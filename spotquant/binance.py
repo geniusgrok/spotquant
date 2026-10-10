@@ -87,6 +87,8 @@ class Binance:
         self.market_step = None
         self.max_notional = None
         self.min_notional = None
+        self.percent_price_by_side = None
+        self.percent_price = None
 
     def bind_state(self, state):
         """Keep venue backoff in the locked account directory across invocations."""
@@ -179,6 +181,12 @@ class Binance:
             raise NotSent('sell quantity fails native lot filters')
         if payload['type'] == 'STOP_LOSS' and (buying or number(payload.get('stopPrice'), positive=True) <= 0):
             raise Blocked('only sell-side spot stop protection is supported')
+        if payload['type'] == 'STOP_LOSS':
+            from .preview import stop_band_violation
+            # The snapshot above is the account read for this buy or stop.
+            violation = stop_band_violation(observed, payload.get('stopPrice'))
+            if violation:
+                raise NotSent(violation)
         if buying and getattr(self, '_risk_stop', lambda: False)():
             raise NotSent('entry deadline reached before order dispatch')
         if preflight is not None:
@@ -318,6 +326,8 @@ class Binance:
             'fee_status': fee_status,
             'bnb': bnb,
             'demo_bnb_discount_allowance': allowance,
+            'percent_price_by_side': self.percent_price_by_side,
+            'percent_price': self.percent_price,
             'min_notional': self.min_notional,
             'min_price': self.min_price,
             'max_price': self.max_price,
@@ -495,6 +505,8 @@ class Binance:
         if symbol.get('baseAsset') != 'BTC' or symbol.get('quoteAsset') != 'USDT':
             raise Blocked('BTCUSDT is no longer BTC quoted in USDT')
         filters = {item.get('filterType'): item for item in symbol.get('filters') or []}
+        self.percent_price_by_side = _percent_filter(filters.get('PERCENT_PRICE_BY_SIDE'), by_side=True)
+        self.percent_price = _percent_filter(filters.get('PERCENT_PRICE'), by_side=False)
         lot = filters.get('LOT_SIZE') or {}
         price = filters.get('PRICE_FILTER') or {}
         notional = filters.get('NOTIONAL') or filters.get('MIN_NOTIONAL') or {}
@@ -605,9 +617,10 @@ class Binance:
             if code == -2010 and 'duplicate' in str(payload.get('msg', '')).lower():
                 # This attempt was refused, but the original identity may be live.
                 rejected = False
+            detail = _venue_message(payload)
             if method != 'GET' and 400 <= status < 500 and status not in (403, 409) and rejected:
-                raise Blocked(f'Binance {path} rejected HTTP {status} code {code}')
-            raise Unknown(f'Binance {path} failed with HTTP {status} code {code}')
+                raise Blocked(f'Binance {path} rejected HTTP {status} code {code}{detail}')
+            raise Unknown(f'Binance {path} failed with HTTP {status} code {code}{detail}')
         return payload
 
     def _check_deadline(self) -> None:
@@ -622,6 +635,59 @@ class Binance:
         if cutoff is None or clock is None:
             return ceiling
         return max(.001, min(ceiling, cutoff - clock()))
+
+
+def _percent_filter(item, *, by_side: bool):
+    """PERCENT_PRICE_BY_SIDE or PERCENT_PRICE, if the exchange sent one."""
+    if not item:
+        return None
+    try:
+        mins = item.get('avgPriceMins')
+        if type(mins) is not int or mins < 0:
+            raise Blocked('percent price filter is invalid')
+
+        def mult(name):
+            raw = item.get(name)
+            if raw in (None, ''):
+                return None
+            return number(raw, name, positive=True)
+
+        if by_side:
+            spec = {
+                'filter': 'PERCENT_PRICE_BY_SIDE',
+                'ask_multiplier_down': mult('askMultiplierDown'),
+                'ask_multiplier_up': mult('askMultiplierUp'),
+                'bid_multiplier_down': mult('bidMultiplierDown'),
+                'bid_multiplier_up': mult('bidMultiplierUp'),
+                'avg_price_mins': mins,
+            }
+        else:
+            spec = {
+                'filter': 'PERCENT_PRICE',
+                'ask_multiplier_down': mult('multiplierDown'),
+                'ask_multiplier_up': mult('multiplierUp'),
+                'bid_multiplier_down': None,
+                'bid_multiplier_up': None,
+                'avg_price_mins': mins,
+            }
+    except (Blocked, TypeError, ValueError) as exc:
+        raise Unknown('percent price filter is invalid') from exc
+    if spec['ask_multiplier_down'] is None or spec['ask_multiplier_up'] is None:
+        raise Unknown('percent price filter is invalid')
+    return spec
+
+
+def _venue_message(payload) -> str:
+    """Binance msg text, without credentials or a multi-line body."""
+    if not isinstance(payload, dict) or not isinstance(payload.get('msg'), str):
+        return ''
+    text = ' '.join(payload['msg'].split())
+    if not text or len(text) > 240:
+        return ''
+    lowered = text.lower()
+    if 'signature' in lowered or 'api-key' in lowered or 'secret' in lowered:
+        return ''
+    return ' ' + text
 
 
 def allow_demo_bnb_discount(environment, base, bnb) -> bool:

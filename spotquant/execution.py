@@ -296,7 +296,12 @@ class Lifecycle:
             return False
         view, quantity = _view(Model.restore(self.state.get('models')[str(window)]), position)
         order = _protection(decision_view(view, position, self.owners()), quantity, snapshot)
-        if order.get('placeable') is False or 'quantity' not in order:
+        if 'quantity' not in order:
+            return False
+        if order.get('placeable') is False:
+            reason = order.get('unplaceable_reason') or ''
+            if 'PERCENT_PRICE' in reason:
+                raise Blocked(reason)
             return False
         if D(order['stopPrice']) >= D(snapshot['last_price']):
             return False
@@ -685,7 +690,8 @@ class Lifecycle:
         wanted = []
         for order in desired:
             if order.get('placeable') is False:
-                raise Blocked('desired protection fails venue filters')
+                raise Blocked(order.get('unplaceable_reason')
+                              or 'desired protection fails venue filters; the position is unprotected')
             raw = {key: order[key] for key in FIELDS if key in order}
             matching = [row for row in self.rows() if row[2] in ('resting', 'prepared') and row[1]['order'] == raw
                         and row[1]['sleeves'] == sorted(order['sleeves'])]

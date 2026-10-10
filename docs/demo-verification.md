@@ -108,6 +108,8 @@ python3 -m spotquant demo-reconcile --config demo-verify.json
 
 止损价是成交均价（若成交之后又有会话报价，则取两者较高者）再下降 28%，然后按 0.01 向下取整。核对记录里的 `stop_price` 和交易所回读的 `exchange_stop_price`。状态应为 `NEW`。峰值来自这笔成交和成交后的报价，不用未完成日线的高点。
 
+若交易所的 `PERCENT_PRICE_BY_SIDE`（或 `PERCENT_PRICE`）不允许这个卖出触发价，程序在发送前拒绝，错误里带有过滤器名字和 Binance 的 `msg`。仓位此时没有原生止损。验证场景会把自己刚买的探针卖回，不会把别人的 BTC 卖掉。28% 这个策略参数没有改。
+
 ### stop-replace
 
 先撤掉上一张止损，再挂一张。本地空窗 `unprotected_window_ms` 是撤单确认到新止损回读确认的时间。`exchange_unprotected_window_ms` 是新单 `time` 减去旧单 `updateTime`。报价没有抬高保护价时，程序按同一正确价格重挂，并写上 `forced_rereplace: true` 和 `simulated_trigger: true`。报价已经抬高时，新价格按同一 28% 规则上移，`simulated_trigger` 为 false。结束后应只剩一张 `NEW` 止损。
@@ -124,7 +126,9 @@ python3 -m spotquant demo-reconcile --config demo-verify.json
 
 子进程跑的是 `demo-check --execute`，但使用 `<state_dir>/graceful-session`，不使用已经写下验证订单的目录。验证订单还没有模型检查点时，会话每一轮都会报 `missing model checkpoint for durable state`，来不及做一次真正的观察。独立目录避免这件事。
 
-父进程等到子进程的 `latest.json` 出现一轮成功观察（`cycles >= 1`、`observation_current` 为 true、并且有 `model_bull`）再发送 SIGINT。子进程会话时长至少 900 秒，父进程最多等约 900 秒。日线补齐可能要几分钟。成功时 `stop_reason` 为 `interrupted` 或 `requested`，`closeout_attempted` 为 true，记录里 `real_cycle` 为 true。收尾期间不再开新的买单。这个场景本身不负责把验证探针的仓位卖光；完整顺序里，卖出场景排在它前面。
+账户里还有可交易的 BTC 或未完成订单时，这一步立刻失败，原因是新的执行状态不能接管已有持仓。它不会为了等一个不会出现的成功轮次而空转。先把验证探针卖平，再跑这一步。
+
+父进程在账户已平时，等到子进程的 `latest.json` 出现一轮成功观察（`cycles >= 1`、`observation_current` 为 true、并且有 `model_bull`）再发送 SIGINT。子进程会话时长至少 900 秒，父进程最多等约 900 秒。日线补齐可能要几分钟。成功时 `stop_reason` 为 `interrupted` 或 `requested`，`closeout_attempted` 为 true，记录里 `real_cycle` 为 true。收尾期间不再开新的买单。这个场景本身不负责把验证探针的仓位卖光；完整顺序里，卖出场景排在它前面。探针止损如果放不进去，对应场景会把自己买来的 BTC 卖回。
 
 请在前台或 tmux 里看这一步。`nohup ... &` 不会把 SIGINT 送到进程。
 
