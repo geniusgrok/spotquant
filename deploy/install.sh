@@ -21,7 +21,11 @@ fi
 install -d -o root -g spotquant -m 750 /etc/spotquant
 install -d -o spotquant -g spotquant -m 750 /var/lib/spotquant/demo /var/lib/spotquant/live
 install -d -o spotquant -g spotquant -m 750 /var/backups/spotquant/demo /var/backups/spotquant/live
-install -d -o root -g root -m 755 /etc/systemd/system/spotquant-session@live.service.d
+install -d -o root -g root -m 755 \
+  /etc/systemd/system/spotquant-session@live.service.d \
+  /etc/systemd/system/spotquant-watch@live.service.d \
+  /etc/systemd/system/spotquant-backup@live.service.d
+install -m 755 "$ROOT/deploy/sq" /usr/local/bin/sq
 
 if [ "$ROOT" != "/opt/spotquant" ]; then
   install -d -o spotquant -g spotquant -m 755 /opt/spotquant
@@ -40,8 +44,15 @@ install_unit spotquant-watch@.timer
 install_unit spotquant-backup@.service
 install_unit spotquant-backup@.timer
 install_unit spotquant-failed@.service
-install -m 644 "$ROOT/deploy/systemd/spotquant-session@live.service.d/enable.conf" \
-  /etc/systemd/system/spotquant-session@live.service.d/enable.conf
+for unit in spotquant-session@live.service spotquant-watch@live.service spotquant-backup@live.service; do
+  install -m 644 "$ROOT/deploy/systemd/${unit}.d/enable.conf" \
+    "/etc/systemd/system/${unit}.d/enable.conf"
+done
+if SHA=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null); then
+  printf '%s\n' "$SHA" > /etc/spotquant/source_sha
+  chown root:spotquant /etc/spotquant/source_sha
+  chmod 644 /etc/spotquant/source_sha
+fi
 
 if [ ! -f /etc/spotquant/demo.json ]; then
   install -m 640 -o root -g spotquant "$ROOT/deploy/demo.json.example" /etc/spotquant/demo.json

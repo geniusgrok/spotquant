@@ -1,6 +1,9 @@
 """Notifier, drawdown halt, and kill-switch. No network and no real mail."""
 import json
+import os
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from decimal import Decimal as D
@@ -195,6 +198,15 @@ class BreakerTests(unittest.TestCase):
         self.assertIsNone(missed_run_alert({'at': 0}, 26 * 3600, HEARTBEAT_MAX_AGE_SECONDS))
         self.assertEqual(missed_run_alert({'at': 0}, 26 * 3600 + 1, HEARTBEAT_MAX_AGE_SECONDS)['key'],
                          'missed-run')
+        for name in ('spotquant-session@.service', 'spotquant-watch@.service',
+                     'spotquant-backup@.service', 'spotquant-failed@.service'):
+            unit = (root / 'deploy/systemd' / name).read_text(encoding='utf-8')
+            self.assertIn('UMask=0077', unit)
+            self.assertIn('/usr/local/bin/sq ', unit)
+        for name in ('spotquant-session@live.service', 'spotquant-watch@live.service',
+                     'spotquant-backup@live.service'):
+            dropin = (root / 'deploy/systemd' / f'{name}.d' / 'enable.conf').read_text(encoding='utf-8')
+            self.assertIn('ConditionPathExists=/etc/spotquant/LIVE_ENABLED', dropin)
 
 
 class KillSwitchTests(unittest.TestCase):
@@ -285,3 +297,49 @@ class OpsRunNotifyTests(unittest.TestCase):
             stored = json.loads((Path(directory) / 'heartbeat.json').read_text())
             self.assertEqual(stored['status'], 'demo_execution')
             self.assertIsNone(account_equity({}))
+
+
+class SourceShaWrapperTests(unittest.TestCase):
+    def test_sq_prefers_the_environment_then_git_then_the_recorded_file(self):
+        wrapper = Path(__file__).resolve().parents[1] / 'deploy' / 'sq'
+        install = wrapper.parent.joinpath('install.sh').read_text(encoding='utf-8')
+        self.assertIn('install -m 755 "$ROOT/deploy/sq" /usr/local/bin/sq', install)
+        self.assertIn('/etc/spotquant/source_sha', install)
+        for unit in ('spotquant-session@live.service', 'spotquant-watch@live.service',
+                     'spotquant-backup@live.service'):
+            self.assertIn(unit, install)
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory) / 'tree'
+            checkout.mkdir()
+            (checkout / 'marker').write_text('x', encoding='utf-8')
+            sha_file = Path(directory) / 'source_sha'
+            stub = Path(directory) / 'python-stub'
+            stub.write_text('#!/bin/sh\nprintf %s "$SPOTQUANT_SOURCE_SHA"\n', encoding='utf-8')
+            stub.chmod(0o755)
+            base = {
+                'PATH': os.environ.get('PATH', ''),
+                'SPOTQUANT_ROOT': str(checkout),
+                'SPOTQUANT_SOURCE_SHA_FILE': str(sha_file),
+                'SPOTQUANT_PYTHON': str(stub),
+                'SPOTQUANT_SOURCE_SHA': '',
+            }
+            subprocess.run(['git', 'init', '-q', str(checkout)], check=True)
+            subprocess.run(['git', '-C', str(checkout), 'add', 'marker'], check=True)
+            subprocess.run(
+                ['git', '-C', str(checkout), '-c', 'user.email=spotquant@example.com',
+                 '-c', 'user.name=spotquant', 'commit', '-q', '-m', 'marker'],
+                check=True,
+            )
+            head = subprocess.run(
+                ['git', '-C', str(checkout), 'rev-parse', 'HEAD'],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            seen = subprocess.run([str(wrapper), 'status'], check=True, capture_output=True, text=True, env=base)
+            self.assertEqual(seen.stdout, head)
+            shutil.rmtree(checkout / '.git')
+            sha_file.write_text(head + '\n', encoding='utf-8')
+            fallback = subprocess.run([str(wrapper), 'status'], check=True, capture_output=True, text=True, env=base)
+            self.assertEqual(fallback.stdout, head)
+            forced = dict(base, SPOTQUANT_SOURCE_SHA='operator-sha')
+            chosen = subprocess.run([str(wrapper), 'status'], check=True, capture_output=True, text=True, env=forced)
+            self.assertEqual(chosen.stdout, 'operator-sha')

@@ -44,7 +44,7 @@ sudo systemctl start spotquant-failed@demo.service
 
 ```sh
 sudo -u spotquant env $(grep -v '^#' /etc/spotquant/notify.env | xargs) \
-  /usr/bin/python3.13 -m spotquant notify-test --config /etc/spotquant/demo.json
+  /usr/local/bin/sq notify-test --config /etc/spotquant/demo.json
 ```
 
 主题应是 `[spotquant][心跳] 通知测试`。
@@ -75,7 +75,7 @@ sudo journalctl -u spotquant-session@demo.service -n 100
 1. 停用并 disable 上面三个 Demo 定时器。确认没有 `spotquant-session@demo.service` 还在跑。
 2. 把 `/etc/spotquant/live.json` 和 `live.env` 填好。`state_dir` 用 `/var/lib/spotquant/live`，不要和 Demo 共用。
 3. 资金上限、UID 和环境必须是实盘自己的。`stop_price_percent_band` 只有在 Demo 探针确认之后才设为 true。
-4. 创建实盘开关文件。没有这个文件，实盘单元即使被启动也会被 systemd 跳过：
+4. 创建实盘开关文件。没有这个文件，实盘的会话、心跳检查和备份即使被启动也会被 systemd 跳过：
 
 ```sh
 sudo touch /etc/spotquant/LIVE_ENABLED
@@ -98,7 +98,7 @@ sudo systemctl enable --now spotquant-session@live.timer \
 
 ```sh
 sudo -u spotquant env $(grep -v '^#' /etc/spotquant/live.env | xargs) \
-  /usr/bin/python3.13 -m spotquant kill-switch \
+  /usr/local/bin/sq kill-switch \
   --config /etc/spotquant/live.json --authorize-uid 你的UID --confirm
 ```
 
@@ -109,6 +109,18 @@ sudo -u spotquant env $(grep -v '^#' /etc/spotquant/live.env | xargs) \
 告警主题以 `[spotquant][告警]` 开头，每日心跳以 `[spotquant][心跳]` 开头。同一类告警 6 小时内不重复发送。心跳每 UTC 日一封，由 00:45 的会话写出。每小时检查一次；心跳超过 26 小时算错过会话，因此错过当天 00:45 之后，大约从次日 UTC 02:45 起的整点检查会告警。
 
 会发告警的情况：状态未知、人工接管、保护失败、报告写失败、退出码非零、止损无法挂出、回撤或 HALT 停买、错过会话。
+
+手动命令和定时器都走 `/usr/local/bin/sq`。它把 `SPOTQUANT_SOURCE_SHA` 设成 `/opt/spotquant` 里 `git rev-parse HEAD` 的结果；那个目录不是 git 检出时，改用安装时写下的 `/etc/spotquant/source_sha`。因此 systemd 跑出来的 `runtime_identity.source_sha` 不是空的。每次安装都会按当前检出重写这份 SHA。
+
+单元里的 `UMask=0077` 让新写出的 `latest.json`、sqlite、心跳和备份是 `0600`。状态目录本身仍是 `0750`。已经写成 `0644` 的文件不会被这次设置改掉，需要的话在状态目录里把它们改成 `0600`。
+
+## 其他资产
+
+`snapshot` 是只读导出。账户里除 BTC 和 USDT 以外，只要还有余额，导出就失败，原因是 `other assets prevent a complete BTC/USDT account export`。Demo 里的 5000 USDC 会触发这句话。这不是 `run --execute` 的路径。
+
+`run --execute` 和定时器里的 `ops-run` 不看 `other_assets`。账户里有 USDC 或其他非 BTC/USDT 余额时，会话不会因此拒绝买入。买单仍取决于 USDT 可用余额、资金上限，以及手续费模式。实盘上只要 BNB 抵扣对账户和 BTCUSDT 都开着，新买单就会被拒绝，原因是 `buy fee mode is not confirmed as BTC/USDT`；BNB 余额是不是 0 都不改变这一点。Demo 上只有 BNB 余额大于 0 时才走这条拒绝，BNB 为 0 时仍按 BTC/USDT 手续费买入。USDC 不参与手续费模式判断。权益和 `max_drawdown_halt_pct` 只按 USDT 现金加 BTC 市值计算，不把 USDC 算进去。其他币不会记成策略持仓，`kill-switch` 也不会卖掉它们。
+
+实盘请用一个只放 BTC 和 USDT 的子账户。这样 `snapshot` 能导出，回撤停买对着的是整户权益，别的币也不会和策略账本混在一起。
 
 ## 上线检查
 

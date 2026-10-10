@@ -1,0 +1,23 @@
+#!/bin/sh
+# One entry for operators and systemd. Sets SPOTQUANT_SOURCE_SHA the same way
+# for both: this process's environment, then git in the code directory, then
+# the SHA install.sh recorded.
+set -eu
+ROOT=${SPOTQUANT_ROOT:-/opt/spotquant}
+SHA_FILE=${SPOTQUANT_SOURCE_SHA_FILE:-/etc/spotquant/source_sha}
+PYTHON=${SPOTQUANT_PYTHON:-/usr/bin/python3.13}
+SHA=${SPOTQUANT_SOURCE_SHA:-}
+if [ -z "$SHA" ]; then
+  if SHA=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null); then
+    :
+  elif [ -f "$SHA_FILE" ]; then
+    SHA=$(tr -d '[:space:]' < "$SHA_FILE")
+  else
+    SHA=
+  fi
+fi
+if [ -n "$SHA" ]; then
+  export SPOTQUANT_SOURCE_SHA=$SHA
+fi
+cd "$ROOT"
+exec "$PYTHON" -m spotquant "$@"
