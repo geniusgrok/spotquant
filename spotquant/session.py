@@ -1,4 +1,4 @@
-"""One bounded session: read-only by default, explicit owner-authorized execution."""
+"""One bounded session: read-only by default. Writes need --execute and a matching UID."""
 from __future__ import annotations
 
 import time
@@ -33,7 +33,12 @@ STALE_REPORT_FIELDS = (
 RECORDED_LIMITS = {
     'adverse_exit': 'next_session',
     'adverse_loss_capped': False,
-    'execution': 'Demo and live writes require explicit UID authorization and a positive capital ceiling',
+    'execution': (
+        'Demo and live writes require a matching --authorize-uid and a positive capital ceiling. '
+        'capital_limit_usdt is not a loss limit. max_drawdown_halt_pct, when set, stops new buys only. '
+        'The 28% figure is the trail target; with stop_price_percent_band the placed STOP_LOSS is '
+        'max(target, buffered PERCENT_PRICE_BY_SIDE floor, existing stop) and only ratchets up.'
+    ),
     'public_features': 'funding lag/expiry8h; paired UTC closes lag60s; missing blocks new BUY',
 }
 
@@ -1069,7 +1074,7 @@ def _execution_evidence(state, snapshot):
 
 
 def stop_clamp_report(proposed) -> dict | None:
-    """28% target, exchange band floor, selected stop, and whether the band won."""
+    """28% target, exchange band floor, the stop actually selected, and whether the band won."""
     rows = (proposed or {}).get('protections') or []
     if not rows or 'stop_target' not in rows[0]:
         return None

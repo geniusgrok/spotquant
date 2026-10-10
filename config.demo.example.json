@@ -5,5 +5,5 @@
   "poll_seconds": 5,
   "environment": "demo",
   "capital_limit_usdt": "100",
-  "stop_price_percent_band": false
+  "stop_price_percent_band": true
 }

@@ -35,7 +35,7 @@ Demo 的成交和盘口是交易所模拟的。这里能核对的是请求是否
 cp config.demo.example.json demo-verify.json
 ```
 
-把 `demo-verify.json` 改成自己的 UID、专用目录和不超过 100 的上限，例如：
+把 `demo-verify.json` 改成自己的 UID、专用目录和不超过 100 的上限。部署把 `stop_price_percent_band` 设为 true。省略该字段时代码默认 false，会话会发送 28% 目标；Demo 已拒绝那个深度。例如：
 
 ```json
 {
@@ -44,7 +44,8 @@ cp config.demo.example.json demo-verify.json
   "session_seconds": 300,
   "poll_seconds": 5,
   "environment": "demo",
-  "capital_limit_usdt": "100"
+  "capital_limit_usdt": "100",
+  "stop_price_percent_band": true
 }
 ```
 
@@ -118,9 +119,11 @@ python3 -m spotquant demo-reconcile --config demo-verify.json
 
 ### stop-place
 
-默认止损仍是成交均价（若成交之后又有会话报价，则取两者较高者）再下降 28%，然后按 tick 向下取整。记录里的 `stop_target` 是这个价格。`band_floor` 只是按当前快照里的过滤器算出来的参考下限，默认不拿它改价格。`clamped` 为 false，`stop_price` 等于 28% 目标（不会低于这一仓已经确认的止损）。核对 `stop_price` 和交易所回读的 `exchange_stop_price`。状态应为 `NEW`。峰值来自这笔成交和成交后的报价，不用未完成日线的高点。
+`stop_target` 仍是成交均价（若成交之后又有会话报价，则取两者较高者）再下降 28%，然后按 tick 向下取整。峰值来自这笔成交和成交后的报价，不用未完成日线的高点。`band_floor` 是按当前快照里的过滤器算出的下限。核对 `stop_price` 和交易所回读的 `exchange_stop_price`。状态应为 `NEW`。
 
-Binance 文档把 `PERCENT_PRICE_BY_SIDE` 说成订单 `price` 的限制，没有写明它约束 `STOP_LOSS` 的 `stopPrice`，`askMultiplierDown` 也是这个交易对自己的配置。不要把 0.8 写死。用下面的 `demo-band-probe` 看交易所实际返回的 `msg`。只有确认之后，才在配置里把 `stop_price_percent_band` 设为 true。那时 `stop_price` 才是 28% 目标、缓冲后的下限（参考价乘实时 `askMultiplierDown` 再乘 1.001，按 tick 向上取整）和已有止损三者中的较高者，`clamped` 才可能为 true。`avgPriceMins` 为 0 时参考价是最新价，否则是交易所均价。
+Binance 文档把 `PERCENT_PRICE_BY_SIDE` 写成订单 `price` 的限制。Demo 探针已经看到它约束 `STOP_LOSS` 的 `stopPrice`：均价下方 15% 被接受，20%、25% 和 28% 返回 `-1013`，`msg` 为 `Filter failure: PERCENT_PRICE_BY_SIDE`。当时 BTCUSDT 的 `askMultiplierDown` 是 0.8。不要把 0.8 写进代码；每次从该交易对的 `exchangeInfo` 读取。`avgPriceMins` 为 0 时参考价是最新价，否则是交易所均价；BTCUSDT 上这是大约 5 分钟的均价。
+
+`stop_price_percent_band` 为 false（省略该字段时的代码默认）时，`stop_price` 等于 28% 目标，且不低于这一仓已经确认的止损，`clamped` 为 false。部署把它设为 true。那时 `stop_price` 是 28% 目标、缓冲后的下限（参考价乘实时 `askMultiplierDown` 再乘 1.001，按 tick 向上取整）和已有止损三者中的较高者，只上移，`clamped` 可以是 true。靠近峰值时，0.8 乘 1.001 大约比 5 分钟均价低 20%。
 
 止损被拒绝时，错误里有 Binance 的 `msg`。策略会话会立刻市价卖出这仓；这一笔验证探针若因此卖不掉，对应场景记 `unprotected`。退出场景只会卖掉自己刚买的 BTC。28% 这个策略参数没有改。
 
@@ -216,4 +219,4 @@ native_execution_verified：false
 主网执行：未用本轮结果声明
 ```
 
-所有者只有拿真实 Demo 密钥跑过，才能确认：Demo 是否接受这笔市价单和 STOP_LOSS、空窗的实际毫秒数、SIGINT 收尾是否写完报告、SIGKILL 之后交易所上是否仍只有原来的订单，以及 `-1021` 是否来自 Demo 自己的时钟。注入的 429 和两笔构造价格的退出，只能说明客户端分支和卖单路径，不能说明行情触发过这些条件。
+价格带探针已经记下：15% 的 `stopPrice` 被接受，20%、25% 和 28% 被 `-1013` `Filter failure: PERCENT_PRICE_BY_SIDE` 拒绝。所有者只有拿真实 Demo 密钥跑过一轮核对，才能确认这一轮的市价单、空窗毫秒数、SIGINT 收尾是否写完报告、SIGKILL 之后交易所上是否仍只有原来的订单，以及 `-1021` 是否来自 Demo 自己的时钟。注入的 429 和两笔构造价格的退出，只能说明客户端分支和卖单路径，不能说明行情触发过这些条件。

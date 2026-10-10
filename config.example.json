@@ -4,5 +4,5 @@
   "session_seconds": 300,
   "poll_seconds": 5,
   "environment": "live",
-  "stop_price_percent_band": false
+  "stop_price_percent_band": true
 }

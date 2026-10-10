@@ -1,4 +1,4 @@
-"""Demo-only probe of STOP_LOSS prices. It does not change the 28% strategy.
+"""Demo-only probe of STOP_LOSS prices. It does not change the 28% target.
 
 Without ``--execute`` it only reads the symbol filters and the average price.
 With ``--execute`` it buys a tiny probe, posts one stop at each depth, records
