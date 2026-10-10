@@ -11,7 +11,11 @@ from .preview import BASE_STEP, MIN_NOTIONAL, decision_view
 from .types import Blocked, Unknown, floor_step, number
 
 def _rearm(model, position: dict, owner: dict, window: int) -> bool:
-    """Only this durable touch sale permits rejoining the still-long book."""
+    """Only a durable touch sale that still has rearm set may rejoin the long book.
+
+    kill-switch clears that flag before the exit is booked, so deleting HALT
+    does not buy from the touch permission that was prepared beforehand.
+    """
     order = owner.get('order', {})
     return bool(order.get('side') == 'SELL' and order.get('type') == 'MARKET'
                 and owner.get('rearm', {}).get(str(window)) is True

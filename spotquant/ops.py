@@ -1,6 +1,9 @@
 """Unattended session helpers: drawdown halt, kill switch, backup, heartbeats.
 
-Strategy parameters are not changed here. A halt stops new buys only.
+Strategy parameters are not changed here. A halt file stops new buys only.
+kill-switch writes that file before its first cancel or sell. Deleting it
+resumes entries; the next buy still needs a fresh cross. ``sold`` counts only
+this exit's read-back fills. The exit loop is at most twelve actions.
 """
 from __future__ import annotations
 
@@ -335,9 +338,12 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
                 urlopen=None, now: float | None = None) -> dict:
     """Cancel this state's orders and sell its recorded position through the normal exit lifecycle.
 
-    The sell intent, its client id, and any cancel id are saved before those
-    requests are sent. ``sold`` counts only native executed quantity. BTC this
+    When an exit is attempted, ``HALT`` is written atomically before the first
+    cancel or sell. The sell intent, its client id, and any cancel id are saved
+    before those requests are sent. ``sold`` counts only this exit's read-back
+    fills. A touch re-entry prepared before this command is not kept. BTC this
     state does not record is not sold. ``confirm`` must be true or nothing is sent.
+    At most twelve actions run; a remainder sets manual takeover and alerts.
     """
     if confirm is not True:
         raise Blocked('kill-switch requires --confirm')

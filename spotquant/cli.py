@@ -87,7 +87,8 @@ def main(argv=None):
         description=(
             'BTCUSDT spot observation. A write session needs --execute and a matching '
             '--authorize-uid. 28% is the trail target; stop_price_percent_band can place '
-            'the STOP_LOSS at the percent-band floor. ops-run is the daily timer entry.'
+            'the STOP_LOSS at the percent-band floor. ops-run is the 00:45 UTC timer entry. '
+            'kill-switch writes HALT before it cancels or sells.'
         ),
     )
     commands = parser.add_subparsers(dest='command', required=True)
@@ -137,7 +138,7 @@ def main(argv=None):
     backup.add_argument('--dest', type=Path)
     switch = commands.add_parser(
         'kill-switch',
-        help='Cancel this state\'s orders and sell its recorded position. Success requires a confirmed fill.')
+        help='Sell the recorded position after writing HALT. sold is confirmed fills only. Delete HALT to resume.')
     switch.add_argument('--config', required=True)
     switch.add_argument('--authorize-uid', required=True)
     switch.add_argument('--confirm', action='store_true')
