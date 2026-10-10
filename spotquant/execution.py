@@ -7,7 +7,10 @@ from decimal import Decimal as D
 from time import time
 
 from .model import DAY, Model, SLEEVES
-from .preview import BASE_STEP, MIN_NOTIONAL, _annotate_venue, _decide, _protection, _qty_ok, decision_view
+from .preview import (
+    BASE_STEP, MIN_NOTIONAL, _annotate_venue, _decide, _protection, _qty_ok, decision_view,
+    sell_percent_bounds,
+)
 from .state import client_id
 from .types import Blocked, Unknown, NotFound, NotSent, floor_step, number, serial
 
@@ -296,7 +299,12 @@ class Lifecycle:
             return False
         view, quantity = _view(Model.restore(self.state.get('models')[str(window)]), position)
         order = _protection(decision_view(view, position, self.owners()), quantity, snapshot)
-        if order.get('placeable') is False or 'quantity' not in order:
+        if 'quantity' not in order:
+            return False
+        if order.get('placeable') is False:
+            reason = order.get('unplaceable_reason') or ''
+            if 'PERCENT_PRICE' in reason:
+                raise Blocked(reason)
             return False
         if D(order['stopPrice']) >= D(snapshot['last_price']):
             return False
@@ -461,16 +469,21 @@ class Lifecycle:
         try:
             accepted = self.venue.submit(identity, payload['order'],
                                          preflight=lambda snapshot: self._preflight(payload, snapshot))
-        except NotSent:
-            self.save(identity, payload, 'prepared', {'not_sent': True})
+        except NotSent as exc:
+            self.save(identity, payload, 'prepared', {'not_sent': True, 'reason': str(exc)})
             if self._retry_observation:
                 return True
             raise
         except Unknown:
             pass
-        except Blocked:
+        except Blocked as exc:
             # Mutable preflight failures are NotSent; an explicit refusal requires review.
-            self.save(identity, payload, 'rejected', {})
+            error = getattr(self.venue, 'last_exchange_error', None) or {}
+            self.save(identity, payload, 'rejected', {
+                'reason': str(exc),
+                'exchange_code': error.get('code'),
+                'exchange_msg': error.get('msg'),
+            })
             raise
         else:
             if (not isinstance(accepted, dict) or type(accepted.get('orderId')) is not int
@@ -569,11 +582,66 @@ class Lifecycle:
                 self._retry_observation = True
                 raise NotSent('desired stop is crossed at the latest price; reconcile before dispatch')
 
+    def _covering_stop(self, positions) -> bool:
+        """True when a resting stop still matches this position's quantity."""
+        position = (positions or {}).get(str(SLEEVES[0]))
+        if not position or position.get('dust'):
+            return False
+        qty = floor_step(D(position['qty']), BASE_STEP)
+        for _, payload, status, _ in self.rows():
+            order = payload['order']
+            if (status == 'resting' and order.get('type') == 'STOP_LOSS'
+                    and payload.get('position_first_ms', {}).get(str(SLEEVES[0])) == position['first_ms']
+                    and D(order['quantity']) == qty):
+                return True
+        return False
+
+    def _remember_protection_failure(self, reason: str) -> None:
+        error = getattr(self.venue, 'last_exchange_error', None) or {}
+        self.protection_failure = {
+            'reason': reason,
+            'response': 'market_sell',
+            'exchange_code': error.get('code'),
+            'exchange_msg': error.get('msg'),
+        }
+
+    def _market_reduce(self, bar, positions, follows, identity) -> None:
+        """Sell the free BTC after a stop could not be placed. Do not return quietly."""
+        saved = next(row for row in self.rows() if row[0] == identity)
+        fresh = self.venue.snapshot(self.config.account_uid)
+        fresh['stop_price_percent_band'] = self.config.stop_price_percent_band is True
+        self.verify(fresh)
+        self._observed = fresh
+        qty = floor_step(min(D(saved[1]['order'].get('quantity') or 0), D(fresh['btc_free'])), BASE_STEP)
+        reason = (self.protection_failure or {}).get('reason') or 'protection could not be placed'
+        if qty <= 0 or qty * D(fresh['avg_price']) < D(fresh.get('min_notional') or MIN_NOTIONAL):
+            raise Unknown(reason + '; unprotected BTC is too small for a market sell')
+        reduce = dict(symbol='BTCUSDT', side='SELL', type='MARKET',
+                      quantity=str(qty), sleeves=saved[1]['sleeves'])
+        self.send(self.prepare(reduce, bar, positions, follows))
+
+    def _close_unprotected(self, reason, bar, positions, follows, snapshot) -> None:
+        """Flatten a position that has no resting stop. The reason stays on the report."""
+        self._remember_protection_failure(reason)
+        position = (positions or {}).get(str(SLEEVES[0])) or {}
+        fresh = self.venue.snapshot(self.config.account_uid)
+        fresh['stop_price_percent_band'] = self.config.stop_price_percent_band is True
+        self.verify(fresh)
+        self._observed = fresh
+        owned = D(position.get('qty') or 0)
+        qty = floor_step(min(owned, D(fresh['btc_free'])), BASE_STEP)
+        if qty <= 0 or qty * D(fresh['avg_price']) < D(fresh.get('min_notional') or MIN_NOTIONAL):
+            raise Blocked(reason + '; unprotected BTC is too small for a market sell')
+        reduce = dict(symbol='BTCUSDT', side='SELL', type='MARKET',
+                      quantity=str(qty), sleeves=[SLEEVES[0]])
+        self.send(self.prepare(reduce, bar, positions, follows))
+
     def act(self, decision, bar, observed):
         """One action, then the session re-observes fills before sizing any buy."""
         self._entry_inputs = {item['name']: item for diagnostic in decision.get('crowding', [])
                               for item in diagnostic.get('inputs', [])}
         snapshot = self.venue.snapshot(self.config.account_uid)
+        snapshot['stop_price_percent_band'] = self.config.stop_price_percent_band is True
         self._observed = snapshot
         from .session import _now_ms
         self._quote = {'last_price': str(snapshot['last_price']),
@@ -676,7 +744,11 @@ class Lifecycle:
                     or not same_position):
                 continue
             view = decision_view(views[SLEEVES[0]], position, self.owners())
+            band_floor = sell_percent_bounds(snapshot)['floor']
             if D(payload['order']['stopPrice']) < view._stop_floor:
+                continue
+            if (snapshot.get('stop_price_percent_band') is True and band_floor is not None
+                    and D(payload['order']['stopPrice']) < band_floor):
                 continue
             order = dict(payload['order'], sleeves=payload['sleeves'])
             _annotate_venue(order, view, snapshot)
@@ -685,7 +757,12 @@ class Lifecycle:
         wanted = []
         for order in desired:
             if order.get('placeable') is False:
-                raise Blocked('desired protection fails venue filters')
+                reason = (order.get('unplaceable_reason')
+                          or 'desired protection fails venue filters; the position is unprotected')
+                if self._covering_stop(positions):
+                    return False
+                self._close_unprotected(reason, bar, positions, follows, snapshot)
+                return True
             raw = {key: order[key] for key in FIELDS if key in order}
             matching = [row for row in self.rows() if row[2] in ('resting', 'prepared') and row[1]['order'] == raw
                         and row[1]['sleeves'] == sorted(order['sleeves'])]
@@ -706,19 +783,19 @@ class Lifecycle:
             for identity in wanted:
                 try:
                     changed = self.send(identity) or changed
-                except Blocked:
+                except NotSent as exc:
+                    # A proved pre-send band refusal is not an unknown order.
+                    if 'PERCENT_PRICE' not in str(exc) or self._covering_stop(positions):
+                        raise
+                    self._remember_protection_failure(str(exc))
+                    self._market_reduce(bar, positions, follows, identity)
+                    return True
+                except Blocked as exc:
                     saved = next(row for row in self.rows() if row[0] == identity)
                     if saved[2] != 'rejected':
                         raise
-                    fresh = self.venue.snapshot(self.config.account_uid)
-                    self.verify(fresh)
-                    self._observed = fresh
-                    qty = floor_step(min(D(saved[1]['order']['quantity']), D(fresh['btc_free'])), BASE_STEP)
-                    if qty <= 0 or qty * D(fresh['avg_price']) < D(fresh.get('min_notional') or MIN_NOTIONAL):
-                        raise Unknown('stop rejected; unprotected BTC is too small for confirmed reduction')
-                    reduce = dict(symbol='BTCUSDT', side='SELL', type='MARKET',
-                                  quantity=str(qty), sleeves=saved[1]['sleeves'])
-                    self.send(self.prepare(reduce, bar, positions, follows))
+                    self._remember_protection_failure(str(exc))
+                    self._market_reduce(bar, positions, follows, identity)
                     return True
             return changed
         for order in decision['orders']:

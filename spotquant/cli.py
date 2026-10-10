@@ -97,6 +97,23 @@ def main(argv=None):
     demo.add_argument('--config', required=True)
     demo.add_argument('--execute', action='store_true')
     demo.add_argument('--authorize-uid', help='Repeat the dedicated Demo account UID for this invocation')
+    verify = commands.add_parser('demo-verify', help='Record Spot Demo execution scenarios. Never sends to mainnet.')
+    verify.add_argument('--config', required=True)
+    verify.add_argument('--execute', action='store_true')
+    verify.add_argument('--authorize-uid', help='Repeat the dedicated Demo account UID for this invocation')
+    verify.add_argument('--faults', action='store_true',
+                        help='Also run kill -9, lost-response, clock-skew, and injected HTTP 429 scenarios')
+    verify.add_argument('--scenario', action='append', help='Run one scenario. Repeat to select several.')
+    verify.add_argument('--out', type=Path, help='Directory for the JSON and Markdown report')
+    reconcile = commands.add_parser('demo-reconcile', help='Compare the Demo ledger with exchange order and trade history')
+    reconcile.add_argument('--config', required=True)
+    reconcile.add_argument('--out', type=Path, help='Directory for the JSON and Markdown report')
+    probe = commands.add_parser(
+        'demo-band-probe',
+        help='Demo-only STOP_LOSS depth probe. Without --execute it only reads filters and prices.')
+    probe.add_argument('--config', required=True)
+    probe.add_argument('--execute', action='store_true')
+    probe.add_argument('--authorize-uid', help='Repeat the dedicated Demo account UID before any order')
     args = parser.parse_args(argv)
     try:
         if args.command == 'run' and args.execute and not args.authorize_uid:
@@ -120,6 +137,30 @@ def main(argv=None):
             if args.execute and args.authorize_uid != config.account_uid:
                 raise Blocked('Demo execution requires matching --authorize-uid')
             report = run(config, connect(config, execute_orders=args.execute), execute=args.execute)
+        elif args.command == 'demo-verify':
+            from .demo_guard import assert_demo_config
+            from .demo_verify import execute_verification
+            config = load(args.config)
+            assert_demo_config(config, capital=True)
+            if args.execute and args.authorize_uid != config.account_uid:
+                raise Blocked('Demo verification requires matching --authorize-uid')
+            report = execute_verification(
+                config, connect(config, execute_orders=args.execute), execute=args.execute,
+                faults=args.faults, scenarios=args.scenario, out=args.out, config_path=args.config)
+        elif args.command == 'demo-band-probe':
+            from .band_probe import execute_probe
+            from .demo_guard import assert_demo_config
+            config = load(args.config)
+            assert_demo_config(config, capital=args.execute)
+            if args.execute and args.authorize_uid != config.account_uid:
+                raise Blocked('Demo band probe requires matching --authorize-uid')
+            report = execute_probe(config, connect(config, execute_orders=args.execute), execute=args.execute)
+        elif args.command == 'demo-reconcile':
+            from .demo_guard import assert_demo_config
+            from .reconcile import execute_reconcile
+            config = load(args.config)
+            assert_demo_config(config)
+            report = execute_reconcile(config, connect(config), out=args.out)
         elif args.command == 'run' and args.execute:
             config = load(args.config)
             if config.environment != 'live' or config.capital_limit is None:

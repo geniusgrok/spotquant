@@ -2,8 +2,11 @@
 from decimal import Decimal as D
 import unittest
 
-from spotquant.model import DAY, ORIGIN, Model, SLEEVES
-from spotquant.preview import decision, decision_view, portfolio
+from spotquant.model import DAY, ORIGIN, Model, SLEEVES, TRAIL
+from spotquant.preview import (
+    STOP_BAND_BUFFER, _annotate_venue, _protection, clamp_stop, decision, decision_view,
+    portfolio, stop_band_violation,
+)
 from spotquant.session import _entries_blocked, _follow_after, _view
 
 
@@ -312,3 +315,121 @@ class PreviewTests(unittest.TestCase):
                 self.assertEqual(bool(result['orders']), tradable)
                 self.assertEqual(result['untradeable'], not tradable)
                 self.assertEqual('below the minimum notional' in result['reason'], not tradable)
+
+
+class PercentBandTests(unittest.TestCase):
+    def test_a_28_percent_stop_is_outside_the_sell_band(self):
+        snapshot = {
+            'avg_price': D('100'), 'last_price': D('100'), 'min_notional': D('5'),
+            'percent_price_by_side': {
+                'filter': 'PERCENT_PRICE_BY_SIDE',
+                'ask_multiplier_down': D('0.8'),
+                'ask_multiplier_up': D('5'),
+                'avg_price_mins': 5,
+            },
+        }
+        self.assertIn('PERCENT_PRICE_BY_SIDE', stop_band_violation(snapshot, '72'))
+        self.assertIn('unprotected', stop_band_violation(snapshot, '72'))
+        self.assertIsNone(stop_band_violation(snapshot, '80'))
+        self.assertIsNone(stop_band_violation(snapshot, '80.08'))
+        order = {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'STOP_LOSS',
+                 'quantity': '0.1', 'stopPrice': '72.00'}
+        _annotate_venue(order, Model(40), snapshot)
+        self.assertTrue(order['placeable'])
+        confirmed = dict(snapshot, stop_price_percent_band=True)
+        refused = dict(order)
+        _annotate_venue(refused, Model(40), confirmed)
+        self.assertFalse(refused['placeable'])
+        self.assertIn('unprotected', refused['unplaceable_reason'])
+
+    def _band(self, avg='100', last='100', down='0.8', up='5', tick=None):
+        snap = {
+            'avg_price': D(avg), 'last_price': D(last), 'min_notional': D('5'),
+            'percent_price_by_side': {
+                'filter': 'PERCENT_PRICE_BY_SIDE',
+                'ask_multiplier_down': D(down),
+                'ask_multiplier_up': D(up),
+                'avg_price_mins': 5,
+            },
+        }
+        if tick is not None:
+            snap['tick_size'] = D(tick)
+        return snap
+
+    def test_clamp_lifts_the_28_percent_target_to_the_buffered_tick(self):
+        self.assertEqual(TRAIL, D('0.28'))
+        self.assertEqual(STOP_BAND_BUFFER, D('0.001'))
+        plan = clamp_stop(D('100') * (D(1) - TRAIL), self._band(), existing=D(0))
+        self.assertEqual(plan['target'], '72.00')
+        self.assertEqual(plan['band_floor'], '80.08')
+        self.assertEqual(plan['placed'], '80.08')
+        self.assertTrue(plan['clamped'])
+        self.assertIsNone(plan['unplaceable_reason'])
+        self.assertIsNone(stop_band_violation(self._band(), plan['placed']))
+
+    def test_band_floor_ceil_and_target_floor_respect_the_tick(self):
+        # 100.01 * 0.8 * 1.001 = 80.088008, which must round up to 80.09.
+        plan = clamp_stop('72.009', self._band(avg='100.01'), existing=D(0))
+        self.assertEqual(plan['target'], '72.00')
+        self.assertEqual(plan['band_floor'], '80.09')
+        self.assertEqual(plan['placed'], '80.09')
+        odd = clamp_stop('72.019', self._band(tick='0.05'))
+        self.assertEqual(odd['target'], '72.00')
+        self.assertEqual(odd['band_floor'], '80.10')
+        self.assertEqual(odd['placed'], '80.10')
+
+    def test_ratchet_never_lowers_and_uses_the_28_percent_target_when_it_is_higher(self):
+        band = self._band()
+        held = clamp_stop('72', band, existing=D('85'))
+        self.assertEqual(held['placed'], '85.00')
+        self.assertEqual(held['band_floor'], '80.08')
+        self.assertFalse(held['clamped'])
+        self.assertGreaterEqual(D(held['placed']), D('85'))
+        raised = clamp_stop('72', band, existing=D('80.08'))
+        self.assertEqual(raised['placed'], '80.08')
+        self.assertTrue(raised['clamped'])
+        # After a drawdown the average falls and the 28% target is inside the band.
+        placeable = clamp_stop('72', self._band(avg='80'), existing=D(0))
+        self.assertEqual(placeable['target'], '72.00')
+        self.assertEqual(placeable['band_floor'], '64.07')
+        self.assertEqual(placeable['placed'], '72.00')
+        self.assertFalse(placeable['clamped'])
+        # An existing clamped stop still does not move down.
+        kept = clamp_stop('72', self._band(avg='80'), existing=D('80.08'))
+        self.assertEqual(kept['placed'], '80.08')
+        self.assertFalse(kept['clamped'])
+        # A higher peak makes the 28% target the price that is placed.
+        above = clamp_stop(D('150') * (D(1) - TRAIL), band, existing=D('80.08'))
+        self.assertEqual(above['target'], '108.00')
+        self.assertEqual(above['placed'], '108.00')
+        self.assertFalse(above['clamped'])
+
+    def test_protection_order_reports_the_clamp_and_keeps_the_native_floor(self):
+        view = Model(40)
+        view.close = D('100')
+        view.position_peak = D('100')
+        plain = _protection(view, D('0.1'), self._band())
+        self.assertEqual(plain['stop_target'], '72.00')
+        self.assertEqual(plain['band_floor'], '80.08')
+        self.assertEqual(plain['stopPrice'], '72.00')
+        self.assertFalse(plain['clamped'])
+        self.assertFalse(plain['rule_enabled'])
+        self.assertTrue(plain['placeable'])
+        view._stop_floor = D('90')
+        held = dict(self._band(), stop_price_percent_band=True)
+        order = _protection(view, D('0.1'), held)
+        self.assertEqual(order['stop_target'], '72.00')
+        self.assertEqual(order['band_floor'], '80.08')
+        self.assertEqual(order['stopPrice'], '90.00')
+        self.assertFalse(order['clamped'])
+        self.assertTrue(order['rule_enabled'])
+        view._stop_floor = D(0)
+        order = _protection(view, D('0.1'), held)
+        self.assertEqual(order['stopPrice'], '80.08')
+        self.assertTrue(order['clamped'])
+        self.assertTrue(order['placeable'])
+        tight = dict(self._band(up='0.5'), stop_price_percent_band=True)
+        blocked = _protection(view, D('0.1'), tight)
+        self.assertFalse(blocked['placeable'])
+        self.assertIn('PERCENT_PRICE', blocked['unplaceable_reason'])
+        self.assertIn('unprotected', blocked['unplaceable_reason'])

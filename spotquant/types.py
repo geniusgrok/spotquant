@@ -1,7 +1,7 @@
 """Shared outcomes and decimal helpers. No exchange I/O."""
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_DOWN
 from typing import Any
 
 D = Decimal
@@ -37,6 +37,12 @@ def floor_step(value: D, step: D) -> D:
     if step <= 0 or value < 0:
         raise Blocked('invalid quantity or step')
     return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
+
+
+def ceil_step(value: D, step: D) -> D:
+    if step <= 0 or value < 0:
+        raise Blocked('invalid quantity or step')
+    return (value / step).to_integral_value(rounding=ROUND_CEILING) * step
 
 
 def serial(value: Any) -> Any:

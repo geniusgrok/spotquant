@@ -6,7 +6,7 @@ from pathlib import Path
 from decimal import Decimal as D
 import unittest
 
-from spotquant.binance import Binance, ORIGIN, DAY
+from spotquant.binance import HOSTS, Binance, ORIGIN, DAY, allow_demo_bnb_discount
 from spotquant.preview import _qty_ok
 from spotquant.types import Blocked, Unknown, NotSent, NotFound
 
@@ -197,6 +197,92 @@ class BinanceTests(unittest.TestCase):
             venue.submit('sq-test', dict(symbol='BTCUSDT', side='BUY', type='MARKET', quoteOrderQty='10'))
         self.assertEqual(writes, [])
 
+    def _discount_opener(self, script, writes, balances):
+        def opener(method, url, headers):
+            if method != 'GET':
+                writes.append(url)
+                return 200, json.dumps({
+                    'symbol': 'BTCUSDT', 'orderId': 1, 'clientOrderId': 'sq-test',
+                    'status': 'FILLED', 'side': 'BUY', 'type': 'MARKET',
+                    'origQty': '0.1', 'executedQty': '0.1', 'origQuoteOrderQty': '10',
+                    'cummulativeQuoteQty': '10',
+                }).encode()
+            if '/api/v3/account/commission' in url:
+                return 200, json.dumps({
+                    'symbol': 'BTCUSDT',
+                    'standardCommission': {'taker': '.001', 'buyer': '0'},
+                    'specialCommission': {'taker': '0', 'buyer': '0'},
+                    'taxCommission': {'taker': '0', 'buyer': '0'},
+                    'discount': {'enabledForAccount': True, 'enabledForSymbol': True,
+                                 'discountAsset': 'BNB', 'discount': '0.75'},
+                }).encode()
+            if '/api/v3/account?' in url:
+                return 200, json.dumps({'uid': '10001', 'canTrade': True, 'balances': balances}).encode()
+            return script(method, url, headers)
+        return opener
+
+    def test_live_bnb_discount_still_refuses_when_bnb_balance_is_zero(self):
+        script = Script()
+        writes = []
+        balances = [
+            {'asset': 'BTC', 'free': '0', 'locked': '0'},
+            {'asset': 'USDT', 'free': '100', 'locked': '0'},
+            {'asset': 'BNB', 'free': '0', 'locked': '0'},
+        ]
+        venue = Binance(key=KEY, secret=SECRET, environment='live',
+                        opener=self._discount_opener(script, writes, balances),
+                        clock=lambda: 1_700_000_000, capital_limit=D('100'),
+                        demo_execution_uid='10001')
+        observed = venue.snapshot('10001')
+        self.assertEqual(observed['fee_mode'], 'third_asset')
+        self.assertFalse(observed['demo_bnb_discount_allowance'])
+        self.assertFalse(allow_demo_bnb_discount('live', HOSTS['live'], D(0)))
+        with self.assertRaisesRegex(NotSent, 'fee mode'):
+            venue.submit('sq-test', dict(symbol='BTCUSDT', side='BUY', type='MARKET', quoteOrderQty='10'))
+        self.assertEqual(writes, [])
+
+    def test_demo_zero_bnb_discount_allows_the_buy_and_records_the_allowance(self):
+        script = Script()
+        writes = []
+        balances = [
+            {'asset': 'BTC', 'free': '0', 'locked': '0'},
+            {'asset': 'USDT', 'free': '100', 'locked': '0'},
+            {'asset': 'BNB', 'free': '0.00000000', 'locked': '0.00000000'},
+        ]
+        venue = Binance(key=KEY, secret=SECRET, environment='demo',
+                        opener=self._discount_opener(script, writes, balances),
+                        clock=lambda: 1_700_000_000, capital_limit=D('100'),
+                        demo_execution_uid='10001')
+        observed = venue.snapshot('10001')
+        self.assertEqual(observed['fee_mode'], 'base_quote')
+        self.assertEqual(observed['bnb'], D(0))
+        self.assertTrue(observed['demo_bnb_discount_allowance'])
+        self.assertTrue(venue.demo_bnb_discount_allowance)
+        venue.submit('sq-test', dict(symbol='BTCUSDT', side='BUY', type='MARKET', quoteOrderQty='10'))
+        self.assertEqual(len(writes), 1)
+        self.assertIn('/api/v3/order', writes[0])
+
+    def test_demo_positive_locked_bnb_still_refuses_the_discounted_buy(self):
+        script = Script()
+        writes = []
+        balances = [
+            {'asset': 'BTC', 'free': '0', 'locked': '0'},
+            {'asset': 'USDT', 'free': '100', 'locked': '0'},
+            {'asset': 'BNB', 'free': '0', 'locked': '0.01'},
+        ]
+        venue = Binance(key=KEY, secret=SECRET, environment='demo',
+                        opener=self._discount_opener(script, writes, balances),
+                        clock=lambda: 1_700_000_000, capital_limit=D('100'),
+                        demo_execution_uid='10001')
+        observed = venue.snapshot('10001')
+        self.assertEqual(observed['fee_mode'], 'third_asset')
+        self.assertFalse(observed['demo_bnb_discount_allowance'])
+        with self.assertRaisesRegex(NotSent, 'fee mode'):
+            venue.submit('sq-test', dict(symbol='BTCUSDT', side='BUY', type='MARKET', quoteOrderQty='10'))
+        self.assertEqual(writes, [])
+        venue.base = 'https://api.binance.com'
+        self.assertFalse(allow_demo_bnb_discount('demo', venue.base, D(0)))
+
     def test_snapshot_signs_gets_and_checks_uid(self):
         script = Script()
         venue = Binance(key=KEY, secret=SECRET, environment='live', opener=script, clock=lambda: script.now / 1000)
@@ -332,6 +418,58 @@ class BinanceTests(unittest.TestCase):
         with self.assertRaises(Unknown) as caught:
             venue.query('sq-missing')
         self.assertNotIsInstance(caught.exception, NotFound)
+
+    def test_exchange_message_is_kept_and_a_stop_outside_the_band_is_not_sent(self):
+        script = Script()
+        posts = []
+
+        def opener(method, url, headers):
+            if method == 'POST':
+                posts.append(url)
+                return 400, json.dumps({
+                    'code': -1013, 'msg': 'Filter failure: PERCENT_PRICE_BY_SIDE'}).encode()
+            if '/api/v3/exchangeInfo' in url:
+                body = _filters()
+                body['symbols'][0]['filters'].append({
+                    'filterType': 'PERCENT_PRICE_BY_SIDE',
+                    'bidMultiplierUp': '5', 'bidMultiplierDown': '0.2',
+                    'askMultiplierUp': '5', 'askMultiplierDown': '0.8',
+                    'avgPriceMins': 5,
+                })
+                return 200, json.dumps(body).encode()
+            return script(method, url, headers)
+
+        venue = Binance(key=KEY, secret=SECRET, environment='demo', opener=opener,
+                        clock=lambda: 1_700_000_000, capital_limit=D('100'),
+                        demo_execution_uid='10001')
+        with self.assertRaises(Blocked) as caught:
+            venue.submit('sq-stop', dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
+                                         quantity='0.1', stopPrice='72'))
+        self.assertIn('Filter failure: PERCENT_PRICE_BY_SIDE', str(caught.exception))
+        self.assertEqual(venue.last_exchange_error['msg'], 'Filter failure: PERCENT_PRICE_BY_SIDE')
+        self.assertEqual(venue.last_exchange_error['code'], -1013)
+        self.assertEqual(len(posts), 1)
+        self.assertIn('stopPrice=72', posts[0])
+        venue.stop_price_percent_band = True
+        with self.assertRaisesRegex(NotSent, 'PERCENT_PRICE_BY_SIDE') as refused:
+            venue.submit('sq-held', dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
+                                         quantity='0.1', stopPrice='72'))
+        self.assertIn('unprotected', str(refused.exception))
+        self.assertEqual(len(posts), 1)
+        observed = venue.snapshot('10001')
+        self.assertEqual(observed['percent_price_by_side']['ask_multiplier_down'], D('0.8'))
+        with self.assertRaises(Blocked):
+            venue.submit('sq-high', dict(symbol='BTCUSDT', side='SELL', type='STOP_LOSS',
+                                         quantity='0.1', stopPrice='80.08'))
+        self.assertEqual(len(posts), 2)
+        self.assertIn('stopPrice=80.08', posts[1])
+        def leak(method, url, headers):
+            return 400, b'{"code":-1013,"msg":"secret in signature"}'
+        venue._opener = leak
+        with self.assertRaises(Blocked) as leaked:
+            venue._get('/api/v3/order', {'symbol': 'BTCUSDT'}, signed=True, method='POST')
+        self.assertNotIn('secret', str(leaked.exception))
+        self.assertIn('code -1013', str(leaked.exception))
 
 
 if __name__ == '__main__':
