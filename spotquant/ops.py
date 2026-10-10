@@ -4,7 +4,6 @@ Strategy parameters are not changed here. A halt stops new buys only.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sqlite3
@@ -17,8 +16,7 @@ from .notify import (
     ALERT_WINDOW_SECONDS, body_for, collect_alerts, deliver, heartbeat_message,
     missed_run_alert, remember_sent, subject_for, unsent,
 )
-from .state import client_id
-from .types import Blocked, floor_step, number
+from .types import Blocked, NotSent, Unknown, floor_step, number
 
 HALT_FILENAME = 'HALT'
 HEARTBEAT_FILENAME = 'heartbeat.json'
@@ -116,15 +114,137 @@ def backup_database(db_path: Path, dest_dir: Path, *, keep: int = BACKUP_KEEP, n
     return dest
 
 
-def _intent_ids(state) -> set[str]:
-    return {row[0] for row in state.db.execute('SELECT id FROM intents')}
+def _recorded_qty(state) -> tuple[D, bool]:
+    """Owned sleeve quantity, and whether it is already marked untradable dust."""
+    position = (state.get('positions') or {}).get('40')
+    if not isinstance(position, dict):
+        return D(0), False
+    try:
+        qty = number(position.get('qty'), 'position', nonnegative=True)
+    except Blocked:
+        return D(0), False
+    return qty, bool(position.get('dust'))
 
 
-def kill_switch(state, venue, config, *, confirm: bool) -> dict:
-    """Cancel this state's orders and sell its recorded position.
+def _tradable(qty: D, snapshot: dict, *, dust: bool) -> bool:
+    if dust or qty <= 0:
+        return False
+    price = D(snapshot.get('avg_price') or snapshot.get('last_price') or 0)
+    minimum = D(snapshot.get('min_notional') or MIN_NOTIONAL)
+    return qty * price >= minimum and floor_step(qty, BASE_STEP) > 0
 
-    BTC that the state does not record is not sold. ``confirm`` must be true
-    or nothing is sent.
+
+def _market_sells(lifecycle) -> list:
+    return [row for row in lifecycle.rows()
+            if (row[1].get('order') or {}).get('side') == 'SELL'
+            and (row[1].get('order') or {}).get('type') == 'MARKET']
+
+
+def _confirmed_sold(lifecycle) -> str | None:
+    """Sum native executed quantities. The requested quantity is never used."""
+    total = D(0)
+    confirmed = False
+    for _, payload, _, result in _market_sells(lifecycle):
+        if result.get('orderId') is None or result.get('executedQty') is None:
+            continue
+        total += number(result['executedQty'], nonnegative=True)
+        confirmed = True
+    if confirmed:
+        return format(total, 'f')
+    if any(row[2] == 'rejected' for row in _market_sells(lifecycle)):
+        return '0'
+    return None
+
+
+def _stop_resting(lifecycle) -> bool:
+    return any(status == 'resting' and (payload.get('order') or {}).get('type') == 'STOP_LOSS'
+               for _, payload, status, _ in lifecycle.rows())
+
+
+def _unresolved_sell(lifecycle) -> bool:
+    return any(row[2] in ('unknown', 'resting', 'canceling') for row in _market_sells(lifecycle))
+
+
+def _account_exit(state, venue, lifecycle, config) -> None:
+    """Apply confirmed sells with the same book path a session uses."""
+    from .model import SLEEVES, Model
+    from .session import _commit, _fold
+    saved = state.get('models')
+    if not saved:
+        raise Unknown('kill-switch requires the recorded model checkpoint')
+    models = {window: Model.restore(saved[str(window)]) for window in SLEEVES}
+    state._execution_owners = lifecycle.owners()
+    state._staged = None
+    snapshot = venue.snapshot(config.account_uid)
+    positions, follows, _exit_through = _fold(state, venue, models, snapshot)
+    _commit(state, models, positions, follows, False, models[SLEEVES[0]].last)
+
+
+def _restore_protection(lifecycle, state, venue, config, bar) -> bool:
+    """Put a resting stop back on a remainder. False means it is still unprotected."""
+    snapshot = venue.snapshot(config.account_uid)
+    snapshot['stop_price_percent_band'] = config.stop_price_percent_band is True
+    positions = state.get('positions') or {}
+    follows = state.get('follows') or {}
+    qty, dust = _recorded_qty(state)
+    if not _tradable(qty, snapshot, dust=dust):
+        return _stop_resting(lifecycle)
+    try:
+        for _ in range(2):
+            if _stop_resting(lifecycle):
+                return True
+            if not lifecycle._protect_unsold(bar, positions, follows, snapshot):
+                break
+    except (Unknown, Blocked):
+        return _stop_resting(lifecycle)
+    return _stop_resting(lifecycle)
+
+
+def _kill_bar(state, lifecycle) -> int:
+    for _, payload, status, _ in _market_sells(lifecycle):
+        if status in ('prepared', 'unknown', 'resting', 'canceling') and payload.get('signal_ms') is not None:
+            return int(payload['signal_ms'])
+    position = (state.get('positions') or {}).get('40')
+    if isinstance(position, dict) and position.get('first_ms') is not None:
+        return int(position['first_ms'])
+    saved = state.get('models') or {}
+    body = (saved.get('40') or {}).get('body') or {}
+    if body.get('last') is None:
+        raise Unknown('kill-switch has no recorded position time')
+    return int(body['last'])
+
+
+def _finish_kill(state, config, lifecycle, *, status: str, reason: str | None, cancelled: list,
+                 extra: D, manual_takeover: bool, env=None, smtp_ssl=None, smtp_plain=None,
+                 urlopen=None, now: float | None = None) -> dict:
+    qty, dust = _recorded_qty(state)
+    report = {
+        'status': status,
+        'environment': config.environment,
+        'cancelled': list(cancelled),
+        'sold': _confirmed_sold(lifecycle),
+        'residual_btc': format(qty, 'f'),
+        'dust': dust or (qty > 0 and status == 'pass'),
+        'manual_takeover': manual_takeover,
+        'unexplained_btc': format(extra, 'f'),
+        'native_execution_verified': False,
+    }
+    if reason:
+        report['reason'] = reason
+    if status != 'pass':
+        report['notifications'] = dispatch_notifications(
+            Path(state.directory), report, exit_code=2, now=now, env=env,
+            smtp_ssl=smtp_ssl, smtp_plain=smtp_plain, urlopen=urlopen)
+    return report
+
+
+def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None, smtp_plain=None,
+                urlopen=None, now: float | None = None) -> dict:
+    """Cancel this state's orders and sell its recorded position through the normal exit lifecycle.
+
+    The sell intent, its client id, and any cancel id are saved before those
+    requests are sent. ``sold`` counts only native executed quantity. BTC this
+    state does not record is not sold. ``confirm`` must be true or nothing is sent.
     """
     if confirm is not True:
         raise Blocked('kill-switch requires --confirm')
@@ -132,46 +252,104 @@ def kill_switch(state, venue, config, *, confirm: bool) -> dict:
         raise Blocked('kill-switch requires demo or live')
     if config.capital_limit is None:
         raise Blocked('kill-switch requires a capital ceiling')
+    from .execution import Lifecycle
     snapshot = venue.snapshot(config.account_uid)
-    positions = state.get('positions') or {}
-    position = positions.get('40')
-    owned = D(0)
-    if isinstance(position, dict) and not position.get('dust'):
-        try:
-            owned = number(position.get('qty'), 'position', nonnegative=True)
-        except Blocked:
-            owned = D(0)
+    owned, dust = _recorded_qty(state)
     account_btc = D(snapshot['btc'])
-    price = D(snapshot['last_price'])
-    extra = account_btc - owned
-    ours = _intent_ids(state)
-    cancelled = []
-    for order in snapshot.get('orders') or []:
-        if order.get('client_id') not in ours:
-            continue
-        cancel_id = 'sq-' + hashlib.sha256(
-            (order['client_id'] + '|kill-switch').encode()).hexdigest()[:30]
-        venue.cancel(order['client_id'], order_id=order['order_id'], cancel_id=cancel_id)
-        cancelled.append(order['client_id'])
-    fresh = venue.snapshot(config.account_uid)
-    if owned <= 0 and D(fresh['btc']) * D(fresh['last_price']) >= D(fresh.get('min_notional') or MIN_NOTIONAL):
+    extra = max(account_btc - owned, D(0))
+    minimum = D(snapshot.get('min_notional') or MIN_NOTIONAL)
+    if owned <= 0 and account_btc * D(snapshot['last_price']) >= minimum:
         raise Blocked('kill-switch will not adopt BTC that has no recorded position')
-    free = floor_step(min(owned, D(fresh['btc_free'])), BASE_STEP)
-    sold = None
-    if free > 0 and free * D(fresh['avg_price']) >= D(fresh.get('min_notional') or MIN_NOTIONAL):
-        identity = client_id(config.scope, int(time()) // 86400, 'kill-switch-sell')
-        venue.submit(identity, {
-            'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': format(free, 'f'),
-        })
-        sold = format(free, 'f')
-    return {
-        'status': 'pass',
-        'environment': config.environment,
-        'cancelled': cancelled,
-        'sold': sold,
-        'unexplained_btc': format(max(extra, D(0)), 'f'),
-        'native_execution_verified': False,
-    }
+    notify = dict(env=env, smtp_ssl=smtp_ssl, smtp_plain=smtp_plain, urlopen=urlopen, now=now)
+    if owned > 0 and not state.get('models'):
+        raise Unknown('kill-switch requires the recorded model checkpoint')
+    lifecycle = Lifecycle(state, venue, config)
+    cancelled = []
+
+    def finish(status, reason=None, takeover=False):
+        return _finish_kill(state, config, lifecycle, status=status, reason=reason,
+                            cancelled=cancelled, extra=extra, manual_takeover=takeover, **notify)
+
+    try:
+        lifecycle.recover()
+    except Unknown as exc:
+        return finish('unknown', str(exc), takeover=True)
+    if not _market_sells(lifecycle) and not _tradable(owned, snapshot, dust=dust):
+        try:
+            lifecycle.verify(snapshot)
+        except Unknown as exc:
+            return finish('unknown', str(exc), takeover=not _stop_resting(lifecycle))
+        return finish('pass')
+    bar = _kill_bar(state, lifecycle)
+    follows = state.get('follows') or {}
+    unresolved = None
+    # One session allows twelve actions. A finished session clock is not reused:
+    # this command is the operator's exit, not a continuation of that clock.
+    for _ in range(12):
+        try:
+            lifecycle.recover()
+        except Unknown as exc:
+            return finish('unknown', str(exc), takeover=True)
+        if _unresolved_sell(lifecycle):
+            return finish('unknown', 'sell is not confirmed; the original identity is not sent again',
+                          takeover=True)
+        try:
+            _account_exit(state, venue, lifecycle, config)
+        except Unknown as exc:
+            return finish('unknown', str(exc), takeover=not _stop_resting(lifecycle))
+        prepared = [row for row in _market_sells(lifecycle) if row[2] == 'prepared']
+        fresh = venue.snapshot(config.account_uid)
+        qty, dust = _recorded_qty(state)
+        # Size from the recorded position. A resting stop locks btc_free until it is cancelled.
+        free = floor_step(qty, BASE_STEP)
+        if not prepared and not _tradable(free, fresh, dust=dust):
+            unresolved = None
+            break
+        try:
+            lifecycle.verify(fresh)
+        except Unknown as exc:
+            return finish('unknown', str(exc), takeover=not _stop_resting(lifecycle))
+        if not prepared:
+            order = {
+                'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET',
+                'quantity': format(free, 'f'), 'sleeves': [40],
+            }
+            identity = lifecycle.prepare(order, bar, state.get('positions') or {}, follows)
+            prepared = [row for row in lifecycle.rows() if row[0] == identity]
+        if prepared[0][2] != 'prepared':
+            continue
+        try:
+            for stop_id, payload, status, _ in list(lifecycle.rows()):
+                if status == 'resting' and (payload.get('order') or {}).get('type') == 'STOP_LOSS':
+                    lifecycle.cancel(stop_id)
+                    cancelled.append(stop_id)
+            lifecycle.send(prepared[0][0])
+        except Unknown as exc:
+            return finish('unknown', str(exc), takeover=True)
+        except (Blocked, NotSent) as exc:
+            protected = _restore_protection(lifecycle, state, venue, config, bar)
+            status = 'partial' if protected else 'unknown'
+            reason = str(exc) if protected else str(exc) + '; residual position is unprotected'
+            return finish(status, reason, takeover=not protected)
+    else:
+        unresolved = unresolved or 'kill-switch stopped before the recorded position was flat'
+    qty, dust = _recorded_qty(state)
+    fresh = venue.snapshot(config.account_uid)
+    if _unresolved_sell(lifecycle):
+        return finish('unknown', 'sell is not confirmed; the original identity is not sent again',
+                      takeover=True)
+    if unresolved or _tradable(qty, fresh, dust=dust):
+        protected = _stop_resting(lifecycle) or _restore_protection(lifecycle, state, venue, config, bar)
+        status = 'partial' if protected else 'unknown'
+        reason = unresolved or 'recorded position remains after kill-switch'
+        if not protected:
+            reason += '; residual position is unprotected'
+        return finish(status, reason, takeover=not protected)
+    try:
+        lifecycle.verify(fresh)
+    except Unknown as exc:
+        return finish('unknown', str(exc), takeover=not _stop_resting(lifecycle))
+    return finish('pass')
 
 
 def write_heartbeat(directory: Path, report: dict, now: float | None = None) -> Path:
