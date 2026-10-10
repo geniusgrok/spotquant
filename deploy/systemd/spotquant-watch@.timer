@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly check that the Spotquant %i 00:45 UTC heartbeat is under 26 hours old
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=5min
+Unit=spotquant-watch@%i.service
+
+[Install]
+WantedBy=timers.target

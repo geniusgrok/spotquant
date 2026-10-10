@@ -22,6 +22,9 @@ class Config:
     # Off until a Demo probe confirms that STOP_LOSS stopPrice is inside the
     # symbol's PERCENT_PRICE filter. On, the native stop uses option A.
     stop_price_percent_band: bool = False
+    # Optional. When set, a drawdown from the recorded peak at least this large
+    # stops new buys. Exits and resting stops still run. Example: "0.25".
+    max_drawdown_halt_pct: str | None = None
 
     def __post_init__(self):
         if (not isinstance(self.account_uid, str) or not self.account_uid.isascii()
@@ -43,6 +46,13 @@ class Config:
                 raise Blocked('capital_limit_usdt must be a positive decimal string')
         if type(self.stop_price_percent_band) is not bool:
             raise Blocked('stop_price_percent_band must be true or false')
+        if self.max_drawdown_halt_pct is not None:
+            try:
+                halt = Decimal(self.max_drawdown_halt_pct) if isinstance(self.max_drawdown_halt_pct, str) else None
+            except InvalidOperation:
+                halt = None
+            if halt is None or not halt.is_finite() or not 0 < halt <= 1:
+                raise Blocked('max_drawdown_halt_pct must be a decimal string from 0 to 1, exclusive of 0')
 
     @property
     def scope(self) -> str:
@@ -51,6 +61,12 @@ class Config:
     @property
     def capital_limit(self):
         return None if self.capital_limit_usdt is None else Decimal(self.capital_limit_usdt)
+
+    @property
+    def drawdown_halt_limit(self):
+        if self.max_drawdown_halt_pct is None:
+            return None
+        return Decimal(self.max_drawdown_halt_pct)
 
 
 def load(path) -> Config:

@@ -1,0 +1,17 @@
+[Unit]
+Description=Spotquant %i online SQLite backup
+
+[Service]
+Type=oneshot
+User=spotquant
+Group=spotquant
+EnvironmentFile=-/etc/spotquant/%i.env
+WorkingDirectory=/opt/spotquant
+UMask=0077
+ExecStart=/usr/local/bin/sq backup --config /etc/spotquant/%i.json --dest /var/backups/spotquant/%i
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spotquant-backup-%i

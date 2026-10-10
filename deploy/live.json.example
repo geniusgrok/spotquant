@@ -1,0 +1,9 @@
+{
+  "account_uid": "REPLACE_ME",
+  "state_dir": "/var/lib/spotquant/live",
+  "session_seconds": 300,
+  "poll_seconds": 5,
+  "environment": "live",
+  "capital_limit_usdt": "REPLACE_ME",
+  "stop_price_percent_band": false
+}

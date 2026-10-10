@@ -98,6 +98,11 @@ class CliTests(unittest.TestCase):
         ticks = iter((1, 7))
         with self.assertRaises(Unknown):
             export(config, venue)
+        held = dict(snapshot, other_assets=['USDC'])
+        ticks = iter((1, 2))
+        venue.snapshot = lambda uid: held
+        with self.assertRaisesRegex(Unknown, 'other assets prevent a complete BTC/USDT account export'):
+            export(config, venue)
 
 
 class ConfigTests(unittest.TestCase):

@@ -1,0 +1,9 @@
+{
+  "account_uid": "REPLACE_ME",
+  "state_dir": "/var/lib/spotquant/demo",
+  "session_seconds": 300,
+  "poll_seconds": 5,
+  "environment": "demo",
+  "capital_limit_usdt": "100",
+  "stop_price_percent_band": false
+}

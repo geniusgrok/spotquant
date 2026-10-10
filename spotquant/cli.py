@@ -114,6 +114,23 @@ def main(argv=None):
     probe.add_argument('--config', required=True)
     probe.add_argument('--execute', action='store_true')
     probe.add_argument('--authorize-uid', help='Repeat the dedicated Demo account UID before any order')
+    ops = commands.add_parser('ops-run', help='Scheduler entry. Live also requires the enable file.')
+    ops.add_argument('--config', required=True)
+    ops.add_argument('--environment', required=True, choices=('demo', 'live'))
+    tested = commands.add_parser('notify-test', help='Send one test email (and optional webhook).')
+    tested.add_argument('--config', required=True)
+    checker = commands.add_parser('alert-check', help='Alert when the daily heartbeat is missing.')
+    checker.add_argument('--config', required=True)
+    failed = commands.add_parser('notify-failure', help='Alert that a systemd unit failed.')
+    failed.add_argument('--config', required=True)
+    failed.add_argument('--source', required=True)
+    backup = commands.add_parser('backup', help='Online SQLite backup with rotation.')
+    backup.add_argument('--config', required=True)
+    backup.add_argument('--dest', type=Path)
+    switch = commands.add_parser('kill-switch', help='Cancel this state\'s orders and sell its recorded position.')
+    switch.add_argument('--config', required=True)
+    switch.add_argument('--authorize-uid', required=True)
+    switch.add_argument('--confirm', action='store_true')
     args = parser.parse_args(argv)
     try:
         if args.command == 'run' and args.execute and not args.authorize_uid:
@@ -161,6 +178,47 @@ def main(argv=None):
             config = load(args.config)
             assert_demo_config(config)
             report = execute_reconcile(config, connect(config), out=args.out)
+        elif args.command == 'ops-run':
+            from .ops import execute_ops
+            config = load(args.config)
+            report = execute_ops(config, connect(config, execute_orders=True),
+                                 expect_environment=args.environment,
+                                 run_session=lambda current, venue: run(current, venue, execute=True))
+        elif args.command == 'notify-test':
+            from .notify import body_for, deliver, subject_for
+            config = load(args.config)
+            item = {'kind': 'heartbeat', 'title': '通知测试',
+                    'detail': '这是一封测试邮件，不是交易告警。'}
+            channels = deliver(subject_for(item), body_for(item, environment=config.environment))
+            report = {'status': 'pass', 'channels': channels, 'subject': subject_for(item),
+                      'environment': config.environment}
+        elif args.command == 'alert-check':
+            from .ops import check_missed_run
+            config = load(args.config)
+            report = check_missed_run(Path(config.state_dir).expanduser())
+        elif args.command == 'notify-failure':
+            from .ops import dispatch_notifications
+            config = load(args.config)
+            report = dispatch_notifications(
+                Path(config.state_dir).expanduser(),
+                {'status': 'unknown', 'environment': config.environment,
+                 'reason': f'systemd unit failed: {args.source}'},
+                exit_code=1)
+            report['status'] = 'blocked' if report['errors'] else 'pass'
+        elif args.command == 'backup':
+            from .ops import backup_database
+            config = load(args.config)
+            dest = args.dest or (Path(config.state_dir).expanduser() / 'backups')
+            path = backup_database(Path(config.state_dir).expanduser() / 'intents.sqlite', dest)
+            report = {'status': 'pass', 'backup': str(path), 'environment': config.environment}
+        elif args.command == 'kill-switch':
+            from .ops import kill_switch
+            config = load(args.config)
+            if args.authorize_uid != config.account_uid:
+                raise Blocked('kill-switch requires matching --authorize-uid')
+            with State(config.state_dir, config.scope) as state:
+                report = kill_switch(state, connect(config, execute_orders=True), config,
+                                     confirm=args.confirm)
         elif args.command == 'run' and args.execute:
             config = load(args.config)
             if config.environment != 'live' or config.capital_limit is None:

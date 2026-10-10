@@ -1,0 +1,133 @@
+# 在一台 Ubuntu 上无人值守运行
+
+目标机器是 Ubuntu 24.04，Python 3.13（可用 deadsnakes），代码在 `/opt/spotquant`，进程用户是不能登录的 `spotquant`。密钥只放在 `/etc/spotquant/*.env`，由 systemd 的 `EnvironmentFile` 注入。这台机器上若还有别的代理或服务，安装脚本不会停用或改写它们。
+
+已发布回测的 795 次会话是历史抽样：开始时刻都在某个 UTC 整点，每次 300 秒、每 5 秒轮询一次，大多数有会话的日子只有一次，并不是要把那些历史钟点原样搬到 VPS。生产定时器在每天 UTC 00:45（北京时间 08:45）跑同长度的一次会话，这时新的日线开盘已经到达。Demo 和实盘共用这一时刻。会话之间，已挂上的原生止损留在交易所。
+
+## 安装
+
+在检出的仓库里，用 root 执行。脚本可以重复运行。已有的配置和 env 不会被覆盖。
+
+```sh
+sudo sh deploy/install.sh
+```
+
+同时启用 Demo 的每日会话、心跳检查和备份：
+
+```sh
+sudo sh deploy/install.sh --enable-demo
+```
+
+脚本不会启用实盘。
+
+安装前需要已有 `/usr/bin/python3.13`。脚本发现没有就退出，不会自行安装软件包。
+
+然后编辑（权限保持 `root:spotquant`、`0640`）：
+
+| 文件 | 作用 |
+| --- | --- |
+| `/etc/spotquant/demo.json` | Demo 的 UID、状态目录、300 秒会话、资金上限 |
+| `/etc/spotquant/demo.env` | Demo API 密钥 |
+| `/etc/spotquant/live.json` | 实盘配置，状态目录必须和 Demo 分开 |
+| `/etc/spotquant/live.env` | 实盘 API 密钥 |
+| `/etc/spotquant/notify.env` | 邮件。变量名固定，安装时若文件已存在则不覆盖 |
+
+邮件只认这六个名字：`SPOTQUANT_SMTP_HOST`、`SPOTQUANT_SMTP_PORT`、`SPOTQUANT_SMTP_USER`、`SPOTQUANT_SMTP_PASSWORD`、`SPOTQUANT_SMTP_FROM`、`SPOTQUANT_SMTP_TO`。当前机器是 `smtp.qq.com` 和端口 `465`（隐式 TLS，`SMTP_SSL`）。端口写成 `587` 时改用 STARTTLS。不要用 25。`SPOTQUANT_SMTP_TO` 用逗号分隔多个收件人。`SPOTQUANT_WEBHOOK_URL` 可留空，只作为邮件之外的可选通道。会话、心跳检查和失败告警的单元都会再加载这份 `notify.env`。
+
+发一封测试信：
+
+```sh
+sudo systemctl start spotquant-failed@demo.service
+```
+
+更直接：
+
+```sh
+sudo -u spotquant env $(grep -v '^#' /etc/spotquant/notify.env | xargs) \
+  /usr/local/bin/sq notify-test --config /etc/spotquant/demo.json
+```
+
+主题应是 `[spotquant][心跳] 通知测试`。
+
+## 启用和停用
+
+Demo：
+
+```sh
+sudo systemctl enable --now spotquant-session@demo.timer \
+  spotquant-watch@demo.timer spotquant-backup@demo.timer
+sudo systemctl stop spotquant-session@demo.timer \
+  spotquant-watch@demo.timer spotquant-backup@demo.timer
+sudo systemctl disable spotquant-session@demo.timer \
+  spotquant-watch@demo.timer spotquant-backup@demo.timer
+```
+
+看日志：
+
+```sh
+sudo journalctl -u spotquant-session@demo.service -n 100
+```
+
+两次会话叠在一起时，`flock` 和状态目录里的 `execution.lock` 会让后一次直接跳过，不重复下单。
+
+## 从 Demo 换到实盘
+
+1. 停用并 disable 上面三个 Demo 定时器。确认没有 `spotquant-session@demo.service` 还在跑。
+2. 把 `/etc/spotquant/live.json` 和 `live.env` 填好。`state_dir` 用 `/var/lib/spotquant/live`，不要和 Demo 共用。
+3. 资金上限、UID 和环境必须是实盘自己的。`stop_price_percent_band` 只有在 Demo 探针确认之后才设为 true。
+4. 创建实盘开关文件。没有这个文件，实盘的会话、心跳检查和备份即使被启动也会被 systemd 跳过：
+
+```sh
+sudo touch /etc/spotquant/LIVE_ENABLED
+```
+
+5. 明确启用实盘定时器。安装脚本不会做这一步：
+
+```sh
+sudo systemctl enable --now spotquant-session@live.timer \
+  spotquant-watch@live.timer spotquant-backup@live.timer
+```
+
+要停实盘：disable 上述定时器，并删除 `/etc/spotquant/LIVE_ENABLED`。
+
+## 停买、急停和备份
+
+在状态目录放下 `HALT` 文件后，定时会话仍会跑，用来维护止损，但不再新买。回撤停买由配置 `max_drawdown_halt_pct` 控制（相对已记录峰值，例如 `"0.25"`）。不写这项就没有回撤停买。
+
+取消本状态目录自己的挂单，并只卖出账本里记下的仓位：
+
+```sh
+sudo -u spotquant env $(grep -v '^#' /etc/spotquant/live.env | xargs) \
+  /usr/local/bin/sq kill-switch \
+  --config /etc/spotquant/live.json --authorize-uid 你的UID --confirm
+```
+
+没有 `--confirm` 不会发单。账本之外的 BTC 不会被卖掉。
+
+数据库备份在每天 UTC 01:05，排在 00:45 的会话结束之后，用 SQLite 在线备份，保留最近 14 份，目录是 `/var/backups/spotquant/demo` 或 `live`。
+
+告警主题以 `[spotquant][告警]` 开头，每日心跳以 `[spotquant][心跳]` 开头。同一类告警 6 小时内不重复发送。心跳每 UTC 日一封，由 00:45 的会话写出。每小时检查一次；心跳超过 26 小时算错过会话，因此错过当天 00:45 之后，大约从次日 UTC 02:45 起的整点检查会告警。
+
+会发告警的情况：状态未知、人工接管、保护失败、报告写失败、退出码非零、止损无法挂出、回撤或 HALT 停买、错过会话。
+
+手动命令和定时器都走 `/usr/local/bin/sq`。它把 `SPOTQUANT_SOURCE_SHA` 设成 `/opt/spotquant` 里 `git rev-parse HEAD` 的结果；那个目录不是 git 检出时，改用安装时写下的 `/etc/spotquant/source_sha`。因此 systemd 跑出来的 `runtime_identity.source_sha` 不是空的。每次安装都会按当前检出重写这份 SHA。
+
+单元里的 `UMask=0077` 让新写出的 `latest.json`、sqlite、心跳和备份是 `0600`。状态目录本身仍是 `0750`。已经写成 `0644` 的文件不会被这次设置改掉，需要的话在状态目录里把它们改成 `0600`。
+
+## 其他资产
+
+`snapshot` 是只读导出。账户里除 BTC 和 USDT 以外，只要还有余额，导出就失败，原因是 `other assets prevent a complete BTC/USDT account export`。Demo 里的 5000 USDC 会触发这句话。这不是 `run --execute` 的路径。
+
+`run --execute` 和定时器里的 `ops-run` 不看 `other_assets`。账户里有 USDC 或其他非 BTC/USDT 余额时，会话不会因此拒绝买入。买单仍取决于 USDT 可用余额、资金上限，以及手续费模式。实盘上只要 BNB 抵扣对账户和 BTCUSDT 都开着，新买单就会被拒绝，原因是 `buy fee mode is not confirmed as BTC/USDT`；BNB 余额是不是 0 都不改变这一点。Demo 上只有 BNB 余额大于 0 时才走这条拒绝，BNB 为 0 时仍按 BTC/USDT 手续费买入。USDC 不参与手续费模式判断。权益和 `max_drawdown_halt_pct` 只按 USDT 现金加 BTC 市值计算，不把 USDC 算进去。其他币不会记成策略持仓，`kill-switch` 也不会卖掉它们。
+
+实盘请用一个只放 BTC 和 USDT 的子账户。这样 `snapshot` 能导出，回撤停买对着的是整户权益，别的币也不会和策略账本混在一起。
+
+## 上线检查
+
+- `python3.13 -m unittest discover -s tests` 在部署用的代码上通过。
+- `notify-test` 能收到信，主题前缀正确。
+- Demo 定时器已 enable，实盘定时器未 enable，`LIVE_ENABLED` 不存在。
+- Demo 和实盘的 `state_dir` 不同，env 文件不是世界可读。
+- 手动放一个 `HALT`，下一次会话日志里出现停买，且没有新的买单。
+- 看一次 `journalctl`，确认会话在 UTC 00:45（北京时间 08:45）附近结束，而不是一直挂着。
+- 备份目录里出现 `intents-*.sqlite`。

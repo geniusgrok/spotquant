@@ -1,0 +1,18 @@
+[Unit]
+Description=Spotquant %i missed-session check
+
+[Service]
+Type=oneshot
+User=spotquant
+Group=spotquant
+EnvironmentFile=-/etc/spotquant/%i.env
+EnvironmentFile=-/etc/spotquant/notify.env
+WorkingDirectory=/opt/spotquant
+UMask=0077
+ExecStart=/usr/local/bin/sq alert-check --config /etc/spotquant/%i.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spotquant-watch-%i
