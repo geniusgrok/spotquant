@@ -2,10 +2,11 @@
 
 Strategy parameters are not changed here. A halt file stops new buys only.
 kill-switch always writes HALT first, before recover, snapshot, cancel, or
-sell, including a failed query and dust that is already untradable. The saved
-exit belongs to the position that started it. Deleting HALT requires a fresh
-cross for the current book. ``sold`` counts only this exit's read-back fills.
-The exit loop is at most twelve actions.
+sell, including a failed query and dust that is already untradable. The
+fresh-cross mark is committed before any venue call, so a later failure still
+leaves it. ``sold`` is this exit's lifecycle fills, not a finished later cycle.
+Deleting HALT requires a fresh cross for the current book. The exit loop is
+at most twelve actions.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from .notify import (
     ALERT_WINDOW_SECONDS, body_for, collect_alerts, deliver, heartbeat_message,
     missed_run_alert, remember_sent, subject_for, unsent,
 )
-from .types import Blocked, NotSent, Unknown, floor_step, number
+from .types import Blocked, NotSent, Unknown, floor_step, number, serial
 
 HALT_FILENAME = 'HALT'
 HEARTBEAT_FILENAME = 'heartbeat.json'
@@ -245,6 +246,10 @@ def _saved_exit_bar(state):
     current = _position_first_ms(state)
     if current is not None and current != saved_first:
         return None
+    # Flat after this same exit still reports that exit. A later position that
+    # has already opened and closed must not revive it.
+    if current is None and _later_entry_after_exit(state, int(saved['signal_ms'])):
+        return None
     return int(saved['signal_ms'])
 
 
@@ -330,19 +335,42 @@ def _claim_open_exit(state, lifecycle):
     return bar
 
 
-def _require_fresh_cross(state) -> None:
-    """A flat book must not rejoin the current touch after this command.
+class _IntentRows:
+    """Just enough of a lifecycle for the sell-chain helpers. No venue."""
 
-    Older sell rows keep the rearm flag they were booked with. The model
-    checkpoint is what blocks the rebuy.
-    """
+    def __init__(self, rows):
+        self._rows = rows
+
+    def rows(self):
+        return self._rows
+
+
+def _intent_rows(state):
+    return [(identity, json.loads(payload), status, json.loads(result))
+            for identity, payload, status, result in state.db.execute(
+                "SELECT id,payload,status,result FROM intents WHERE kind='p4' ORDER BY updated,id")]
+
+
+def _position_still_open(state) -> bool:
+    """Dust and an empty sleeve are already flat. No snapshot is required."""
+    position = (state.get('positions') or {}).get('40')
+    if not isinstance(position, dict) or position.get('dust') is True:
+        return False
+    try:
+        return number(position.get('qty'), 'position', nonnegative=True) > 0
+    except Blocked:
+        return False
+
+
+def _fresh_cross_models(state):
+    """Checkpoint that blocks rejoining the current touch, or None if already blocked."""
     saved = state.get('models')
     if not isinstance(saved, dict) or not isinstance(saved.get('40'), dict):
-        return
+        return None
     from .model import Model
     model = Model.restore(saved['40'])
     if model.last is None or not model.shadow_in or model.shadow_blocked is not None:
-        return
+        return None
     model.shadow_blocked = model.last
     # A bearish book cannot store need_reset. The same-bar block above is enough
     # there; the next cross has to rebuild the streak.
@@ -352,7 +380,91 @@ def _require_fresh_cross(state) -> None:
         model.streak >= model.confirm and model.crash_ok and not (model.fresh and model.need_reset))
     updated = dict(saved)
     updated['40'] = model.checkpoint()
-    state.set('models', updated)
+    return updated
+
+
+def _rearm_clears(state, model_last):
+    """Rearm edits for the exit still being taken over. Booked history is left alone."""
+    rows = _intent_rows(state)
+    view = _IntentRows(rows)
+    bars = []
+    pending = _open_exit_bar(view)
+    if pending is not None:
+        bars.append(pending)
+    if model_last is not None and _position_still_open(state):
+        for _, payload, status, _ in _market_sells(view):
+            if status == 'settled' and payload.get('signal_ms') == model_last and payload.get('signal_ms') not in bars:
+                bars.append(int(payload['signal_ms']))
+    changed = []
+    seen = set()
+    for bar in bars:
+        for row in _exit_sells(view, bar):
+            if row[0] in seen:
+                continue
+            rearm = row[1].get('rearm') or {}
+            if not any(rearm.values()):
+                continue
+            seen.add(row[0])
+            changed.append((row[0], dict(row[1], rearm={key: False for key in rearm}), row[2], row[3]))
+    return changed
+
+
+def _later_entry_after_exit(state, signal_ms: int) -> bool:
+    """True when a buy opened after this exit's own sell fill.
+
+    A second fill of the same entry is earlier than that sell, so a restart of
+    this exit still counts. A position that opened after the sell is a new cycle.
+    """
+    view = _IntentRows(_intent_rows(state))
+    order_ids = {result['orderId'] for _, _, _, result in _exit_sells(view, signal_ms)
+                 if type(result.get('orderId')) is int}
+    if not order_ids:
+        return False
+    sell_time = None
+    buy_times = []
+    for time_ms, order_id, payload in state.db.execute('SELECT time_ms,order_id,payload FROM fills'):
+        row = json.loads(payload)
+        if int(order_id) in order_ids:
+            sell_time = int(time_ms) if sell_time is None else max(sell_time, int(time_ms))
+        if row.get('buyer') is True and type(row.get('time')) is int:
+            buy_times.append(row['time'])
+    if sell_time is None:
+        return False
+    return any(stamp > sell_time for stamp in buy_times)
+
+
+def _record_fresh_cross(state) -> None:
+    """One local commit: the current book needs a fresh cross, and the exit still
+    open loses its touch flag. Runs after HALT and before any venue call.
+
+    A later snapshot, bind, query, or verify failure cannot undo this commit.
+    Sell rows from a finished cycle keep the rearm flag they were booked with.
+    """
+    saved = state.get('models')
+    model_last = None
+    if isinstance(saved, dict) and isinstance((saved.get('40') or {}), dict):
+        model_last = (saved['40'].get('body') or {}).get('last')
+    updated = _fresh_cross_models(state)
+    changed = _rearm_clears(state, model_last)
+    if updated is None and not changed:
+        return
+    with state.db:
+        if updated is not None:
+            state.db.execute(
+                'INSERT OR REPLACE INTO meta VALUES (?,?)',
+                ('models', json.dumps(serial(updated), sort_keys=True)))
+        now = time()
+        for identity, payload, status, result in changed:
+            state.db.execute(
+                'INSERT OR REPLACE INTO intents VALUES (?,?,?,?,?,?)',
+                (identity, 'p4', json.dumps(serial(payload)), status, json.dumps(serial(result)), now))
+
+
+def _require_fresh_cross(state) -> None:
+    """Reinforce the fresh-cross checkpoint after a fold. No-op when already set."""
+    updated = _fresh_cross_models(state)
+    if updated is not None:
+        state.set('models', updated)
 
 
 def _kill_bar(state, lifecycle) -> int | None:
@@ -433,15 +545,13 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
 
     kill-switch always writes HALT first. After ``--confirm``, the environment,
     and the capital ceiling pass, ``HALT`` is written atomically before recover,
-    snapshot, cancel, or sell. A failed query and an already flat or dust
-    position still leave that file. If the write fails, nothing is queried or
-    sent and the caller alerts. The sell intent, its client id, and any cancel
-    id are saved before those requests are sent. ``sold`` counts only this
-    exit's read-back fills. The exit id is kept only for the position that
-    started it. A touch re-entry on the exit being taken over is not kept, and
-    a flat book that could rejoin that touch needs a fresh cross. Older sell
-    rows keep their rearm flag. BTC this state does not record is not sold.
-    At most twelve actions run; a remainder sets manual takeover and alerts.
+    snapshot, cancel, or sell. The fresh-cross mark is committed in the same
+    breath, before backoff restore or any query, so a later failure still
+    leaves it. If the halt write fails, nothing is queried or sent and the
+    caller alerts. ``sold`` counts only this exit's lifecycle fills. A saved
+    exit is not reused after a later position has opened and closed. Older
+    sell rows keep their rearm flag. BTC this state does not record is not
+    sold. At most twelve actions run; a remainder sets manual takeover and alerts.
     """
     if confirm is not True:
         raise Blocked('kill-switch requires --confirm')
@@ -451,6 +561,8 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
         raise Blocked('kill-switch requires a capital ceiling')
     # First state change. A failed write must not reach recover, snapshot, cancel, or sell.
     _arm_halt(state)
+    # Durable fresh cross before any query. A snapshot failure still leaves it.
+    _record_fresh_cross(state)
     from .execution import Lifecycle
     snapshot = venue.snapshot(config.account_uid)
     owned, dust = _recorded_qty(state)
