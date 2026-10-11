@@ -2,9 +2,10 @@
 
 Strategy parameters are not changed here. A halt file stops new buys only.
 kill-switch always writes HALT first, before recover, snapshot, cancel, or
-sell, including a failed query and dust that is already untradable. Deleting
-it resumes entries; the next buy still needs a fresh cross. ``sold`` counts
-only this exit's read-back fills. The exit loop is at most twelve actions.
+sell, including a failed query and dust that is already untradable. The saved
+exit belongs to the position that started it. Deleting HALT requires a fresh
+cross for the current book. ``sold`` counts only this exit's read-back fills.
+The exit loop is at most twelve actions.
 """
 from __future__ import annotations
 
@@ -229,21 +230,32 @@ def _position_first_ms(state):
 
 
 def _saved_exit_bar(state):
-    """Signal time of the exit this position already started, if it is still that position."""
+    """Signal time of the exit this position already started, if it is still that position.
+
+    A missing position id is not a wildcard. An empty account does not keep
+    using an exit that was never bound to a position, and a later position
+    does not inherit that unbound id.
+    """
     saved = state.get('kill_exit')
     if not isinstance(saved, dict) or type(saved.get('signal_ms')) is not int:
         return None
-    current = _position_first_ms(state)
     saved_first = saved.get('position_first_ms')
-    if current is not None and saved_first is not None and int(saved_first) != current:
+    if type(saved_first) is not int:
+        return None
+    current = _position_first_ms(state)
+    if current is not None and current != saved_first:
         return None
     return int(saved['signal_ms'])
 
 
 def _remember_exit(state, bar) -> None:
+    """Bind this exit to the open position. A flat account does not store a root."""
+    first = _position_first_ms(state)
+    if first is None:
+        return
     state.set('kill_exit', {
         'signal_ms': int(bar),
-        'position_first_ms': _position_first_ms(state),
+        'position_first_ms': first,
     })
 
 
@@ -296,12 +308,63 @@ def _restore_protection(lifecycle, state, venue, config, bar) -> bool:
     return _stop_resting(lifecycle)
 
 
-def _kill_bar(state, lifecycle) -> int:
+def _open_exit_bar(lifecycle):
+    """Signal time of a market sell this command can still take over."""
     for _, payload, status, _ in _market_sells(lifecycle):
-        if status in ('prepared', 'unknown', 'resting', 'canceling') and payload.get('signal_ms') is not None:
-            bar = int(payload['signal_ms'])
-            _remember_exit(state, bar)
-            return bar
+        if status in ('prepared', 'unknown', 'resting', 'canceling') and type(payload.get('signal_ms')) is int:
+            return int(payload['signal_ms'])
+    return None
+
+
+def _claim_open_exit(state, lifecycle):
+    """Remember the in-flight exit and drop its touch permission before recover.
+
+    Recover can settle that order. The permission has to be gone first, or the
+    fold keeps the touch and a later deletion of HALT buys it back.
+    """
+    bar = _open_exit_bar(lifecycle)
+    if bar is None:
+        return None
+    _remember_exit(state, bar)
+    _drop_stale_rearm(lifecycle, bar)
+    return bar
+
+
+def _require_fresh_cross(state) -> None:
+    """A flat book must not rejoin the current touch after this command.
+
+    Older sell rows keep the rearm flag they were booked with. The model
+    checkpoint is what blocks the rebuy.
+    """
+    saved = state.get('models')
+    if not isinstance(saved, dict) or not isinstance(saved.get('40'), dict):
+        return
+    from .model import Model
+    model = Model.restore(saved['40'])
+    if model.last is None or not model.shadow_in or model.shadow_blocked is not None:
+        return
+    model.shadow_blocked = model.last
+    # A bearish book cannot store need_reset. The same-bar block above is enough
+    # there; the next cross has to rebuild the streak.
+    if model.bull:
+        model.need_reset = True
+    model.enter = bool(
+        model.streak >= model.confirm and model.crash_ok and not (model.fresh and model.need_reset))
+    updated = dict(saved)
+    updated['40'] = model.checkpoint()
+    state.set('models', updated)
+
+
+def _kill_bar(state, lifecycle) -> int | None:
+    """Bar for this exit, or None when a flat account has no exit of its own.
+
+    The model's last bar is not an exit id. Using it would attach an older
+    sell to this command and to whatever position opens later.
+    """
+    pending = _open_exit_bar(lifecycle)
+    if pending is not None:
+        _remember_exit(state, pending)
+        return pending
     saved = _saved_exit_bar(state)
     if saved is not None:
         return saved
@@ -310,13 +373,7 @@ def _kill_bar(state, lifecycle) -> int:
         bar = int(position['first_ms'])
         _remember_exit(state, bar)
         return bar
-    saved_model = state.get('models') or {}
-    body = (saved_model.get('40') or {}).get('body') or {}
-    if body.get('last') is None:
-        raise Unknown('kill-switch has no recorded position time')
-    bar = int(body['last'])
-    _remember_exit(state, bar)
-    return bar
+    return None
 
 
 def _coverage_takeover(state, venue, config, lifecycle) -> bool:
@@ -380,9 +437,11 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
     position still leave that file. If the write fails, nothing is queried or
     sent and the caller alerts. The sell intent, its client id, and any cancel
     id are saved before those requests are sent. ``sold`` counts only this
-    exit's read-back fills. A touch re-entry on the exit that is sent is not
-    kept. BTC this state does not record is not sold. At most twelve actions
-    run; a remainder sets manual takeover and alerts.
+    exit's read-back fills. The exit id is kept only for the position that
+    started it. A touch re-entry on the exit being taken over is not kept, and
+    a flat book that could rejoin that touch needs a fresh cross. Older sell
+    rows keep their rearm flag. BTC this state does not record is not sold.
+    At most twelve actions run; a remainder sets manual takeover and alerts.
     """
     if confirm is not True:
         raise Blocked('kill-switch requires --confirm')
@@ -412,17 +471,24 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
                             cancelled=cancelled, extra=extra, manual_takeover=takeover,
                             bar=bar, **notify)
 
+    # Local rows only. Recover can settle the touch before this command would
+    # otherwise choose a bar, so the permission is cleared first.
+    bar = _claim_open_exit(state, lifecycle)
     try:
         lifecycle.recover()
     except Unknown as exc:
         return finish('unknown', str(exc), takeover=True)
-    if not _market_sells(lifecycle) and not _tradable(owned, snapshot, dust=dust):
+    if bar is None:
+        bar = _kill_bar(state, lifecycle)
+    if bar is None:
+        if _tradable(owned, snapshot, dust=dust):
+            raise Unknown('kill-switch has no recorded position time')
         try:
-            lifecycle.verify(snapshot)
+            lifecycle.verify(venue.snapshot(config.account_uid))
         except Unknown as exc:
             return finish('unknown', str(exc), takeover=True)
+        _require_fresh_cross(state)
         return finish('pass')
-    bar = _kill_bar(state, lifecycle)
     follows = state.get('follows') or {}
     # One session allows twelve actions. A finished session clock is not reused:
     # this command is the operator's exit, not a continuation of that clock.
@@ -535,6 +601,7 @@ def kill_switch(state, venue, config, *, confirm: bool, env=None, smtp_ssl=None,
         lifecycle.verify(fresh)
     except Unknown as exc:
         return finish('unknown', str(exc), takeover=True)
+    _require_fresh_cross(state)
     return finish('pass')
 
 
