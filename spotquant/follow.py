@@ -14,9 +14,10 @@ def _rearm(model, position: dict, owner: dict, window: int) -> bool:
     """Only a durable touch sale that still has rearm set may rejoin the long book.
 
     kill-switch always writes HALT first, then commits a fresh cross for the
-    current book before any query. It clears this flag only on the exit still
-    being taken over, in that same commit. Older sell rows keep the flag they
-    were booked with.
+    current book before any query, including an armed early entry. It clears
+    this flag only on the exit still being taken over. Older sell rows keep
+    the flag they were booked with. A normal session applies the mark when the
+    halt file still says kill and the database write did not finish.
     """
     order = owner.get('order', {})
     return bool(order.get('side') == 'SELL' and order.get('type') == 'MARKET'

@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -143,7 +144,8 @@ def main(argv=None):
         help='kill-switch always writes HALT first. Without --confirm nothing is written and nothing is sent.',
         description=(
             'kill-switch always writes HALT first, before any query, snapshot, cancel, or sell. '
-            'The fresh-cross mark is committed before bind and any query, so a later failure still leaves it. '
+            'The fresh-cross mark, including an armed early entry, is committed before bind and any query. '
+            'A later session applies it if that commit did not finish. '
             'Without --confirm nothing is written and nothing is sent. '
             'Delete HALT to resume; the current book then needs a fresh cross.'
         ))
@@ -231,7 +233,9 @@ def main(argv=None):
             path = backup_database(Path(config.state_dir).expanduser() / 'intents.sqlite', dest)
             report = {'status': 'pass', 'backup': str(path), 'environment': config.environment}
         elif args.command == 'kill-switch':
-            from .ops import _arm_halt, _record_fresh_cross, dispatch_notifications, kill_switch
+            from .ops import (
+                _arm_halt, _record_fresh_cross, dispatch_notifications, halt_path, kill_switch,
+            )
             # Before config, the state directory, the venue, and the alert path.
             if not args.confirm:
                 raise Blocked('kill-switch requires --confirm')
@@ -247,17 +251,27 @@ def main(argv=None):
                     if hasattr(venue, 'bind_state'):
                         venue.bind_state(state)
                     report = kill_switch(state, venue, config, confirm=args.confirm)
-                except (Blocked, Unknown, OSError) as exc:
-                    failed = isinstance(exc, Unknown) or isinstance(exc, OSError)
+                except (Blocked, Unknown, OSError, sqlite3.Error) as exc:
+                    failed = not isinstance(exc, Blocked)
+                    halted = halt_path(state).is_file()
                     report = {
                         'status': 'unknown' if failed else 'blocked',
                         'reason': str(exc),
                         'environment': config.environment,
                         'manual_takeover': failed,
                         'native_execution_verified': False,
+                        'halt': halted,
                     }
-                    report['notifications'] = dispatch_notifications(
-                        Path(config.state_dir), report, exit_code=2)
+                    if halted:
+                        report['buy_halt'] = 'halt file is present; new buys are stopped'
+                    try:
+                        report['notifications'] = dispatch_notifications(
+                            Path(config.state_dir), report, exit_code=2)
+                    except (OSError, ValueError, TypeError, sqlite3.Error) as note:
+                        report['notifications'] = {
+                            'sent': [], 'skipped': 0,
+                            'errors': [{'key': 'notify', 'reason': str(note)}],
+                        }
         elif args.command == 'run' and args.execute:
             config = load(args.config)
             if config.environment != 'live' or config.capital_limit is None:
