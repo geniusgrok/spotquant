@@ -3,8 +3,9 @@
 Strategy parameters are not changed here. A halt file stops new buys only.
 kill-switch always writes HALT first, before recover, snapshot, cancel, or
 sell, including a failed query and dust that is already untradable. The
-fresh-cross mark is committed before any venue call, so a later failure still
-leaves it. ``sold`` is this exit's lifecycle fills, not a finished later cycle.
+fresh-cross mark, including an armed early entry, is committed before any
+venue call. A session applies it when the halt file still says kill. ``sold``
+is this exit's lifecycle fills, not a finished later cycle.
 Deleting HALT requires a fresh cross for the current book. The exit loop is
 at most twelve actions.
 """
@@ -39,14 +40,35 @@ def halt_path(state) -> Path:
     return Path(state.directory) / HALT_FILENAME
 
 
+KILL_HALT_MARK = 'kill\n'
+
+
 def _arm_halt(state) -> None:
-    """Create the halt file atomically. A crash cannot leave a partial name."""
+    """Create the halt file atomically. A crash cannot leave a partial name.
+
+    The file is the first durable record of this command. A manual pause is an
+    empty file and does not consume the current entry. A session that still
+    sees this mark applies the fresh-cross checkpoint if the database write
+    never finished.
+    """
     path = halt_path(state)
     if path.is_file():
         return
     temporary = path.with_name('.HALT.tmp')
-    temporary.write_text('', encoding='utf-8')
+    temporary.write_text(KILL_HALT_MARK, encoding='utf-8')
     os.replace(temporary, path)
+
+
+def kill_halt(state) -> bool:
+    """True when this halt file was written by a confirmed kill-switch."""
+    path = halt_path(state)
+    if not path.is_file():
+        return False
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return False
+    return text.startswith('kill')
 
 
 def account_equity(snapshot: dict):
@@ -295,7 +317,10 @@ def _account_exit(state, venue, lifecycle, config) -> None:
 
 def _restore_protection(lifecycle, state, venue, config, bar) -> bool:
     """Put a resting stop back on a remainder. False means it is still unprotected."""
-    snapshot = venue.snapshot(config.account_uid)
+    try:
+        snapshot = venue.snapshot(config.account_uid)
+    except (Unknown, Blocked, OSError):
+        return False
     snapshot['stop_price_percent_band'] = config.stop_price_percent_band is True
     positions = state.get('positions') or {}
     follows = state.get('follows') or {}
@@ -362,19 +387,36 @@ def _position_still_open(state) -> bool:
         return False
 
 
+def _bar_consumed(model) -> bool:
+    return (model.last is not None and model.shadow_blocked is not None
+            and model.last <= model.shadow_blocked)
+
+
+def _early_armed(model) -> bool:
+    return bool(model.streak >= 1 and model.crash_ok and not model.need_reset and not model.shadow_in)
+
+
 def _fresh_cross_models(state):
-    """Checkpoint that blocks rejoining the current touch, or None if already blocked."""
+    """Checkpoint that consumes the entry armed on this bar, or None if none is.
+
+    An old shadow block does not cover a later early entry. A bearish book that
+    is not armed is left alone, so a later real cross can still buy. need_reset
+    is stored only while the book is bullish.
+    """
     saved = state.get('models')
     if not isinstance(saved, dict) or not isinstance(saved.get('40'), dict):
         return None
     from .model import Model
     model = Model.restore(saved['40'])
-    if model.last is None or not model.shadow_in or model.shadow_blocked is not None:
+    if model.last is None or _bar_consumed(model):
+        return None
+    early = _early_armed(model)
+    shadow_rejoin = bool(model.shadow_in and model.shadow_blocked is None)
+    repair = bool(model.cap_enter and not model.shadow_in and not early)
+    if not (early or shadow_rejoin or model.enter or repair):
         return None
     model.shadow_blocked = model.last
-    # A bearish book cannot store need_reset. The same-bar block above is enough
-    # there; the next cross has to rebuild the streak.
-    if model.bull:
+    if model.bull and (early or shadow_rejoin or model.enter):
         model.need_reset = True
     model.enter = bool(
         model.streak >= model.confirm and model.crash_ok and not (model.fresh and model.need_reset))
@@ -465,6 +507,16 @@ def _require_fresh_cross(state) -> None:
     updated = _fresh_cross_models(state)
     if updated is not None:
         state.set('models', updated)
+
+
+def consume_kill_halt(state) -> None:
+    """If a kill wrote HALT but the database mark did not land, write it now.
+
+    An empty halt file is only a manual pause. Deleting the kill file before
+    any session runs does not reconstruct a mark that was never saved.
+    """
+    if kill_halt(state):
+        _record_fresh_cross(state)
 
 
 def _kill_bar(state, lifecycle) -> int | None:
@@ -768,7 +820,10 @@ def dispatch_notifications(directory: Path, report: dict, *, exit_code: int = 0,
         delivered.append(item)
         sent.append({'key': item['key'], 'channels': channels, 'subject': subject_for(item)})
     if delivered:
-        remember_sent(Path(directory) / DEDUPE_FILENAME, delivered, now)
+        try:
+            remember_sent(Path(directory) / DEDUPE_FILENAME, delivered, now)
+        except OSError as exc:
+            errors.append({'key': 'dedupe', 'reason': 'alert was sent; the dedupe record was not saved: ' + str(exc)})
     return {'sent': sent, 'skipped': len(items) - len(pending), 'errors': errors}
 
 

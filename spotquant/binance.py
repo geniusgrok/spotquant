@@ -536,7 +536,9 @@ class Binance:
     def _timestamp(self) -> int:
         if self._offset_ms is None:
             payload = self._get('/api/v3/time', signed=False)
-            server = int(payload['serverTime'])
+            server = payload.get('serverTime') if isinstance(payload, dict) else None
+            if type(server) is not int:
+                raise Unknown('exchange clock is missing')
             self._offset_ms = server - int(self.clock() * 1000)
         return int(self.clock() * 1000) + self._offset_ms
 

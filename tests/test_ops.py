@@ -1544,3 +1544,175 @@ class KillSwitchReviewTests(unittest.TestCase):
             self.assertEqual(len(venue.sent), sent)
             self.assertEqual(still['rearm'], kept['rearm'])
             self.assertEqual(still['signal_ms'], saved['signal_ms'])
+
+    def test_early_entry_and_kill_order_survive_a_session(self):
+        from test_execution import SimulatedCrash, add_day, run_day, venue_before_entry
+        from spotquant.session import _guard_state
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            (Path(directory) / 'HALT').write_text('', encoding='utf-8')
+            add_day(venue, '101')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            (Path(directory) / 'HALT').unlink()
+            with State(directory, config.scope) as state:
+                body = state.get('models')['40']['body']
+            self.assertFalse(body['shadow_in'])
+            self.assertGreaterEqual(body['streak'], 1)
+            self.assertFalse(body['need_reset'])
+            buys = len([row for row in venue.orders.values() if row.get('side') == 'BUY'])
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env={})
+            self.assertEqual(result['status'], 'pass', result)
+            (Path(directory) / 'HALT').unlink()
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row.get('side') == 'BUY']), buys)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config('1', directory, 1, 1, 'demo', '1000')
+            venue = venue_before_entry()
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            (Path(directory) / 'HALT').write_text('kill\n', encoding='utf-8')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            (Path(directory) / 'HALT').unlink()
+            buys = len([row for row in venue.orders.values() if row.get('side') == 'BUY'])
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row.get('side') == 'BUY']), buys)
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            original = venue.submit
+
+            def submit(identity, payload, preflight=None):
+                if payload.get('side') == 'SELL' and payload.get('type') == 'MARKET':
+                    raise SimulatedCrash
+                row = original(identity, payload, preflight=preflight)
+                return row
+
+            venue.submit = submit
+            with State(directory, config.scope) as state:
+                with self.assertRaises(SimulatedCrash):
+                    kill_switch(state, venue, config, confirm=True, env={})
+                pending = self._sell_rearm(state)
+            self.assertIsNotNone(pending)
+            self.assertNotEqual(pending['signal_ms'] % (24 * 60 * 60 * 1000), 0)
+            venue.submit = original
+            sells = len([row for row in venue.orders.values()
+                         if row.get('side') == 'SELL' and row.get('type') == 'MARKET'])
+            report = run_day(config, venue)
+            self.assertNotIn('incompatible durable pending allocation', str(report.get('errors')))
+            self.assertEqual(len([row for row in venue.orders.values()
+                                  if row.get('side') == 'SELL' and row.get('type') == 'MARKET']), sells)
+            with State(directory, config.scope) as state:
+                payload = json.dumps({
+                    'order': {'symbol': 'BTCUSDT', 'side': 'SELL', 'type': 'MARKET', 'quantity': '1'},
+                    'sleeves': [40], 'signal_ms': pending['signal_ms'], 'weights': {'40': '1'},
+                    'repair': {'40': False}, 'rearm': {'40': False},
+                })
+                state.db.execute(
+                    'INSERT INTO intents VALUES (?,?,?,?,?,?)',
+                    ('sq-foreign-clock', 'p4', payload, 'prepared', '{}', 1))
+                state.db.commit()
+                with self.assertRaisesRegex(Blocked, 'incompatible durable pending allocation'):
+                    _guard_state(state)
+
+    def test_notification_failure_keeps_the_exit_result(self):
+        from spotquant.notify import unsent
+        from spotquant.cli import main
+        pending = unsent(Path('/tmp/does-not-matter-spotquant'), [
+            {'key': 'buy-halt', 'title': '停买', 'detail': 'x', 'kind': 'alert'},
+        ], 1_000.0, 6 * 3600)
+        self.assertEqual(len(pending), 1)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'alert-dedupe.json'
+            path.write_text('{"buy-halt": "not-a-time"}\n', encoding='utf-8')
+            self.assertEqual(len(unsent(path, [
+                {'key': 'buy-halt', 'title': '停买', 'detail': 'x', 'kind': 'alert'},
+            ], 10_000.0, 6 * 3600)), 1)
+            config, venue = self._open(directory)
+            calls = []
+
+            def smtp(*args, **kwargs):
+                client = FakeMail(*args, **kwargs)
+                calls.append(client)
+                return client
+
+            with State(directory, config.scope) as state:
+                result = kill_switch(state, venue, config, confirm=True, env=_smtp_env(), smtp_ssl=smtp)
+            self.assertEqual(result['status'], 'pass', result)
+            self.assertIsNotNone(result['sold'])
+            self.assertTrue(result['halt'])
+            self.assertTrue(calls)
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': config.account_uid, 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '1000',
+                'session_seconds': 1, 'poll_seconds': 1,
+            }), encoding='utf-8')
+            dispatches = []
+
+            def connect(loaded, execute_orders=False):
+                return venue
+
+            def remember(path, items, now):
+                raise OSError('dedupe disk is full')
+
+            real_dispatch = __import__('spotquant.ops', fromlist=['dispatch_notifications']).dispatch_notifications
+
+            def dispatch(directory, report, **kwargs):
+                dispatches.append((report.get('status'), report.get('sold')))
+                return real_dispatch(directory, report, **kwargs)
+
+            with patch('spotquant.cli.connect', connect), \
+                    patch('spotquant.ops.deliver', lambda *args, **kwargs: ['email']), \
+                    patch('spotquant.ops.dispatch_notifications', dispatch), \
+                    patch('spotquant.ops.remember_sent', remember):
+                code = main(['kill-switch', '--config', str(path), '--authorize-uid', config.account_uid,
+                             '--confirm'])
+            self.assertEqual(code, 0, dispatches)
+            self.assertEqual([status for status, _sold in dispatches], ['pass'])
+            self.assertIsNotNone(dispatches[0][1])
+
+    def test_clock_and_database_failures_alert_without_another_order(self):
+        import sqlite3
+        from spotquant.binance import Binance
+        from spotquant.cli import main
+        from spotquant.types import Unknown as OrderUnknown
+        venue = Binance(key='k', secret='s', environment='demo', capital_limit=D('100'),
+                        demo_execution_uid='10001', clock=lambda: 1000,
+                        opener=lambda method, url, headers: (200, b'{}', {}))
+        with self.assertRaisesRegex(OrderUnknown, 'exchange clock'):
+            venue._timestamp()
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._open(directory)
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': config.account_uid, 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '1000',
+                'session_seconds': 1, 'poll_seconds': 1,
+            }), encoding='utf-8')
+            sent = len(venue.sent)
+            notes = []
+
+            def connect(loaded, execute_orders=False):
+                return venue
+
+            def record(state):
+                raise sqlite3.OperationalError('database is locked')
+
+            def dispatch(directory, report, **kwargs):
+                notes.append(report)
+                return {'sent': [], 'skipped': 0, 'errors': []}
+
+            with patch('spotquant.cli.connect', connect), \
+                    patch('spotquant.ops._record_fresh_cross', record), \
+                    patch('spotquant.ops.dispatch_notifications', dispatch):
+                code = main(['kill-switch', '--config', str(path), '--authorize-uid', config.account_uid,
+                             '--confirm'])
+            self.assertEqual(code, 2)
+            self.assertEqual(len(notes), 1)
+            self.assertTrue(notes[0]['halt'])
+            self.assertEqual(notes[0]['status'], 'unknown')
+            self.assertEqual(len(venue.sent), sent)
+            self.assertTrue((Path(directory) / 'HALT').is_file())

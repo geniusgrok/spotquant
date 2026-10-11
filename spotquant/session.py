@@ -49,6 +49,11 @@ def clear_stale(report: dict) -> None:
 
 
 def cycle(venue, state: State, config, *, execute=False) -> dict:
+    from .ops import consume_kill_halt
+    # A kill file that was written before its database mark still consumes the
+    # current entry. An empty halt file does not. This is before recovery, so a
+    # pending kill order is not required for the mark to land.
+    consume_kill_halt(state)
     state._recovery_only = False
     _guard_state(state)
     _guard_venue(venue, config)
@@ -575,7 +580,7 @@ def _guard_state(state):
                     or set(payload['repair']) != {str(w) for w in group}
                     or any(type(v) is not bool for v in payload['repair'].values())
                     or type(payload['signal_ms']) is not int
-                    or payload['signal_ms'] != day_open(payload['signal_ms'])
+                    or payload['signal_ms'] < ORIGIN
                     or not set(order) <= set(FIELDS) or order['symbol'] != 'BTCUSDT'
                     or order['side'] not in ('BUY', 'SELL') or order['type'] not in ('MARKET', 'STOP_LOSS')
                     or (order['type'] == 'STOP_LOSS' and order['side'] != 'SELL')):
@@ -684,6 +689,15 @@ def _guard_state(state):
                     operation += '-' + hashlib.sha256(json.dumps(order, sort_keys=True).encode()).hexdigest()[:16]
                 if identity != client_id(state.identity, payload['signal_ms'], operation):
                     raise ValueError('durable order identity')
+            # A kill-switch order may use the fill time as its clock. The id is
+            # still the one this account would assign, so a foreign row is refused.
+            # Day-aligned intents keep the checks above and are not re-identified.
+            if payload['signal_ms'] != day_open(payload['signal_ms']):
+                if order['type'] == 'STOP_LOSS' and not legacy:
+                    raw = {key: order[key] for key in FIELDS if key in order}
+                    operation += '-' + hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()[:16]
+                if identity != client_id(state.identity, payload['signal_ms'], operation):
+                    raise ValueError('kill order identity')
     except (KeyError, TypeError, ValueError, ArithmeticError, Unknown) as exc:
         raise Blocked('incompatible durable pending allocation') from exc
     return {SLEEVES[0]: model}

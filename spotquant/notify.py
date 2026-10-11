@@ -248,8 +248,24 @@ def _load_dedupe(path: Path) -> dict:
     return saved if isinstance(saved, dict) else {}
 
 
+def _dedupe_stamp(value):
+    """A stored send time, or None when the record cannot suppress an alert."""
+    if isinstance(value, bool) or type(value) not in (int, float):
+        return None
+    try:
+        stamp = float(value)
+    except (TypeError, ValueError):
+        return None
+    if stamp != stamp:
+        return None
+    return stamp
+
+
 def unsent(path: Path, items: list[dict], now: float, window_seconds: float) -> list[dict]:
-    """Alerts not sent inside the window. Does not record them."""
+    """Alerts not sent inside the window. Does not record them.
+
+    A corrupt timestamp does not raise and does not count as a recent send.
+    """
     if window_seconds <= 0:
         raise Blocked('alert dedupe window must be positive')
     saved = _load_dedupe(path)
@@ -260,8 +276,10 @@ def unsent(path: Path, items: list[dict], now: float, window_seconds: float) -> 
         if item.get('kind') == 'heartbeat':
             if previous is not None:
                 continue
-        elif previous is not None and now - float(previous) < window_seconds:
-            continue
+        else:
+            stamp = _dedupe_stamp(previous)
+            if stamp is not None and now - stamp < window_seconds:
+                continue
         fresh.append(item)
     return fresh
 
