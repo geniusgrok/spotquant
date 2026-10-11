@@ -1360,3 +1360,187 @@ class KillSwitchReviewTests(unittest.TestCase):
             self.assertFalse((Path(directory) / 'alert-dedupe.json').exists())
             with State(directory, config.scope) as state:
                 self.assertEqual(state.get('marker'), 'kept')
+
+    def _touch_ready(self, directory, fee='0.001'):
+        from test_execution import add_day, run_day, venue_before_entry
+        config = Config('1', directory, 1, 1, 'demo', '1000')
+        venue = venue_before_entry()
+        venue.fee = D(fee)
+        self.assertEqual(run_day(config, venue)['errors'], [])
+        add_day(venue, '101')
+        self.assertEqual(run_day(config, venue)['errors'], [])
+        add_day(venue, '102')
+        self.assertEqual(run_day(config, venue)['errors'], [])
+        return config, venue
+
+    def _sell_rearm(self, state, signal=None):
+        found = None
+        for (payload,) in state.db.execute('SELECT payload FROM intents'):
+            body = json.loads(payload)
+            order = body.get('order') or {}
+            if order.get('side') != 'SELL' or order.get('type') != 'MARKET':
+                continue
+            if signal is not None and body.get('signal_ms') != signal:
+                continue
+            found = body
+        return found
+
+    def test_fresh_cross_survives_snapshot_bind_and_verify_failures(self):
+        from test_execution import SimulatedCrash, add_day, run_day
+        from spotquant.execution import Lifecycle
+        from spotquant.types import Unknown as OrderUnknown
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._touch_ready(directory)
+            venue.price = D('100.4')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            original = venue.snapshot
+
+            def snapshot(uid):
+                raise OrderUnknown('balances unavailable')
+
+            venue.snapshot = snapshot
+            with State(directory, config.scope) as state:
+                before = self._sell_rearm(state)
+                with self.assertRaises(OrderUnknown):
+                    kill_switch(state, venue, config, confirm=True, env={})
+                model = state.get('models')['40']['body']
+                after = self._sell_rearm(state, before['signal_ms'])
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+            self.assertEqual(model['shadow_blocked'], model['last'])
+            self.assertTrue(model['need_reset'])
+            self.assertTrue(after['rearm']['40'])
+            venue.snapshot = original
+            buys = len([row for row in venue.orders.values() if row.get('side') == 'BUY'])
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            (Path(directory) / 'HALT').unlink()
+            venue.price = D('102')
+            add_day(venue, '103')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row.get('side') == 'BUY']), buys)
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._touch_ready(directory)
+            venue.price = D('100.4')
+            original = venue.submit
+
+            def submit(identity, payload, preflight=None):
+                row = original(identity, payload, preflight=preflight)
+                if payload.get('side') == 'SELL' and payload.get('type') == 'MARKET':
+                    raise SimulatedCrash
+                return row
+
+            venue.submit = submit
+            with self.assertRaises(SimulatedCrash):
+                run_day(config, venue)
+            venue.submit = original
+            sells = len([row for row in venue.orders.values()
+                         if row.get('side') == 'SELL' and row.get('type') == 'MARKET'])
+            original_snapshot = venue.snapshot
+
+            def snapshot(uid):
+                raise OrderUnknown('balances unavailable')
+
+            venue.snapshot = snapshot
+            with State(directory, config.scope) as state:
+                with self.assertRaises(OrderUnknown):
+                    kill_switch(state, venue, config, confirm=True, env={})
+                body = self._sell_rearm(state)
+                model = state.get('models')['40']['body']
+            self.assertFalse(body['rearm']['40'])
+            self.assertEqual(model['shadow_blocked'], model['last'])
+            venue.snapshot = original_snapshot
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values()
+                                  if row.get('side') == 'SELL' and row.get('type') == 'MARKET']), sells)
+            (Path(directory) / 'HALT').unlink()
+            buys = len([row for row in venue.orders.values() if row.get('side') == 'BUY'])
+            venue.price = D('102')
+            add_day(venue, '103')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(len([row for row in venue.orders.values() if row.get('side') == 'BUY']), buys)
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._touch_ready(directory)
+            venue.price = D('100.4')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            path = Path(directory) / 'config.json'
+            path.write_text(json.dumps({
+                'account_uid': config.account_uid, 'state_dir': directory,
+                'environment': 'demo', 'capital_limit_usdt': '1000',
+                'session_seconds': 1, 'poll_seconds': 1,
+            }), encoding='utf-8')
+            from spotquant.cli import main
+
+            def connect(loaded, execute_orders=False):
+                def bind_state(ignored):
+                    raise OrderUnknown('backoff state is unreadable')
+
+                venue.bind_state = bind_state
+                return venue
+
+            with patch('spotquant.cli.connect', connect), \
+                    patch('spotquant.ops.dispatch_notifications', lambda *args, **kwargs: {
+                        'sent': [], 'skipped': 0, 'errors': []}):
+                code = main(['kill-switch', '--config', str(path), '--authorize-uid', config.account_uid,
+                             '--confirm'])
+            self.assertEqual(code, 2)
+            with State(directory, config.scope) as state:
+                model = state.get('models')['40']['body']
+                body = self._sell_rearm(state)
+            self.assertEqual(model['shadow_blocked'], model['last'])
+            self.assertTrue(body['rearm']['40'])
+            self.assertTrue((Path(directory) / 'HALT').is_file())
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._touch_ready(directory)
+            venue.price = D('100.4')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            original_verify = Lifecycle.verify
+
+            def verify(self, snapshot):
+                raise OrderUnknown('account balances differ from durable fills')
+
+            Lifecycle.verify = verify
+            try:
+                with State(directory, config.scope) as state:
+                    result = kill_switch(state, venue, config, confirm=True, env={})
+                    model = state.get('models')['40']['body']
+            finally:
+                Lifecycle.verify = original_verify
+            self.assertEqual(result['status'], 'unknown', result)
+            self.assertEqual(model['shadow_blocked'], model['last'])
+            self.assertTrue(model['need_reset'])
+
+    def test_a_later_finished_cycle_does_not_keep_the_old_sold(self):
+        from test_execution import add_day, run_day
+        with tempfile.TemporaryDirectory() as directory:
+            config, venue = self._touch_ready(directory, fee='0.00111')
+            self.assertGreater(venue.btc, 1)
+            with State(directory, config.scope) as state:
+                first = kill_switch(state, venue, config, confirm=True, env={})
+                second = kill_switch(state, venue, config, confirm=True, env={})
+                saved = state.get('kill_exit')
+            self.assertEqual(first['status'], 'pass', first)
+            self.assertEqual(D(first['sold']), D('9.89'))
+            self.assertEqual(second['sold'], first['sold'])
+            self.assertEqual(saved['position_first_ms'], 1581033660000)
+            (Path(directory) / 'HALT').unlink()
+            add_day(venue, '90')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            add_day(venue, '101')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertGreater(venue.btc, 1)
+            with State(directory, config.scope) as state:
+                opened = state.get('positions')['40']['first_ms']
+            self.assertNotEqual(opened, saved['position_first_ms'])
+            add_day(venue, '102')
+            venue.price = D('100')
+            self.assertEqual(run_day(config, venue)['errors'], [])
+            self.assertEqual(venue.btc, 0)
+            sent = len(venue.sent)
+            with State(directory, config.scope) as state:
+                kept = self._sell_rearm(state, saved['signal_ms'])
+                result = kill_switch(state, venue, config, confirm=True, env={})
+                still = self._sell_rearm(state, saved['signal_ms'])
+            self.assertEqual(result['status'], 'pass', result)
+            self.assertIsNone(result['sold'])
+            self.assertEqual(len(venue.sent), sent)
+            self.assertEqual(still['rearm'], kept['rearm'])
+            self.assertEqual(still['signal_ms'], saved['signal_ms'])

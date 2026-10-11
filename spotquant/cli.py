@@ -89,6 +89,7 @@ def main(argv=None):
             '--authorize-uid. 28% is the trail target; stop_price_percent_band can place '
             'the STOP_LOSS at the percent-band floor. ops-run is the 00:45 UTC timer entry. '
             'kill-switch always writes HALT first, before any query, snapshot, cancel, or sell. '
+            'The fresh-cross mark is committed before bind and any query. '
             'Without --confirm nothing is written and nothing is sent.'
         ),
     )
@@ -142,6 +143,7 @@ def main(argv=None):
         help='kill-switch always writes HALT first. Without --confirm nothing is written and nothing is sent.',
         description=(
             'kill-switch always writes HALT first, before any query, snapshot, cancel, or sell. '
+            'The fresh-cross mark is committed before bind and any query, so a later failure still leaves it. '
             'Without --confirm nothing is written and nothing is sent. '
             'Delete HALT to resume; the current book then needs a fresh cross.'
         ))
@@ -229,7 +231,7 @@ def main(argv=None):
             path = backup_database(Path(config.state_dir).expanduser() / 'intents.sqlite', dest)
             report = {'status': 'pass', 'backup': str(path), 'environment': config.environment}
         elif args.command == 'kill-switch':
-            from .ops import _arm_halt, dispatch_notifications, kill_switch
+            from .ops import _arm_halt, _record_fresh_cross, dispatch_notifications, kill_switch
             # Before config, the state directory, the venue, and the alert path.
             if not args.confirm:
                 raise Blocked('kill-switch requires --confirm')
@@ -241,6 +243,7 @@ def main(argv=None):
                 try:
                     # After the UID check and the state lock. Before backoff restore and any query.
                     _arm_halt(state)
+                    _record_fresh_cross(state)
                     if hasattr(venue, 'bind_state'):
                         venue.bind_state(state)
                     report = kill_switch(state, venue, config, confirm=args.confirm)
